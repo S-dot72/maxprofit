@@ -44,11 +44,13 @@ from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
 from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import EtatCollecte, start_http_server
+from maxprofit.hosting.operateurs import Annuaire, chemin_annuaire
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
-ENV_TELEGRAM_CHAT = "TELEGRAM_CHAT_ID"
+ENV_TELEGRAM_CHAT = "TELEGRAM_CHAT_ID"     # facultatif, historique
+ENV_CODE_ADMIN = "TELEGRAM_ACCESS_CODE"
 
 log = logging.getLogger("hosting.service")
 
@@ -151,20 +153,24 @@ def _fabriquer_bot(http) -> BotExploitation | None:
     découvre — on refuse plutôt que de démarrer à moitié.
     """
     jeton = os.environ.get(ENV_TELEGRAM_JETON, "").strip()
-    chat = os.environ.get(ENV_TELEGRAM_CHAT, "").strip()
-    if not jeton and not chat:
+    if not jeton:
         log.info("Telegram non configuré : ni alertes ni renouvellement à "
                  "distance.")
         return None
-    if not (jeton and chat):
+
+    annuaire = Annuaire(chemin_annuaire())
+    if len(annuaire) == 0 and not os.environ.get(ENV_CODE_ADMIN, "").strip():
+        # Ni inscrit ni code : le bot répondrait à tout le monde « demandez un
+        # code » sans que ce code existe. Personne ne recevrait jamais d'alerte,
+        # et l'on ne s'en apercevrait qu'au moment d'en avoir besoin.
         raise BotError(
-            f"{ENV_TELEGRAM_JETON} et {ENV_TELEGRAM_CHAT} vont ensemble. Un "
-            f"jeton sans identifiant de conversation donnerait un bot sans "
-            f"liste blanche, pilotable par quiconque le découvre."
+            f"{ENV_TELEGRAM_JETON} est défini, mais ni {ENV_CODE_ADMIN} ni "
+            f"aucun opérateur inscrit. Personne ne pourrait s'inscrire ni "
+            f"recevoir d'alerte. Définissez un code d'accès."
         )
-    log.info("Telegram actif (conversation %s).", chat)
+    log.info("Telegram actif — %d opérateur(s) inscrit(s).", len(annuaire))
     return BotExploitation(
-        ClientTelegram(jeton, http), chat,
+        ClientTelegram(jeton, http), annuaire,
         etat=None, installer_jeton=None,       # branchés juste après
     )
 

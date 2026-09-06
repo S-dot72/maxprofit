@@ -227,6 +227,38 @@ class Collector:
         self.conn = open_read_write(self.cfg.db)
         self.store = MarketWriter(self.conn)
 
+    def _base_repond(self) -> bool:
+        """La connexion à la base est-elle encore vivante ?
+
+        Une connexion réseau meurt aussi. Avec Turso, le flux Hrana vers le
+        serveur peut expirer ou être fermé, et toute écriture échoue alors sur
+        « stream not found ». Un fichier SQLite local, lui, ne tombe jamais —
+        c'est pourquoi le collecteur ne le vérifiait pas.
+
+        Sans ce contrôle, la boucle de reconnexion rouvrait le socket du broker
+        indéfiniment tout en réutilisant une connexion de base morte : elle
+        semblait travailler et n'écrivait plus une ligne.
+        """
+        if self.conn is None:
+            return False
+        try:
+            self.conn.execute("SELECT 1").fetchone()
+            return True
+        except Exception as erreur:                      # noqa: BLE001
+            log.warning("La connexion à la base ne répond plus : %s", erreur)
+            return False
+
+    def _rouvrir_base(self) -> None:
+        """Referme et rouvre. Les ticks en tampon survivent : ils sont en
+        mémoire, et seront écrits au premier vidage réussi."""
+        try:
+            if self.conn is not None:
+                self.conn.close()
+        except Exception:                                # noqa: BLE001
+            pass
+        log.info("Réouverture de la base.")
+        self._ouvrir()
+
     def run(self) -> None:
         self._ouvrir()
         backoff = 1
@@ -243,6 +275,8 @@ class Collector:
                 except SourceIndisponible as erreur:
                     if isinstance(erreur, SessionExpiree):
                         raise
+                    if not self._base_repond():
+                        self._rouvrir_base()
                     # Indisponibilité passagère du broker : exactement ce que
                     # le backoff sert à absorber. Sans ce cas explicite, elle
                     # tomberait dans FATALES — qui contient BotError, dont elle
@@ -274,6 +308,12 @@ class Collector:
                     # Déconnexion : les bougies en cours deviennent incomplètes.
                     log.warning("Connexion perdue (%s). Reconnexion dans %ds",
                                 erreur, backoff)
+                    # La panne peut venir de la base autant que du broker — avec
+                    # un stockage distant, une écriture échoue comme un socket.
+                    # Vérifier AVANT de vider les tampons : les vider sur une
+                    # connexion morte perdrait les ticks au lieu de les écrire.
+                    if not self._base_repond():
+                        self._rouvrir_base()
                     self._vider_tampons()
                     if not self.running:
                         break

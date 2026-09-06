@@ -18,9 +18,9 @@ casserait au premier CAPTCHA.
 
 Ce que ce bot automatise, c'est tout le reste :
 
-    le serveur détecte l'expiration  -> alerte poussée sur votre téléphone
-    vous capturez le jeton en local  -> dix secondes, une commande
-    vous l'envoyez par /ssid         -> le serveur reprend seul la collecte
+le serveur détecte l'expiration  -> alerte poussée sur votre téléphone
+vous capturez le jeton en local  -> dix secondes, une commande
+vous l'envoyez par /ssid         -> le serveur reprend seul la collecte
 
 Plus de redéploiement, plus de variable d'environnement à éditer dans un tableau
 de bord, plus de surveillance de terminal.
@@ -37,11 +37,17 @@ dépendances transitives pour deux appels irait contre la même logique que le
 
 Deux points, tous deux nécessaires plutôt que prudents.
 
-`TELEGRAM_CHAT_ID` est une LISTE BLANCHE, pas une simple destination. Sans elle,
-n'importe qui découvrant le bot pourrait lui injecter un SSID — c'est-à-dire
-détourner la collecte vers un autre compte — ou lire l'état de votre
-infrastructure. Toute commande venant d'un autre chat est ignorée et
-journalisée.
+Le bot accepte PLUSIEURS opérateurs, et aucun identifiant n'est codé dans la
+configuration : on s'inscrit avec un code, par `/start <code>`. Mais tous n'ont
+pas les mêmes droits, et c'est essentiel — sans rôles, quiconque s'inscrit
+pourrait installer un jeton de session, c'est-à-dire détourner la collecte vers
+un autre compte de courtier. Voir `hosting/operateurs.py`.
+
+ADMIN         tout, y compris installer un jeton
+OBSERVATEUR   consulter l'état et les paires ; rien d'autre
+
+Un message venant d'un inconnu reçoit la marche à suivre pour s'inscrire, et
+rien d'autre : ni état, ni paires, ni indice sur ce que fait le bot.
 
 Un SSID envoyé par Telegram transite par les serveurs de Telegram et reste dans
 l'historique de la conversation. Le bot EFFACE donc le message dès qu'il l'a
@@ -103,10 +109,10 @@ class ClientTelegram:
     async def effacer(self, chat_id: str, message_id: int) -> None:
         """Efface un message. Utilisé sur ceux qui portent un SSID.
 
-        Échoue silencieusement : un message trop ancien ou déjà effacé n'est pas
-        un incident, et le faire remonter interromprait le traitement du jeton
-        justement en train d'être installé.
-        """
+Échoue silencieusement : un message trop ancien ou déjà effacé n'est pas
+un incident, et le faire remonter interromprait le traitement du jeton
+justement en train d'être installé.
+"""
         try:
             await self._appeler("deleteMessage", chat_id=chat_id,
                                 message_id=message_id)
@@ -116,11 +122,11 @@ class ClientTelegram:
     async def declarer_commandes(self, commandes) -> None:
         """Fait apparaître le bouton ☰ Menu dans le client Telegram.
 
-        Échoue sans conséquence : un menu absent est un désagrément, pas une
-        panne, et le bot doit démarrer même si Telegram est momentanément
-        injoignable — c'est justement quand tout va mal qu'on a besoin de ses
-        alertes.
-        """
+Échoue sans conséquence : un menu absent est un désagrément, pas une
+panne, et le bot doit démarrer même si Telegram est momentanément
+injoignable — c'est justement quand tout va mal qu'on a besoin de ses
+alertes.
+"""
         try:
             await self._appeler("setMyCommands", commands=[
                 {"command": nom, "description": texte} for nom, texte in commandes
@@ -137,7 +143,7 @@ class ClientTelegram:
 
 #: Clavier affiché sous la zone de saisie. Des libellés, pas des commandes :
 #: on tape rarement « /etat » au téléphone.
-CLAVIER = [["📊 État", "🔑 Renouveler le jeton"], ["📈 Paires", "❓ Aide"]]
+CLAVIER = [["📊 État", "📈 Paires"], ["🔑 Renouveler le jeton", "❓ Aide"]]
 
 #: Commandes déclarées à Telegram par `setMyCommands`. C'est ce qui fait
 #: apparaître le bouton ☰ Menu à gauche de la zone de saisie, et l'autocomplétion
@@ -146,18 +152,37 @@ CLAVIER = [["📊 État", "🔑 Renouveler le jeton"], ["📈 Paires", "❓ Aide
 COMMANDES = [
     ("etat", "État de la collecte"),
     ("paires", "Paires actuellement suivies"),
-    ("ssid", "Installer un nouveau jeton de session"),
+    ("ssid", "Installer un nouveau jeton de session (admin)"),
+    ("operateurs", "Qui a accès au bot (admin)"),
+    ("revoquer", "Retirer un accès (admin)"),
     ("aide", "Comment ça marche"),
 ]
 
 AIDE = (
     "<b>Bot d'exploitation</b>\n\n"
-    "Il surveille la collecte de données. Il n'envoie aucun signal de trading "
+    "Il surveille une collecte de données. Il n'envoie aucun signal de trading "
     "et ne connaît aucune stratégie.\n\n"
     "<b>Commandes</b>\n"
     "/etat — état de la collecte\n"
+    "/paires — paires actuellement suivies\n"
+    "/aide — ce message\n\n"
+    "<b>Administration</b>\n"
     "/ssid <i>jeton</i> — installer un nouveau jeton de session\n"
-    "/aide — ce message"
+    "/operateurs — qui a accès\n"
+    "/revoquer <i>id</i> — retirer un accès"
+)
+
+RESERVE_ADMIN = (
+    "🔒 <b>Réservé aux administrateurs</b>\n\n"
+    "Installer un jeton revient à choisir quel compte de courtier est "
+    "collecté : cette commande n'est pas ouverte aux observateurs."
+)
+
+INSCRIPTION = (
+    "🔒 <b>Accès réservé</b>\n\n"
+    "Ce bot surveille une installation privée.\n\n"
+    "Si vous avez un code d'accès :\n"
+    "<code>/start votre-code</code>"
 )
 
 INSTRUCTIONS_JETON = (
@@ -174,17 +199,17 @@ INSTRUCTIONS_JETON = (
 class BotExploitation:
     """Boucle de réception. Une seule conversation autorisée.
 
-    Les actions sont injectées plutôt que codées ici : ce module formate et
-    envoie, il ne décide de rien. C'est ce qui lui permet d'être testé sans
-    réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
-    """
+Les actions sont injectées plutôt que codées ici : ce module formate et
+envoie, il ne décide de rien. C'est ce qui lui permet d'être testé sans
+réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
+"""
 
-    def __init__(self, client: ClientTelegram, chat_autorise: str, *,
+    def __init__(self, client: ClientTelegram, annuaire, *,
                  etat: Callable[[], Awaitable[str]],
                  installer_jeton: Callable[[str], Awaitable[str]],
                  paires: Callable[[], Awaitable[str]] | None = None):
         self.client = client
-        self.chat_autorise = str(chat_autorise)
+        self.annuaire = annuaire
         self._etat = etat
         self._installer_jeton = installer_jeton
         self._paires = paires
@@ -192,14 +217,30 @@ class BotExploitation:
         self.actif = True
 
     async def alerter(self, texte: str) -> None:
-        """Message poussé, sans qu'on ait rien demandé. Le canal des pannes."""
+        """Message poussé à TOUS les opérateurs. Le canal des pannes.
+
+Un destinataire injoignable — bloqué, compte supprimé — ne doit pas
+empêcher les autres d'être prévenus : chaque envoi est isolé.
+"""
+        destinataires = self.annuaire.destinataires()
+        if not destinataires:
+            log.warning(
+                "Alerte sans destinataire : personne n'est inscrit. Envoyez "
+                "/start <code> au bot pour recevoir les alertes. Message "
+                "perdu : %s", texte.replace("\n", " ")[:120],
+            )
+            return
+        for chat in destinataires:
+            await self._alerter_un(chat, texte)
+
+    async def _alerter_un(self, chat: str, texte: str) -> None:
         try:
-            await self.client.envoyer(self.chat_autorise, texte, CLAVIER)
+            await self.client.envoyer(chat, texte, CLAVIER)
         except Exception as erreur:                      # noqa: BLE001
             # Une alerte qui ne part pas ne doit pas emporter le processus
             # qu'elle signale : ce serait remplacer une panne visible par une
             # panne muette.
-            log.error("Alerte Telegram non envoyée : %s", erreur)
+            log.error("Alerte non envoyée à %s : %s", chat, erreur)
             if "can't send messages to the bot" in str(erreur):
                 # Erreur fréquente et opaque : TELEGRAM_CHAT_ID contient
                 # l'identifiant du BOT au lieu de celui de la conversation. Un
@@ -208,10 +249,10 @@ class BotExploitation:
                 # du jeton. La collecte s'arrêterait alors sans que personne ne
                 # le sache.
                 log.error(
-                    "TELEGRAM_CHAT_ID = %s est l'identifiant du BOT, pas celui "
-                    "de votre conversation. Écrivez à @userinfobot pour obtenir "
-                    "le vôtre. En l'état, aucune alerte ne vous parviendra.",
-                    self.chat_autorise,
+                    "%s est l'identifiant du BOT, pas celui d'une conversation. "
+                    "Un bot ne s'envoie pas de message à lui-même : aucune "
+                    "alerte ne partira vers cet identifiant. Inscrivez-vous "
+                    "plutôt par /start <code>, qui enregistre le bon.", chat,
                 )
 
     async def boucler(self) -> None:
@@ -237,14 +278,31 @@ class BotExploitation:
         if not texte:
             return
 
-        if chat != self.chat_autorise:
-            # Liste blanche, pas simple destination : sans elle, quiconque
-            # trouve le bot pourrait détourner la collecte vers un autre compte.
-            log.warning("Message ignoré : chat %s non autorisé.", chat)
+        expediteur = message.get("from") or {}
+        nom = (expediteur.get("username")
+               or expediteur.get("first_name") or "").strip()
+
+        # L'inscription est le SEUL geste ouvert à un inconnu.
+        if texte.startswith("/start"):
+            await self._commande_start(chat, texte, nom,
+                                       message.get("message_id"))
+            return
+
+        role = self.annuaire.role(chat)
+        if role is None:
+            # Ni état, ni paires, ni indice sur ce que fait le bot : un inconnu
+            # n'apprend rien d'autre que la façon de demander l'accès.
+            log.warning("Message ignoré : %s (%s) n'est pas inscrit.", chat, nom)
+            await self.client.envoyer(chat, INSCRIPTION)
             return
 
         if texte.startswith("/ssid"):
-            await self._commande_ssid(chat, texte, message.get("message_id"))
+            await self._commande_ssid(chat, texte, message.get("message_id"),
+                                      role)
+        elif texte.startswith("/operateurs") or texte.startswith("👥"):
+            await self._commande_operateurs(chat, role)
+        elif texte.startswith("/revoquer"):
+            await self._commande_revoquer(chat, texte, role)
         elif texte.startswith("/etat") or texte.startswith("📊"):
             await self.client.envoyer(chat, await self._etat(), CLAVIER)
         elif texte.startswith("/paires") or texte.startswith("📈"):
@@ -254,14 +312,94 @@ class BotExploitation:
                 await self.client.envoyer(chat, await self._paires(), CLAVIER)
         elif texte.startswith("🔑") or texte.startswith("/renouveler"):
             await self.client.envoyer(chat, INSTRUCTIONS_JETON, CLAVIER)
-        elif texte.startswith("/start"):
-            await self.client.envoyer(
-                chat, "Bot d'exploitation en service.\n\n" + AIDE, CLAVIER)
         else:
             await self.client.envoyer(chat, AIDE, CLAVIER)
 
+    # --- inscription --------------------------------------------------------
+
+    async def _commande_start(self, chat: str, texte: str, nom: str,
+                              message_id: int | None) -> None:
+        """`/start <code>` — la seule porte d'entrée.
+
+Le message est effacé comme celui d'un jeton : un code d'accès qui
+traîne dans un historique de conversation finit par être transféré.
+"""
+        code = texte[len("/start"):].strip()
+        deja = self.annuaire.role(chat)
+
+        if not code:
+            if deja is not None:
+                await self.client.envoyer(
+                    chat, f"Vous êtes inscrit comme <b>{deja}</b>.\n\n{AIDE}",
+                    CLAVIER)
+            else:
+                await self.client.envoyer(chat, INSCRIPTION)
+            return
+
+        if message_id is not None:
+            await self.client.effacer(chat, message_id)
+
+        role = self.annuaire.role_pour_code(code)
+        if role is None:
+            log.warning("Code d'accès refusé pour %s (%s).", chat, nom)
+            await self.client.envoyer(chat, "❌ Code invalide.")
+            return
+
+        self.annuaire.inscrire(chat, role, nom)
+        await self.client.envoyer(
+            chat,
+            f"✅ Inscrit comme <b>{role}</b>.\n\n"
+            f"Vous recevrez les alertes de la collecte ici.\n\n{AIDE}",
+            CLAVIER,
+        )
+
+    # --- administration -----------------------------------------------------
+
+    async def _commande_operateurs(self, chat: str, role) -> None:
+        if not role.peut_installer_jeton:
+            await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            return
+        inscrits = self.annuaire.lister()
+        lignes = [f"<b>{len(inscrits)} opérateur(s)</b>", ""]
+        for identifiant, r, nom in inscrits:
+            marque = " ← vous" if identifiant == chat else ""
+            lignes.append(f"• <code>{identifiant}</code> — {r}"
+                          f"{' (' + nom + ')' if nom else ''}{marque}")
+        lignes.append("")
+        lignes.append("Retirer un accès : <code>/revoquer identifiant</code>")
+        await self.client.envoyer(chat, "\n".join(lignes), CLAVIER)
+
+    async def _commande_revoquer(self, chat: str, texte: str, role) -> None:
+        if not role.peut_installer_jeton:
+            await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            return
+        cible = texte[len("/revoquer"):].strip()
+        if not cible:
+            await self.client.envoyer(
+                chat, "Usage : <code>/revoquer identifiant</code>", CLAVIER)
+            return
+        if cible == chat:
+            # Se retirer soi-même laisserait peut-être le bot sans aucun
+            # administrateur, donc sans personne pour renouveler le jeton.
+            await self.client.envoyer(
+                chat, "Vous ne pouvez pas révoquer votre propre accès.", CLAVIER)
+            return
+        if self.annuaire.revoquer(cible):
+            await self.client.envoyer(chat, f"✅ Accès retiré à <code>{cible}</code>.",
+                                      CLAVIER)
+        else:
+            await self.client.envoyer(chat, f"<code>{cible}</code> n'est pas inscrit.",
+                                      CLAVIER)
+
     async def _commande_ssid(self, chat: str, texte: str,
-                             message_id: int | None) -> None:
+                             message_id: int | None, role) -> None:
+        if not role.peut_installer_jeton:
+            # Le point qui justifie les rôles : installer un jeton, c'est
+            # choisir quel compte de courtier est collecté.
+            if message_id is not None:
+                await self.client.effacer(chat, message_id)
+            await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            return
         jeton = texte[len("/ssid"):].strip()
 
         # Effacer AVANT de répondre : le jeton ne doit pas rester affiché plus

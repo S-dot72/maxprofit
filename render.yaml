@@ -54,7 +54,17 @@ services:
       # pilotable par quiconque le découvre.
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      # Facultatif désormais : le bot accepte plusieurs opérateurs, qui
+      # s'inscrivent par /start <code>. Le garder évite d'avoir à s'inscrire
+      # pour recevoir la première alerte.
       - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Code d'inscription administrateur. À traiter comme un mot de passe :
+      # il donne le droit de changer le compte de courtier collecté.
+      - key: TELEGRAM_ACCESS_CODE
+        sync: false
+      # Facultatif : inscription en consultation seule.
+      - key: TELEGRAM_VIEWER_CODE
         sync: false
       # Secret partagé protégeant POST /session. Sans lui la route répond 404 :
       # un point d'entrée acceptant un jeton sans authentification permettrait
