@@ -114,13 +114,24 @@ Le diagnostic est à lancer UNE fois avant de collecter. Il répond aux deux
 questions qui décident si la collecte sera exploitable, et qu'on ne peut pas
 trancher en lisant du code :
 
-1. **La résolution des horodatages.** Si le broker envoie des secondes
-   entières, plusieurs ticks d'une même seconde s'écrasent sur la clé primaire
-   `(pair, ts_ms)` et le `tick_count` des bougies est sous-évalué — le critère
-   « au moins 5 ticks » du §2.4 écarterait alors des bougies valables.
-2. **Le nombre de paires diffusées simultanément.** Si `change_symbol` ne garde
-   qu'un symbole actif, il faut une rotation, qui divise la densité de ticks
-   par le nombre de paires.
+1. **La résolution des horodatages** — mesurée : sous la seconde. Chaque tick a
+   un instant distinct, donc aucun écrasement sur la clé `(pair, ts_ms)` et un
+   `tick_count` exact pour le §2.4.
+2. **Le nombre de paires diffusées simultanément** — mesuré : toutes, à
+   ~2 ticks/s chacune. Aucune rotation d'abonnement n'est nécessaire.
+
+Il a aussi révélé un troisième point, qui n'était pas dans mes prévisions :
+
+3. **Le broker n'envoie pas de l'UTC.** Son horloge est décalée (+2 h à la
+   mesure). L'horodatage reste un epoch parfaitement plausible, simplement faux
+   de deux heures, et aucune validation de type ne peut l'attraper. Comme le
+   collecteur horodate `payouts` et `uptime` avec l'horloge système, en vrai
+   UTC, des ticks à l'heure du broker feraient chercher pour chaque trade un
+   payout relevé jusqu'à deux heures **après** — du look-ahead sur les payouts,
+   exactement ce que le §2.3 interdit. Le décalage est donc mesuré, arrondi à
+   l'heure entière, appliqué, et re-vérifié toutes les cinq minutes : si
+   l'horloge du broker suit l'heure d'été européenne, elle passera de +2 h à
+   +1 h fin octobre, au milieu d'une collecte de quatorze jours.
 
 Le SSID est OBLIGATOIRE. `capturer_ssid.py` l'obtient une fois et
 l'ENREGISTRE dans `session.json` : il n'y a rien à recopier, le collecteur

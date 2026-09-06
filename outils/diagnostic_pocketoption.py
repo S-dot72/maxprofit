@@ -239,6 +239,21 @@ def _conclure(source, cibles, par_paire, bruts, ecoule) -> int:
               f"{statistics.median(ecarts):>10.0f}ms"
               f"{distincts:>13} / {len(ticks)}")
 
+    # --- Question 0 : le fuseau du broker -----------------------------------
+    print()
+    print("--- 0. Horloge du broker ---")
+    decalage = source.decalage_horloge_heures
+    if decalage is None:
+        print("Non mesuré (aucun tick reçu).")
+    elif decalage == 0:
+        print("Le broker envoie de l'UTC. Aucune correction appliquée.")
+    else:
+        print(f"Le broker envoie du UTC{decalage:+g}, PAS de l'UTC.")
+        print("→ Les horodatages sont ramenés en UTC vrai avant enregistrement.")
+        print("→ Sans cette correction, la jointure des payouts (§2.3) irait")
+        print(f"  chercher des relevés postérieurs de {abs(decalage):g} h au trade,")
+        print("  et les trous d'uptime seraient détectés au mauvais endroit.")
+
     # --- Question 1 : résolution -------------------------------------------
     print()
     print("--- 1. Résolution des horodatages ---")

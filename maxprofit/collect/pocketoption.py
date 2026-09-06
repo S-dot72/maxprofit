@@ -41,18 +41,33 @@ grandeur : un epoch en secondes vaut ~1,7 × 10⁹ et le même en millisecondes
 journalisée, puis VÉRIFIÉE sur chacun des suivants — un changement d'unité en
 cours de flux signalerait un mélange de sources et lève.
 
---- Ce qui reste à vérifier sur une connexion réelle -----------------------
+--- Le fuseau du broker : mesuré, pas supposé ------------------------------
 
-Deux questions ne se tranchent pas en lisant le code, et `outils/
-diagnostic_pocketoption.py` y répond en une minute de connexion :
+Pocket Option n'envoie PAS de l'UTC. Sa dernière mesure donne +2 h. Rien ne le
+signale : l'horodatage reste un epoch parfaitement plausible, simplement faux de
+deux heures, et `ensure_ms` ne peut pas l'attraper.
 
-1. La résolution des horodatages. S'ils sont en secondes ENTIÈRES, plusieurs
-   ticks d'une même seconde s'écrasent sur la clé primaire (pair, ts_ms) et le
-   `tick_count` des bougies est sous-évalué — ce qui ferait échouer à tort le
-   critère de qualité « au moins 5 ticks » du §2.4.
-2. Le nombre de paires diffusées simultanément. `change_symbol` pourrait ne
-   garder qu'un symbole actif à la fois ; il faudrait alors une rotation, qui
-   diviserait la densité de ticks par le nombre de paires.
+Ce n'est pas un problème d'affichage. Le collecteur horodate `payouts` et
+`uptime` avec l'horloge SYSTÈME, donc en vrai UTC. Des ticks à l'heure du broker
+feraient chercher, pour un trade donné, un payout relevé jusqu'à deux heures
+APRÈS — du look-ahead sur les payouts, exactement ce que le §2.3 interdit ; et
+les trous d'`uptime` seraient détectés au mauvais endroit.
+
+Le décalage est donc MESURÉ contre l'horloge du poste, arrondi à l'heure
+entière, et re-vérifié toutes les cinq minutes — si l'horloge du broker suit
+l'heure d'été européenne, elle passera de +2 h à +1 h fin octobre, au milieu
+d'une collecte de quatorze jours.
+
+--- Ce qui a été vérifié sur une connexion réelle --------------------------
+
+`outils/diagnostic_pocketoption.py` a tranché les deux questions ouvertes, et
+les deux réponses sont favorables :
+
+1. Résolution des horodatages : SOUS LA SECONDE (…358.523). Chaque tick a un
+   instant distinct, donc aucun écrasement sur la clé primaire (pair, ts_ms) et
+   un `tick_count` exact pour le critère de qualité du §2.4.
+2. Diffusion simultanée : les quatre paires observées ont émis en parallèle,
+   à ~2 ticks/s chacune. Aucune rotation d'abonnement n'est nécessaire.
 """
 
 from __future__ import annotations
@@ -95,6 +110,30 @@ DELAI_PAYOUTS_SEC = 25
 #: Au-delà de ce nombre de ticks accumulés pour une paire, on compacte le
 #: tampon de la bibliothèque : elle y empile sans jamais purger.
 SEUIL_COMPACTAGE = 5_000
+
+#: Écart résiduel toléré après retrait des heures entières, lors de la mesure
+#: du décalage d'horloge du broker. Couvre la latence réseau et une dérive
+#: normale du poste ; au-delà, on ne comprend plus l'horloge et on refuse.
+TOLERANCE_HORLOGE_SEC = 90
+
+#: Le décalage est re-vérifié à cet intervalle. Ce n'est pas de la paranoïa :
+#: si l'horloge du broker suit l'heure d'été européenne, elle passe de +2 h à
+#: +1 h fin octobre. Un décalage mesuré une seule fois au démarrage deviendrait
+#: faux d'une heure du jour au lendemain, sur une collecte de quatorze jours.
+INTERVALLE_VERIF_HORLOGE_SEC = 300
+
+#: Décalage maximal admissible, en heures. Le fuseau le plus extrême de la
+#: planète est UTC+14 (Kiribati). Au-delà, ce n'est plus un fuseau : c'est une
+#: horloge fausse, un horodatage périmé rejoué, ou un champ mal interprété. Sans
+#: cette borne, un arrondi à l'heure entière accepte n'importe quoi — un écart
+#: d'un an tombe à 77 secondes de résidu et passerait la seule tolérance.
+DECALAGE_MAX_HEURES = 14
+
+#: Nombre de ticks consécutifs rejetés au-delà duquel on considère que le format
+#: du flux a changé. Sans ce compteur, un flux devenu illisible ferait tourner le
+#: collecteur indéfiniment en ne produisant que des avertissements — vivant aux
+#: yeux de la sonde, et sans une ligne en base.
+REJETS_AVANT_ALERTE = 100
 
 
 def chemin_session() -> Path:
@@ -182,6 +221,18 @@ def resoudre_ssid(demo: bool, explicite: str | None = None) -> str | None:
     )
 
 
+class HorlogeIncoherente(BotError):
+    """L'horloge du broker ne peut pas être rapportée à l'UTC.
+
+    Distincte des autres erreurs parce qu'elle ne doit PAS être traitée comme
+    un tick malformé. Un tick illisible isolé se saute ; une horloge
+    incompréhensible touche tous les ticks, et les sauter un par un ferait
+    tourner le collecteur indéfiniment sans rien enregistrer, en n'écrivant que
+    des avertissements. C'est précisément le mode de défaillance que ce projet
+    cherche à rendre impossible.
+    """
+
+
 class SourceIndisponible(BotError):
     """Le broker ou la bibliothèque ne répond pas.
 
@@ -219,6 +270,9 @@ class PocketOptionSource:
         self._souscrites: List[str] = []
         self._vus: dict[str, int] = {}
         self._unite: str | None = None   # "sec" ou "ms", détectée au 1er tick
+        self._decalage_sec: int | None = None    # horloge broker - UTC vrai
+        self._rejets_consecutifs = 0
+        self._prochaine_verif_horloge = 0.0
         self._boucle: asyncio.AbstractEventLoop | None = None
 
     # --- connexion ----------------------------------------------------------
@@ -287,6 +341,10 @@ class PocketOptionSource:
                 log.info("Socket ouvert (démo=%s). Attente du catalogue des "
                          "actifs...", self.demo)
                 self._vus.clear()
+                # Une reconnexion peut enjamber un changement d'heure côté
+                # broker : on remesure plutôt que de reconduire l'ancien.
+                self._decalage_sec = None
+                self._prochaine_verif_horloge = 0.0
                 # « Connecté » ne suffit pas : sans le catalogue des actifs, la
                 # source ne sait rien faire. On attend donc ici plutôt que de
                 # laisser le premier appel échouer.
@@ -473,18 +531,46 @@ class PocketOptionSource:
             log.warning("Tick illisible sur %s (%s) : %r", nom, erreur, brut)
             return None
         try:
-            return Tick(pair=nom, ts_ms=self._vers_ms(instant), price=prix)
+            tick = Tick(pair=nom, ts_ms=self._vers_ms(instant), price=prix)
+        except HorlogeIncoherente:
+            # Ne se rattrape pas : elle concerne TOUS les ticks. La laisser
+            # remonter arrête le collecteur bruyamment, au lieu de le laisser
+            # tourner à vide en n'écrivant que des avertissements.
+            raise
         except BotError as erreur:
             log.warning("Tick rejeté sur %s : %s", nom, erreur)
+            self._rejets_consecutifs += 1
+            if self._rejets_consecutifs >= REJETS_AVANT_ALERTE:
+                raise SourceIndisponible(
+                    f"{self._rejets_consecutifs} ticks consécutifs rejetés. "
+                    f"Le format du flux a probablement changé : le collecteur "
+                    f"tournerait sans rien enregistrer. Dernière erreur : "
+                    f"{erreur}"
+                ) from None
             return None
+        self._rejets_consecutifs = 0
+        return tick
 
     def _vers_ms(self, brut) -> int:
-        """Horodatage serveur -> millisecondes UTC, unité DÉTECTÉE.
+        """Horodatage serveur -> millisecondes UTC VRAI.
 
-        Les deux plages plausibles sont disjointes d'un facteur 1000, ce qui
-        rend la détection non ambiguë. L'unité est mémorisée au premier tick :
-        si elle change ensuite, c'est que deux sources se mélangent, et cela
-        lève plutôt que de produire un historique décalé.
+        Deux corrections, toutes deux mesurées et non supposées :
+
+        1. L'UNITÉ. Les deux plages plausibles sont disjointes d'un facteur
+           1000, ce qui rend la détection non ambiguë. Mémorisée au premier
+           tick ; si elle change ensuite, deux sources se mélangent et cela lève.
+
+        2. LE FUSEAU. Pocket Option n'envoie pas de l'UTC : son horloge serveur
+           est décalée (+2 h à la mesure). Rien ne le signale — l'horodatage
+           reste un epoch parfaitement plausible, simplement faux de deux
+           heures. `ensure_ms` ne peut pas l'attraper.
+
+        Pourquoi ce n'est pas cosmétique. Le collecteur horodate `payouts` et
+        `uptime` avec l'horloge SYSTÈME, donc en vrai UTC. Si les ticks
+        portaient l'heure du broker, la jointure du §2.3 irait chercher, pour
+        un trade donné, un payout relevé jusqu'à deux heures APRÈS — du
+        look-ahead sur les payouts, exactement le biais que ce paragraphe
+        interdit. La détection des trous d'`uptime` serait décalée d'autant.
         """
         valeur = float(brut)
 
@@ -518,7 +604,80 @@ class PocketOptionSource:
                 f"(valeur {brut!r}). Deux sources se mélangent."
             )
 
-        return round(valeur * 1000) if unite == "sec" else round(valeur)
+        secondes = valeur if unite == "sec" else valeur / 1000
+        self._caler_horloge(secondes)
+        return round((secondes - self._decalage_sec) * 1000)
+
+    def _caler_horloge(self, secondes_broker: float) -> None:
+        """Mesure le décalage entre l'horloge du broker et l'UTC vrai.
+
+        Le décalage est arrondi à l'heure ENTIÈRE. C'est ce qui rend la mesure
+        robuste : un fuseau est un nombre entier d'heures (ou de demi-heures,
+        qu'on refuserait ici), tandis que la latence réseau et la dérive du
+        poste se comptent en secondes. Arrondir évite d'inscrire dans les
+        données le hasard du premier tick reçu.
+
+        Si le résidu dépasse la tolérance, on refuse : soit l'horloge du poste
+        est fausse, soit le broker fait autre chose que ce qu'on croit. Dans les
+        deux cas, écrire quand même produirait un historique décalé dont rien
+        ne signalerait l'erreur — quatorze jours plus tard, il serait trop tard.
+        """
+        maintenant = time.monotonic()
+        if self._decalage_sec is not None and maintenant < self._prochaine_verif_horloge:
+            return
+
+        ecart = secondes_broker - time.time()
+        heures = round(ecart / 3600)
+        residu = ecart - heures * 3600
+
+        if abs(heures) > DECALAGE_MAX_HEURES:
+            raise HorlogeIncoherente(
+                f"Décalage d'horloge de {heures:+d} h : impossible. Le fuseau "
+                f"le plus extrême est UTC+14. Un tel écart signifie une horloge "
+                f"fausse, un horodatage périmé rejoué, ou un champ mal "
+                f"interprété — pas un fuseau. Horodatage reçu : "
+                f"{secondes_broker:.3f}."
+            )
+
+        if abs(residu) > TOLERANCE_HORLOGE_SEC:
+            raise HorlogeIncoherente(
+                f"Horloge incompréhensible : le broker est à {ecart:+.0f} s de "
+                f"l'UTC de ce poste, soit {heures:+d} h et {residu:+.0f} s de "
+                f"résidu. Un fuseau est un nombre entier d'heures ; un résidu de "
+                f"cette taille signifie que l'horloge de ce poste est fausse, ou "
+                f"que le broker n'envoie pas ce qu'on croit. Vérifiez la "
+                f"synchronisation horaire avant de collecter."
+            )
+
+        nouveau = heures * 3600
+        if self._decalage_sec is None:
+            self._decalage_sec = nouveau
+            if nouveau:
+                log.warning(
+                    "L'horloge du broker est décalée de %+d h par rapport à "
+                    "l'UTC (résidu %+.1f s). Les horodatages sont ramenés en "
+                    "UTC vrai avant enregistrement : sans cela, la jointure des "
+                    "payouts (§2.3) irait chercher des relevés postérieurs au "
+                    "trade.", heures, residu,
+                )
+            else:
+                log.info("Horloge du broker alignée sur l'UTC (résidu %+.1f s).",
+                         residu)
+        elif nouveau != self._decalage_sec:
+            log.warning(
+                "Le décalage d'horloge du broker est passé de %+d h à %+d h. "
+                "Probable changement d'heure côté serveur. Les ticks suivants "
+                "sont corrigés avec la nouvelle valeur.",
+                self._decalage_sec // 3600, heures,
+            )
+            self._decalage_sec = nouveau
+
+        self._prochaine_verif_horloge = maintenant + INTERVALLE_VERIF_HORLOGE_SEC
+
+    @property
+    def decalage_horloge_heures(self) -> float | None:
+        """Décalage mesuré, en heures. `None` tant qu'aucun tick n'est arrivé."""
+        return None if self._decalage_sec is None else self._decalage_sec / 3600
 
     # --- santé --------------------------------------------------------------
 

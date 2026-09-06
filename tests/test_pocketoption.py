@@ -32,7 +32,15 @@ from maxprofit.collect.pocketoption import (
 )
 from maxprofit.core.errors import BotError
 
-T_SEC = 1_757_073_600          # 2025-09-05 12:00:00 UTC
+#: Les faux ticks sont datés de MAINTENANT, pas d'une date figée : l'adaptateur
+#: mesure désormais le décalage d'horloge du broker contre l'UTC réel, et un
+#: horodatage figé vieillit — au bout de quelques mois il serait rejeté, et les
+#: tests se mettraient à échouer sans que rien n'ait changé dans le code.
+def maintenant_sec(decalage: float = 0.0) -> float:
+    return time.time() + decalage
+
+
+T_SEC = 1_757_073_600          # utilisé seulement là où l'horloge n'entre pas en jeu
 T_MS = T_SEC * 1000
 
 
@@ -147,21 +155,27 @@ def source(broker):
 # --------------------------------------------------------------------------- #
 
 def test_secondes_converties_en_millisecondes():
+    """Ces tests portent sur l'UNITÉ, pas sur le fuseau : ils utilisent donc
+    l'instant courant, pour que la correction d'horloge mesure zéro et ne se
+    mêle pas de ce qu'on cherche à vérifier."""
     src = PocketOptionSource()
-    assert src._vers_ms(T_SEC) == T_MS
+    maintenant = time.time()
+    assert abs(src._vers_ms(maintenant) - maintenant * 1000) < 1000
     assert src._unite == "sec"
 
 
 def test_resolution_sous_la_seconde_preservee():
-    """Si le broker envoie 1757073600.234, la milliseconde ne doit pas être
-    perdue : c'est elle qui distingue deux ticks d'une même seconde."""
+    """Si le broker envoie ...600.234, la milliseconde ne doit pas être perdue :
+    c'est elle qui distingue deux ticks d'une même seconde."""
     src = PocketOptionSource()
-    assert src._vers_ms(T_SEC + 0.234) == T_MS + 234
+    base = float(int(time.time()))
+    assert src._vers_ms(base + 0.234) == round(base * 1000) + 234
 
 
 def test_millisecondes_reconnues_telles_quelles():
     src = PocketOptionSource()
-    assert src._vers_ms(T_MS) == T_MS
+    maintenant_ms = round(time.time() * 1000)
+    assert abs(src._vers_ms(maintenant_ms) - maintenant_ms) < 1000
     assert src._unite == "ms"
 
 
@@ -176,9 +190,9 @@ def test_changement_d_unite_en_cours_de_flux_leve():
     """Deux sources qui se mélangent produiraient un historique décalé d'un
     facteur 1000 sur une partie seulement des données — indétectable ensuite."""
     src = PocketOptionSource()
-    src._vers_ms(T_SEC)
+    src._vers_ms(time.time())
     with pytest.raises(BotError, match="unité des horodatages"):
-        src._vers_ms(T_MS)
+        src._vers_ms(round(time.time() * 1000))
 
 
 def test_secondes_entieres_declenchent_un_avertissement(caplog):
@@ -186,14 +200,14 @@ def test_secondes_entieres_declenchent_un_avertissement(caplog):
     s'écrasent sur la clé primaire (pair, ts_ms)."""
     src = PocketOptionSource()
     with caplog.at_level("WARNING"):
-        src._vers_ms(T_SEC)
+        src._vers_ms(float(int(time.time())))
     assert any("secondes ENTIÈRES" in m for m in caplog.messages)
 
 
 def test_resolution_fine_ne_declenche_pas_l_avertissement(caplog):
     src = PocketOptionSource()
     with caplog.at_level("WARNING"):
-        src._vers_ms(T_SEC + 0.5)
+        src._vers_ms(int(time.time()) + 0.5)
     assert not any("ENTIÈRES" in m for m in caplog.messages)
 
 
@@ -216,7 +230,7 @@ def test_get_pairs_qui_renvoie_none_leve(source, broker):
 
 def test_socket_ferme_pendant_le_flux_leve(source, broker):
     client, globals_ = broker
-    client.pousser("EURUSD_otc", T_SEC + 0.1, 1.1)
+    client.pousser("EURUSD_otc", maintenant_sec(0.1), 1.1)
     source.subscribe(["EURUSD_otc"])
 
     flux = source.stream()
@@ -299,13 +313,13 @@ def test_aucun_tick_n_est_lu_deux_fois(source, broker):
     client, _ = broker
     source.subscribe(["EURUSD_otc"])
     for i in range(5):
-        client.pousser("EURUSD_otc", T_SEC + i * 0.25, 1.1 + i / 1000)
+        client.pousser("EURUSD_otc", maintenant_sec(i * 0.25), 1.1 + i / 1000)
 
     premiers = list(source._drainer("EURUSD_otc"))
     assert len(premiers) == 5
     assert list(source._drainer("EURUSD_otc")) == []
 
-    client.pousser("EURUSD_otc", T_SEC + 2.0, 1.2)
+    client.pousser("EURUSD_otc", maintenant_sec(2.0), 1.2)
     suivants = list(source._drainer("EURUSD_otc"))
     assert len(suivants) == 1
     assert suivants[0].price == 1.2
@@ -317,7 +331,7 @@ def test_le_tampon_est_compacte_pour_ne_pas_croitre_indefiniment(source, broker)
     client, globals_ = broker
     source.subscribe(["EURUSD_otc"])
     for i in range(SEUIL_COMPACTAGE + 10):
-        client.pousser("EURUSD_otc", T_SEC + i * 0.01, 1.1)
+        client.pousser("EURUSD_otc", maintenant_sec(i * 0.01), 1.1)
 
     lus = list(source._drainer("EURUSD_otc"))
     assert len(lus) == SEUIL_COMPACTAGE + 10
@@ -325,7 +339,7 @@ def test_le_tampon_est_compacte_pour_ne_pas_croitre_indefiniment(source, broker)
     assert source._vus["EURUSD_otc"] == 0
 
     # Et le drainage repart correctement après compactage.
-    client.pousser("EURUSD_otc", T_SEC + 999, 1.3)
+    client.pousser("EURUSD_otc", maintenant_sec(999), 1.3)
     assert [t.price for t in source._drainer("EURUSD_otc")] == [1.3]
 
 
@@ -335,9 +349,9 @@ def test_un_tick_illisible_n_interrompt_pas_le_flux(source, broker, caplog):
     client, globals_ = broker
     source.subscribe(["EURUSD_otc"])
     globals_.pairs["EURUSD_otc"] = {"ticks": [
-        {"time": T_SEC + 0.1, "price": 1.1},
+        {"time": maintenant_sec(0.1), "price": 1.1},
         {"prix": "champ inattendu"},
-        {"time": T_SEC + 0.2, "price": 1.2},
+        {"time": maintenant_sec(0.2), "price": 1.2},
     ], "history": []}
 
     with caplog.at_level("WARNING"):
@@ -350,9 +364,9 @@ def test_un_tick_hors_plage_est_rejete_sans_tuer_le_flux(source, broker, caplog)
     client, globals_ = broker
     source.subscribe(["EURUSD_otc"])
     globals_.pairs["EURUSD_otc"] = {"ticks": [
-        {"time": T_SEC + 0.1, "price": 1.1},
+        {"time": maintenant_sec(0.1), "price": 1.1},
         {"time": 42, "price": 1.15},          # horodatage absurde
-        {"time": T_SEC + 0.2, "price": 1.2},
+        {"time": maintenant_sec(0.2), "price": 1.2},
     ], "history": []}
 
     with caplog.at_level("WARNING"):
@@ -370,8 +384,8 @@ def test_subscribe_demande_chaque_paire(source, broker):
 def test_le_flux_sert_toutes_les_paires_souscrites(source, broker):
     client, _ = broker
     source.subscribe(["EURUSD_otc", "GBPUSD_otc"])
-    client.pousser("EURUSD_otc", T_SEC + 0.1, 1.1)
-    client.pousser("GBPUSD_otc", T_SEC + 0.2, 1.3)
+    client.pousser("EURUSD_otc", maintenant_sec(0.1), 1.1)
+    client.pousser("GBPUSD_otc", maintenant_sec(0.2), 1.3)
 
     flux = source.stream()
     recus = {next(flux).pair, next(flux).pair}
@@ -619,3 +633,148 @@ def test_resoudre_ssid_est_la_seule_regle(monkeypatch, tmp_path):
 
     # 5. une chaîne vide n'est pas une valeur
     assert resoudre_ssid(demo=True, explicite="   ") == "42[de-l-env]"
+
+
+# --------------------------------------------------------------------------- #
+# L'horloge du broker n'est pas l'UTC
+# --------------------------------------------------------------------------- #
+
+def test_le_decalage_de_fuseau_est_mesure_et_corrige():
+    """Régression, découverte sur une connexion réelle.
+
+    Pocket Option envoie du UTC+2. L'horodatage reste un epoch parfaitement
+    plausible — `ensure_ms` ne peut pas l'attraper — mais il est faux de deux
+    heures. Comme le collecteur horodate `payouts` et `uptime` avec l'horloge
+    système, en vrai UTC, la jointure du §2.3 irait chercher pour chaque trade
+    un payout relevé jusqu'à deux heures APRÈS. C'est du look-ahead.
+    """
+    src = PocketOptionSource()
+    maintenant = time.time()
+
+    corrige_ms = src._vers_ms(maintenant + 2 * 3600)
+
+    assert src.decalage_horloge_heures == 2.0
+    assert abs(corrige_ms / 1000 - maintenant) < 1.0
+
+
+def test_un_broker_en_utc_ne_subit_aucune_correction():
+    src = PocketOptionSource()
+    maintenant = time.time()
+    assert abs(src._vers_ms(maintenant) / 1000 - maintenant) < 1.0
+    assert src.decalage_horloge_heures == 0.0
+
+
+def test_decalage_negatif_aussi(caplog):
+    src = PocketOptionSource()
+    with caplog.at_level("WARNING"):
+        src._vers_ms(time.time() - 5 * 3600)
+    assert src.decalage_horloge_heures == -5.0
+
+
+def test_un_residu_trop_grand_refuse():
+    """Un fuseau est un nombre entier d'heures. Un résidu de plusieurs minutes
+    signifie que l'horloge du poste est fausse, ou que le broker fait autre
+    chose que ce qu'on croit — dans les deux cas, écrire quand même produirait
+    un historique décalé dont rien ne signalerait l'erreur."""
+    src = PocketOptionSource()
+    with pytest.raises(BotError, match="Horloge incompréhensible"):
+        src._vers_ms(time.time() + 2 * 3600 + 600)
+
+
+def test_la_latence_reseau_ne_fausse_pas_la_mesure():
+    """Arrondir à l'heure entière évite d'inscrire dans les données le hasard
+    du premier tick reçu."""
+    src = PocketOptionSource()
+    src._vers_ms(time.time() + 2 * 3600 - 1.7)
+    assert src.decalage_horloge_heures == 2.0
+
+
+def test_un_changement_d_heure_du_broker_est_detecte(caplog, monkeypatch):
+    """Si l'horloge du broker suit l'heure d'été européenne, elle passe de +2 h
+    à +1 h fin octobre — au milieu d'une collecte de quatorze jours."""
+    import maxprofit.collect.pocketoption as module
+
+    monkeypatch.setattr(module, "INTERVALLE_VERIF_HORLOGE_SEC", 0)
+    src = PocketOptionSource()
+    src._vers_ms(time.time() + 2 * 3600)
+    assert src.decalage_horloge_heures == 2.0
+
+    with caplog.at_level("WARNING"):
+        corrige_ms = src._vers_ms(time.time() + 1 * 3600)
+
+    assert src.decalage_horloge_heures == 1.0
+    assert any("changement d'heure" in m for m in caplog.messages)
+    assert abs(corrige_ms / 1000 - time.time()) < 1.0
+
+
+def test_la_mesure_n_est_pas_refaite_a_chaque_tick(monkeypatch):
+    """Une mesure par tick coûterait un appel horloge à chaque cotation, et
+    ferait surtout osciller la correction au gré de la latence."""
+    src = PocketOptionSource()
+    src._vers_ms(time.time() + 2 * 3600)
+    prochaine = src._prochaine_verif_horloge
+
+    src._vers_ms(time.time() + 2 * 3600)
+    assert src._prochaine_verif_horloge == prochaine
+
+
+def test_un_horodatage_perime_est_refuse():
+    """Découvert en corrigeant les tests d'unité : un horodatage vieux d'un an
+    donne, après arrondi à l'heure entière, un résidu de 78 secondes — sous la
+    tolérance. Sans borne sur le décalage, il aurait été accepté et « corrigé »,
+    c'est-à-dire réécrit à l'heure courante. Un horodatage périmé rejoué serait
+    devenu une donnée d'apparence normale."""
+    src = PocketOptionSource()
+    with pytest.raises(BotError, match="impossible"):
+        src._vers_ms(time.time() - 365 * 86400)
+
+
+def test_une_horloge_incoherente_arrete_le_flux(source, broker):
+    """Régression, découverte parce qu'un test s'est mis à tourner sans fin.
+
+    Une horloge incompréhensible concerne TOUS les ticks. Si `_vers_tick` la
+    rattrapait comme un tick malformé, `stream()` boucherait indéfiniment en
+    n'écrivant que des avertissements : vivant aux yeux de la sonde, et pas une
+    ligne en base. C'est le mode de défaillance que tout ce projet combat, et il
+    s'était glissé ici.
+    """
+    from maxprofit.collect.pocketoption import HorlogeIncoherente
+
+    client, globals_ = broker
+    source.subscribe(["EURUSD_otc"])
+    client.pousser("EURUSD_otc", maintenant_sec(-365 * 86400), 1.1)
+
+    with pytest.raises(HorlogeIncoherente, match="impossible"):
+        next(source.stream())
+
+
+def test_un_flux_devenu_illisible_finit_par_lever(source, broker):
+    """Un tick malformé isolé se saute. Cent d'affilée, c'est que le format a
+    changé — et continuer reviendrait à collecter dans le vide."""
+    from maxprofit.collect.pocketoption import REJETS_AVANT_ALERTE
+
+    client, globals_ = broker
+    source.subscribe(["EURUSD_otc"])
+    globals_.pairs["EURUSD_otc"] = {"ticks": [
+        {"time": maintenant_sec(), "price": -1.0}      # prix invalide
+        for _ in range(REJETS_AVANT_ALERTE + 5)
+    ], "history": []}
+
+    with pytest.raises(SourceIndisponible, match="consécutifs rejetés"):
+        list(source._drainer("EURUSD_otc"))
+
+
+def test_un_tick_valide_remet_le_compteur_a_zero(source, broker):
+    """Sinon quelques anomalies éparses sur quatorze jours finiraient par
+    déclencher une fausse alerte."""
+    client, globals_ = broker
+    source.subscribe(["EURUSD_otc"])
+    globals_.pairs["EURUSD_otc"] = {"ticks": [
+        {"time": maintenant_sec(), "price": -1.0},
+        {"time": maintenant_sec(0.1), "price": 1.1},
+        {"time": maintenant_sec(0.2), "price": -1.0},
+    ], "history": []}
+
+    ticks = list(source._drainer("EURUSD_otc"))
+    assert [t.price for t in ticks] == [1.1]
+    assert source._rejets_consecutifs == 1
