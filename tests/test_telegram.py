@@ -360,3 +360,107 @@ def test_start_sans_code_rappelle_le_role_a_un_inscrit(tmp_path):
     client = FauxClient()
     _traiter(_bot(client, annuaire=annuaire), _message("/start"))
     assert "admin" in client.envoyes[-1][1]
+
+
+# --------------------------------------------------------------------------- #
+# Demandes d'accès et approbation
+# --------------------------------------------------------------------------- #
+
+def test_start_sans_code_depose_une_demande(tmp_path):
+    from maxprofit.hosting.operateurs import Role
+
+    annuaire = _annuaire(tmp_path, [("111", "admin")])
+    client = FauxClient()
+    _traiter(_bot(client, annuaire=annuaire),
+             _message("/start", chat=INTRUS))
+
+    assert annuaire.role(INTRUS) is Role.EN_ATTENTE
+    # Le demandeur sait que sa demande est partie...
+    assert any(c == INTRUS and "Demande envoyée" in t for c, t in client.envoyes)
+    # ...et l'administrateur est prévenu, avec la commande toute prête.
+    assert any(c == "111" and f"/approuver {INTRUS}" in t
+               for c, t in client.envoyes)
+
+
+def test_une_demande_en_attente_n_obtient_rien(tmp_path):
+    """LE test de ce flux : une demande n'est pas un accès."""
+    annuaire = _annuaire(tmp_path, [])
+    annuaire.demander_acces(INTRUS)
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire, etat="🟢 secret"),
+             _message("/etat", chat=INTRUS))
+
+    assert all("secret" not in t for _, t in client.envoyes)
+    assert "attente" in client.envoyes[-1][1]
+
+
+def test_un_admin_approuve_et_le_demandeur_est_prevenu(tmp_path):
+    from maxprofit.hosting.operateurs import Role
+
+    annuaire = _annuaire(tmp_path, [(CHAT, "admin")])
+    annuaire.demander_acces("777", "alice")
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire), _message("/approuver 777"))
+
+    assert annuaire.role("777") is Role.OBSERVATEUR
+    assert any(c == "777" and "approuvé" in t for c, t in client.envoyes)
+
+
+def test_approuver_sans_argument_liste_les_demandes(tmp_path):
+    annuaire = _annuaire(tmp_path, [(CHAT, "admin")])
+    annuaire.demander_acces("777", "alice")
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire), _message("/approuver"))
+    assert "777" in client.envoyes[-1][1]
+    assert "alice" in client.envoyes[-1][1]
+
+
+def test_un_admin_refuse_une_demande(tmp_path):
+    annuaire = _annuaire(tmp_path, [(CHAT, "admin")])
+    annuaire.demander_acces("777")
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire), _message("/refuser 777"))
+    assert annuaire.role("777") is None
+
+
+def test_un_observateur_ne_peut_pas_approuver(tmp_path):
+    from maxprofit.hosting.operateurs import Role
+
+    annuaire = _annuaire(tmp_path, [("777", "observateur")])
+    annuaire.demander_acces("888")
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire), _message("/approuver 888", chat="777"))
+    assert annuaire.role("888") is Role.EN_ATTENTE
+    assert "administrateurs" in client.envoyes[-1][1]
+
+
+def test_le_plafond_d_admins_est_annonce_a_l_inscription(tmp_path, monkeypatch):
+    from maxprofit.hosting.operateurs import ENV_CODE_ADMIN, ENV_MAX_ADMINS
+
+    monkeypatch.setenv(ENV_CODE_ADMIN, "sesame")
+    monkeypatch.setenv(ENV_MAX_ADMINS, "1")
+    annuaire = _annuaire(tmp_path, [("111", "admin")])
+    client = FauxClient()
+
+    _traiter(_bot(client, annuaire=annuaire),
+             _message("/start sesame", chat=INTRUS))
+
+    assert not annuaire.est_inscrit(INTRUS)
+    assert "maximum" in client.envoyes[-1][1]
+
+
+def test_une_demande_sans_aucun_admin_est_signalee(tmp_path, caplog):
+    """Personne pour approuver : le demandeur attendrait indéfiniment sans que
+    quiconque le sache."""
+    annuaire = _annuaire(tmp_path, [])
+    client = FauxClient()
+
+    with caplog.at_level("WARNING"):
+        _traiter(_bot(client, annuaire=annuaire), _message("/start", chat=INTRUS))
+
+    assert any("sans administrateur" in m for m in caplog.messages)

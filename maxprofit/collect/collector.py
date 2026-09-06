@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sqlite3
 import sys
@@ -136,6 +137,17 @@ class Config:
     #: par le backtest (§2.4) plutôt que raisonnée dessus.
     sync_sec: int = 60
     max_backoff_sec: int = 60
+    #: Nombre maximal de paires SOUSCRITES simultanément.
+    #:
+    #: Mesuré, pas supposé. Le diagnostic a tourné 90 s sans faute sur 4 paires.
+    #: En production, un abonnement à 32 paires d'un coup a fait fermer le socket
+    #: par le broker au bout de 20 s, sans qu'un seul tick n'arrive — deux heures
+    #: de collecte pour zéro ligne.
+    #:
+    #: Ne limite QUE l'abonnement. L'historique complet des payouts continue
+    #: d'être enregistré pour toutes les paires (§2.3), donc le backtest peut
+    #: toujours rejouer l'éligibilité telle qu'elle était.
+    max_paires: int = 8
 
     def __post_init__(self) -> None:
         if not (0 <= self.min_payout <= 100):
@@ -185,10 +197,21 @@ class Collector:
         # pour le backtest, qui rejouera l'éligibilité depuis cette table.
         self.store.insert_payouts(int(time.time()), pairs)
 
-        eligible = sorted(
-            p.name for p in pairs
-            if p.is_open and p.payout_pct >= self.cfg.min_payout
+        # Les meilleurs payouts d'abord : si l'on doit se limiter, autant que
+        # ce soit sur les paires qui rapportent le plus.
+        candidates = sorted(
+            (p for p in pairs
+             if p.is_open and p.payout_pct >= self.cfg.min_payout),
+            key=lambda p: (-p.payout_pct, p.name),
         )
+        eligible = sorted(p.name for p in candidates[:self.cfg.max_paires])
+        if len(candidates) > self.cfg.max_paires:
+            log.info(
+                "%d paires éligibles, abonnement limité aux %d meilleurs "
+                "payouts. Les payouts de toutes restent enregistrés.",
+                len(candidates), self.cfg.max_paires,
+            )
+
         if eligible != self.subscribed:
             ajoutees = set(eligible) - set(self.subscribed)
             retirees = set(self.subscribed) - set(eligible)
@@ -374,6 +397,7 @@ def build_config(args) -> Config:
     return Config(
         db=Path(args.db) if args.db else chemin_donnees(),
         min_payout=args.min_payout,
+        max_paires=args.max_paires,
     )
 
 
@@ -386,6 +410,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="Payout minimal pour s'abonner à une paire. "
                          "Obligatoire : aucune valeur par défaut sur ce qui "
                          "touche à l'argent (spec §5).")
+    ap.add_argument("--max-paires", type=int,
+                    default=int(os.environ.get("MAX_PAIRES", "8") or 8),
+                    help="Nombre maximal de paires souscrites (défaut : 8, ou "
+                         "$MAX_PAIRES). Au-delà d'une dizaine, le broker ferme "
+                         "le socket sans envoyer de ticks.")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")

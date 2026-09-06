@@ -56,13 +56,37 @@ ENV_CHAT_HISTORIQUE = "TELEGRAM_CHAT_ID"
 NOM_FICHIER = "operateurs.json"
 
 
+#: Nombre maximal d'administrateurs. Un code d'accès finit toujours par
+#: circuler ; plafonner limite les dégâts, et rend visible le moment où
+#: quelqu'un de plus s'inscrit — au lieu de le découvrir six mois plus tard.
+MAX_ADMINS = 3
+ENV_MAX_ADMINS = "TELEGRAM_MAX_ADMINS"
+
+
+class TropDAdmins(Exception):
+    """Le plafond d'administrateurs est atteint."""
+
+
 class Role(enum.Enum):
     ADMIN = "admin"
     OBSERVATEUR = "observateur"
+    #: Demande d'accès déposée sans code, en attente d'approbation. N'a AUCUN
+    #: droit : ni consulter l'état, ni voir les paires. Une demande n'est pas
+    #: un accès.
+    EN_ATTENTE = "en_attente"
 
     @property
     def peut_installer_jeton(self) -> bool:
         return self is Role.ADMIN
+
+    @property
+    def peut_consulter(self) -> bool:
+        """Une demande en attente ne donne aucun droit de lecture.
+
+        Approuver doit rester un geste qui change quelque chose ; sinon
+        l'approbation devient une formalité qu'on expédie sans regarder.
+        """
+        return self in (Role.ADMIN, Role.OBSERVATEUR)
 
     def __str__(self) -> str:
         return self.value
@@ -143,7 +167,32 @@ class Annuaire:
             return Role.OBSERVATEUR
         return None
 
+    def plafond_admins(self) -> int:
+        brut = os.environ.get(ENV_MAX_ADMINS, "").strip()
+        try:
+            return max(1, int(brut)) if brut else MAX_ADMINS
+        except ValueError:
+            return MAX_ADMINS
+
+    def compter_admins(self) -> int:
+        return sum(1 for e in self._inscrits.values()
+                   if e.get("role") == Role.ADMIN.value)
+
     def inscrire(self, chat_id: str, role: Role, nom: str = "") -> None:
+        """Lève `TropDAdmins` si le plafond est atteint.
+
+        Le contrôle est fait ICI plutôt que chez l'appelant : c'est le seul
+        endroit qui voit l'annuaire entier, et un plafond qu'on peut contourner
+        en appelant une autre fonction n'est pas un plafond.
+        """
+        if role is Role.ADMIN and self.role(chat_id) is not Role.ADMIN:
+            plafond = self.plafond_admins()
+            if self.compter_admins() >= plafond:
+                raise TropDAdmins(
+                    f"{plafond} administrateurs au maximum, et le compte est "
+                    f"atteint. Un administrateur doit en révoquer un avant "
+                    f"d'en ajouter un autre."
+                )
         with self._verrou:
             self._inscrits[str(chat_id)] = {
                 "role": role.value,
@@ -177,14 +226,41 @@ class Annuaire:
         return self.role(chat_id) is not None
 
     def destinataires(self) -> list[str]:
-        """Qui reçoit les alertes : tout le monde.
+        """Qui reçoit les alertes : tous ceux qui peuvent consulter.
 
         Une panne de collecte n'est pas une information confidentielle pour qui
         a déjà le droit de consulter l'état. Restreindre les alertes aux
         administrateurs ferait manquer l'essentiel à ceux qui surveillent.
+
+        Les demandes en attente en sont exclues : recevoir les alertes d'une
+        installation à laquelle on n'a pas encore accès serait déjà y avoir
+        accès.
         """
         with self._verrou:
-            return list(self._inscrits)
+            return [chat for chat, e in self._inscrits.items()
+                    if e.get("role") != Role.EN_ATTENTE.value]
+
+    def administrateurs(self) -> list[str]:
+        with self._verrou:
+            return [chat for chat, e in self._inscrits.items()
+                    if e.get("role") == Role.ADMIN.value]
+
+    def en_attente(self) -> list[tuple[str, str]]:
+        with self._verrou:
+            return [(chat, e.get("nom", "")) for chat, e in self._inscrits.items()
+                    if e.get("role") == Role.EN_ATTENTE.value]
+
+    def demander_acces(self, chat_id: str, nom: str = "") -> bool:
+        """Dépose une demande. `False` si l'identifiant est déjà connu.
+
+        Une demande ne peut jamais écraser un rôle existant : sinon un
+        administrateur qui taperait `/start` par distraction se rétrograderait
+        lui-même.
+        """
+        if self.role(chat_id) is not None:
+            return False
+        self.inscrire(chat_id, Role.EN_ATTENTE, nom)
+        return True
 
     def lister(self) -> list[tuple[str, Role, str]]:
         with self._verrou:

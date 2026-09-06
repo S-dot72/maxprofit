@@ -61,6 +61,8 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
+from maxprofit.hosting.operateurs import Role, TropDAdmins
+
 import aiohttp
 
 log = logging.getLogger("hosting.telegram")
@@ -155,6 +157,8 @@ COMMANDES = [
     ("ssid", "Installer un nouveau jeton de session (admin)"),
     ("operateurs", "Qui a accès au bot (admin)"),
     ("revoquer", "Retirer un accès (admin)"),
+    ("approuver", "Approuver une demande d'accès (admin)"),
+    ("refuser", "Refuser une demande d'accès (admin)"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -169,7 +173,9 @@ AIDE = (
     "<b>Administration</b>\n"
     "/ssid <i>jeton</i> — installer un nouveau jeton de session\n"
     "/operateurs — qui a accès\n"
-    "/revoquer <i>id</i> — retirer un accès"
+    "/revoquer <i>id</i> — retirer un accès\n"
+    "/approuver <i>id</i> — approuver une demande\n"
+    "/refuser <i>id</i> — refuser une demande"
 )
 
 RESERVE_ADMIN = (
@@ -182,7 +188,19 @@ INSCRIPTION = (
     "🔒 <b>Accès réservé</b>\n\n"
     "Ce bot surveille une installation privée.\n\n"
     "Si vous avez un code d'accès :\n"
-    "<code>/start votre-code</code>"
+    "<code>/start votre-code</code>\n\n"
+    "Sinon, envoyez <code>/start</code> : un administrateur "
+    "recevra votre demande."
+)
+
+DEMANDE_DEPOSEE = (
+    "📨 <b>Demande envoyée</b>\n\n"
+    "Un administrateur doit approuver votre accès. Vous serez prévenu ici."
+)
+
+ATTENTE_APPROBATION = (
+    "⏳ <b>Demande en attente</b>\n\n"
+    "Votre accès n'a pas encore été approuvé."
 )
 
 INSTRUCTIONS_JETON = (
@@ -267,8 +285,20 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             except asyncio.CancelledError:
                 raise
             except Exception as erreur:                  # noqa: BLE001
-                log.warning("Telegram injoignable (%s). Nouvel essai dans %ds",
-                            erreur, delai)
+                if "Conflict" in str(erreur):
+                    # Deux processus interrogent le même bot. Telegram n'en
+                    # sert qu'un, et ils se coupent la parole : les commandes
+                    # arrivent au hasard chez l'un ou l'autre. Fréquent pendant
+                    # un déploiement, quand l'ancienne instance survit quelques
+                    # secondes ; persistant, cela signifie deux services actifs.
+                    log.warning(
+                        "Un autre processus interroge le même bot Telegram. "
+                        "Normal pendant un déploiement ; si cela dure, deux "
+                        "instances tournent et se disputent les commandes.")
+                else:
+                    log.warning(
+                        "Telegram injoignable (%s). Nouvel essai dans %ds",
+                        erreur, delai)
                 await asyncio.sleep(delai)
                 delai = min(delai * 2, BACKOFF_MAX_SEC)
 
@@ -289,6 +319,11 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             return
 
         role = self.annuaire.role(chat)
+        if role is not None and not role.peut_consulter:
+            # Demande déposée, pas encore approuvée. Une demande n'est pas un
+            # accès : ni état, ni paires.
+            await self.client.envoyer(chat, ATTENTE_APPROBATION)
+            return
         if role is None:
             # Ni état, ni paires, ni indice sur ce que fait le bot : un inconnu
             # n'apprend rien d'autre que la façon de demander l'accès.
@@ -303,6 +338,10 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             await self._commande_operateurs(chat, role)
         elif texte.startswith("/revoquer"):
             await self._commande_revoquer(chat, texte, role)
+        elif texte.startswith("/approuver"):
+            await self._commande_approuver(chat, texte, role)
+        elif texte.startswith("/refuser"):
+            await self._commande_refuser(chat, texte, role)
         elif texte.startswith("/etat") or texte.startswith("📊"):
             await self.client.envoyer(chat, await self._etat(), CLAVIER)
         elif texte.startswith("/paires") or texte.startswith("📈"):
@@ -328,6 +367,16 @@ traîne dans un historique de conversation finit par être transféré.
         deja = self.annuaire.role(chat)
 
         if not code:
+            if deja is not None and not deja.peut_consulter:
+                await self.client.envoyer(chat, ATTENTE_APPROBATION)
+                return
+            if deja is None:
+                # Sans code : demande d'accès, soumise à approbation.
+                self.annuaire.demander_acces(chat, nom)
+                log.info("Demande d'accès de %s (%s).", chat, nom)
+                await self.client.envoyer(chat, DEMANDE_DEPOSEE)
+                await self._prevenir_admins(chat, nom)
+                return
             if deja is not None:
                 await self.client.envoyer(
                     chat, f"Vous êtes inscrit comme <b>{deja}</b>.\n\n{AIDE}",
@@ -345,7 +394,11 @@ traîne dans un historique de conversation finit par être transféré.
             await self.client.envoyer(chat, "❌ Code invalide.")
             return
 
-        self.annuaire.inscrire(chat, role, nom)
+        try:
+            self.annuaire.inscrire(chat, role, nom)
+        except TropDAdmins as erreur:
+            await self.client.envoyer(chat, f"❌ {erreur}")
+            return
         await self.client.envoyer(
             chat,
             f"✅ Inscrit comme <b>{role}</b>.\n\n"
@@ -353,7 +406,78 @@ traîne dans un historique de conversation finit par être transféré.
             CLAVIER,
         )
 
+    async def _prevenir_admins(self, demandeur: str, nom: str) -> None:
+        """Prévient les administrateurs qu'une demande attend.
+
+        Sans cela, une demande resterait invisible jusqu'à ce qu'un
+        administrateur pense à taper `/operateurs` — c'est-à-dire, en pratique,
+        jamais.
+        """
+        admins = self.annuaire.administrateurs()
+        if not admins:
+            log.warning("Demande de %s sans administrateur pour l'approuver.",
+                        demandeur)
+            return
+        texte = (
+            f"👤 <b>Demande d'accès</b>\n\n"
+            f"<code>{demandeur}</code>{(' — ' + nom) if nom else ''}\n\n"
+            f"Approuver : <code>/approuver {demandeur}</code>\n"
+            f"Refuser : <code>/refuser {demandeur}</code>"
+        )
+        for admin in admins:
+            await self._alerter_un(admin, texte)
+
     # --- administration -----------------------------------------------------
+
+    async def _commande_approuver(self, chat: str, texte: str, role) -> None:
+        if not role.peut_installer_jeton:
+            await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            return
+        cible = texte[len("/approuver"):].strip()
+        if not cible:
+            attente = self.annuaire.en_attente()
+            if not attente:
+                await self.client.envoyer(chat, "Aucune demande en attente.",
+                                          CLAVIER)
+                return
+            lignes = ["<b>Demandes en attente</b>", ""]
+            lignes += [f"• <code>{c}</code>{(' — ' + n) if n else ''}"
+                       for c, n in attente]
+            lignes.append("")
+            lignes.append("<code>/approuver identifiant</code>")
+            await self.client.envoyer(chat, "\n".join(lignes), CLAVIER)
+            return
+
+        if self.annuaire.role(cible) is None:
+            await self.client.envoyer(
+                chat, f"<code>{cible}</code> n'a pas déposé de demande.", CLAVIER)
+            return
+
+        self.annuaire.inscrire(cible, Role.OBSERVATEUR)
+        await self.client.envoyer(
+            chat, f"✅ <code>{cible}</code> est désormais observateur.", CLAVIER)
+        # Prévenir l'intéressé : sinon il attend sans savoir.
+        await self._alerter_un(
+            cible,
+            "✅ <b>Accès approuvé</b>\n\nVous pouvez consulter l'état de la "
+            "collecte et recevrez les alertes.\n\n" + AIDE,
+        )
+
+    async def _commande_refuser(self, chat: str, texte: str, role) -> None:
+        if not role.peut_installer_jeton:
+            await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            return
+        cible = texte[len("/refuser"):].strip()
+        if not cible:
+            await self.client.envoyer(
+                chat, "Usage : <code>/refuser identifiant</code>", CLAVIER)
+            return
+        if self.annuaire.revoquer(cible):
+            await self.client.envoyer(chat, f"✅ Demande de <code>{cible}</code> "
+                                            f"refusée.", CLAVIER)
+        else:
+            await self.client.envoyer(chat, f"<code>{cible}</code> n'est pas "
+                                            f"inscrit.", CLAVIER)
 
     async def _commande_operateurs(self, chat: str, role) -> None:
         if not role.peut_installer_jeton:

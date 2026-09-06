@@ -142,3 +142,104 @@ def test_lister_donne_role_et_nom(annuaire):
     annuaire.inscrire("111", Role.ADMIN, "denis")
     (identifiant, role, nom), = annuaire.lister()
     assert (identifiant, role, nom) == ("111", Role.ADMIN, "denis")
+
+
+# --------------------------------------------------------------------------- #
+# Plafond d'administrateurs
+# --------------------------------------------------------------------------- #
+
+def test_trois_administrateurs_au_maximum(annuaire):
+    """Un code d'accès finit toujours par circuler. Plafonner limite les dégâts
+    et rend visible le moment où quelqu'un de plus s'inscrit."""
+    from maxprofit.hosting.operateurs import MAX_ADMINS, TropDAdmins
+
+    for i in range(MAX_ADMINS):
+        annuaire.inscrire(f"admin{i}", Role.ADMIN)
+
+    with pytest.raises(TropDAdmins, match="maximum"):
+        annuaire.inscrire("admin-de-trop", Role.ADMIN)
+    assert annuaire.role("admin-de-trop") is None
+
+
+def test_le_plafond_ne_bloque_pas_les_observateurs(annuaire):
+    from maxprofit.hosting.operateurs import MAX_ADMINS
+
+    for i in range(MAX_ADMINS):
+        annuaire.inscrire(f"admin{i}", Role.ADMIN)
+    annuaire.inscrire("lecteur", Role.OBSERVATEUR)
+    assert annuaire.role("lecteur") is Role.OBSERVATEUR
+
+
+def test_reinscrire_un_admin_existant_ne_compte_pas_double(annuaire):
+    from maxprofit.hosting.operateurs import MAX_ADMINS
+
+    for i in range(MAX_ADMINS):
+        annuaire.inscrire(f"admin{i}", Role.ADMIN)
+    annuaire.inscrire("admin0", Role.ADMIN, "nouveau nom")   # ne doit pas lever
+    assert annuaire.compter_admins() == MAX_ADMINS
+
+
+def test_une_place_se_libere_par_revocation(annuaire):
+    from maxprofit.hosting.operateurs import MAX_ADMINS, TropDAdmins
+
+    for i in range(MAX_ADMINS):
+        annuaire.inscrire(f"admin{i}", Role.ADMIN)
+    with pytest.raises(TropDAdmins):
+        annuaire.inscrire("suivant", Role.ADMIN)
+
+    annuaire.revoquer("admin0")
+    annuaire.inscrire("suivant", Role.ADMIN)
+    assert annuaire.role("suivant") is Role.ADMIN
+
+
+def test_le_plafond_est_configurable(annuaire, monkeypatch):
+    from maxprofit.hosting.operateurs import ENV_MAX_ADMINS, TropDAdmins
+
+    monkeypatch.setenv(ENV_MAX_ADMINS, "1")
+    annuaire.inscrire("seul", Role.ADMIN)
+    with pytest.raises(TropDAdmins):
+        annuaire.inscrire("second", Role.ADMIN)
+
+
+# --------------------------------------------------------------------------- #
+# Demandes d'accès
+# --------------------------------------------------------------------------- #
+
+def test_une_demande_ne_donne_aucun_droit(annuaire):
+    """Approuver doit rester un geste qui change quelque chose ; sinon
+    l'approbation devient une formalité qu'on expédie sans regarder."""
+    annuaire.demander_acces("inconnu", "curieux")
+    role = annuaire.role("inconnu")
+    assert role is Role.EN_ATTENTE
+    assert role.peut_consulter is False
+    assert role.peut_installer_jeton is False
+
+
+def test_une_demande_ne_recoit_pas_les_alertes(annuaire):
+    """Recevoir les alertes d'une installation à laquelle on n'a pas accès
+    serait déjà y avoir accès."""
+    annuaire.inscrire("111", Role.OBSERVATEUR)
+    annuaire.demander_acces("222")
+    assert annuaire.destinataires() == ["111"]
+
+
+def test_une_demande_n_ecrase_jamais_un_role(annuaire):
+    """Un administrateur qui taperait /start par distraction se rétrograderait
+    lui-même."""
+    annuaire.inscrire("chef", Role.ADMIN)
+    assert annuaire.demander_acces("chef") is False
+    assert annuaire.role("chef") is Role.ADMIN
+
+
+def test_l_approbation_donne_le_role_observateur(annuaire):
+    annuaire.demander_acces("nouveau", "alice")
+    annuaire.inscrire("nouveau", Role.OBSERVATEUR)
+    assert annuaire.role("nouveau") is Role.OBSERVATEUR
+    assert annuaire.en_attente() == []
+
+
+def test_les_demandes_en_attente_sont_listables(annuaire):
+    annuaire.inscrire("111", Role.ADMIN)
+    annuaire.demander_acces("222", "bob")
+    assert annuaire.en_attente() == [("222", "bob")]
+    assert annuaire.administrateurs() == ["111"]

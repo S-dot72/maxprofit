@@ -231,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="Payout minimal. Obligatoire, via --min-payout ou "
                          "$MIN_PAYOUT_PCT : aucune valeur par défaut sur ce qui "
                          "touche à l'argent (spec §5).")
+    ap.add_argument("--max-paires", type=int,
+                    default=int(os.environ.get("MAX_PAIRES", "8") or 8),
+                    help="Nombre maximal de paires souscrites (défaut : 8, ou "
+                         "$MAX_PAIRES).")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")

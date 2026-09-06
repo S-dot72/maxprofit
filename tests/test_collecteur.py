@@ -80,8 +80,9 @@ class SourceScriptee(MarketDataSource):
 
 
 def _config(tmp_path: Path, **kw) -> Config:
-    return Config(db=tmp_path / "market.db", min_payout=92,
-                  flush_sec=0.0, heartbeat_sec=0, max_backoff_sec=1, **kw)
+    defauts = dict(db=tmp_path / "market.db", min_payout=92,
+                   flush_sec=0.0, heartbeat_sec=0, max_backoff_sec=1)
+    return Config(**{**defauts, **kw})
 
 
 def _ticks(n: int) -> list[Tick]:
@@ -259,3 +260,50 @@ def test_les_paires_sont_agregees_independamment():
     (close,) = agg.drain_closed()
     assert close.pair == "EURUSD_otc"
     assert {b.pair for b in agg.drain_all()} == {"EURUSD_otc", "GBPUSD_otc"}
+
+
+def test_l_abonnement_est_limite_mais_pas_l_historique_des_payouts(tmp_path):
+    """Régression : un abonnement à 32 paires d'un coup faisait fermer le socket
+    par le broker au bout de 20 secondes, sans qu'un seul tick n'arrive. Deux
+    heures de collecte pour zéro ligne.
+
+    La limite ne porte QUE sur l'abonnement. Les payouts de toutes les paires
+    restent enregistrés, sans quoi le backtest ne pourrait plus rejouer
+    l'éligibilité telle qu'elle était (§2.3).
+    """
+    class SourceLarge(SourceScriptee):
+        def list_pairs(self):
+            return [PairInfo(f"P{i:02d}_otc", True, 90 + (i % 6))
+                    for i in range(30)]
+
+    source = SourceLarge(_ticks(5))
+    collecteur = Collector(source, _config(tmp_path, max_paires=4))
+    source.collecteur = collecteur
+    collecteur.run()
+
+    assert len(collecteur.subscribed) == 4, "la limite n'a pas été appliquée"
+
+    conn = open_read_only(tmp_path / "market.db")
+    try:
+        enregistrees = conn.execute(
+            "SELECT COUNT(DISTINCT pair) FROM payouts").fetchone()[0]
+    finally:
+        conn.close()
+    assert enregistrees == 30, "l'historique des payouts a été amputé"
+
+
+def test_les_meilleurs_payouts_sont_prioritaires(tmp_path):
+    """S'il faut se limiter, autant que ce soit sur les paires qui rapportent
+    le plus."""
+    class SourceVariee(SourceScriptee):
+        def list_pairs(self):
+            return [PairInfo("FAIBLE_otc", True, 90),
+                    PairInfo("MOYEN_otc", True, 93),
+                    PairInfo("FORT_otc", True, 96)]
+
+    source = SourceVariee(_ticks(5))
+    collecteur = Collector(source, _config(tmp_path, min_payout=90, max_paires=2))
+    source.collecteur = collecteur
+    collecteur.run()
+
+    assert set(collecteur.subscribed) == {"FORT_otc", "MOYEN_otc"}
