@@ -133,3 +133,47 @@ def test_ligne_malformee_leve(tmp_path):
     fichier.write_text("MIN_PAYOUT_PCT 92\n", encoding="utf-8")
     with pytest.raises(ConfigurationError, match="sans '='"):
         config.charger_env_local(fichier)
+
+
+# --------------------------------------------------------------------------- #
+# Le conseil dépend de l'endroit
+# --------------------------------------------------------------------------- #
+
+def test_sur_un_poste_le_conseil_est_de_creer_le_repertoire(monkeypatch):
+    for cle in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT",
+                "FLY_APP_NAME", "KUBERNETES_SERVICE_HOST"):
+        monkeypatch.delenv(cle, raising=False)
+    monkeypatch.setattr(config.Path, "exists", lambda self: False)
+
+    message = config._message_repertoire_absent(config.Path("/home/x/trading_data"))
+    assert "mkdir" in message
+    assert "CONTENEUR" not in message
+
+
+def test_dans_un_conteneur_le_conseil_est_de_monter_un_disque(monkeypatch):
+    """Régression : le message disait « créez-le vous-même », ce qui n'a aucun
+    sens sur une plateforme sans shell — et surtout, ce répertoire n'est PAS à
+    créer. C'est le point de montage d'un disque persistant : son absence
+    signifie que le disque n'est pas attaché. Le créer ferait écrire la collecte
+    sur le système de fichiers du conteneur, effacé au déploiement suivant."""
+    monkeypatch.setenv("RENDER", "true")
+    message = config._message_repertoire_absent(config.Path("/data"))
+
+    assert "disque persistant" in message
+    assert "n'est pas attaché" in message
+    assert "Add Disk" in message
+    assert "offre gratuite" in message
+    assert "mkdir" not in message, "conseil inapplicable sans shell"
+
+
+def test_le_message_dit_pourquoi_creer_le_repertoire_ne_reglerait_rien(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    message = config._message_repertoire_absent(config.Path("/data"))
+    assert "disparaîtrait au déploiement suivant" in message
+
+
+@pytest.mark.parametrize("marqueur", ["RENDER", "RAILWAY_ENVIRONMENT",
+                                      "FLY_APP_NAME", "KUBERNETES_SERVICE_HOST"])
+def test_les_plateformes_courantes_sont_reconnues(monkeypatch, marqueur):
+    monkeypatch.setenv(marqueur, "peu importe")
+    assert config._dans_un_conteneur()

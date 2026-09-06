@@ -105,13 +105,54 @@ def db_path() -> Path:
         )
     parent = path.parent
     if not parent.is_dir():
-        raise ConfigurationError(
-            f"Le répertoire {parent} n'existe pas. Il n'est volontairement pas "
-            f"créé automatiquement : une faute de frappe dans {ENV_DB_PATH} "
-            f"produirait alors une base vide au lieu d'une erreur. Créez-le "
-            f"vous-même si le chemin est correct."
-        )
+        raise ConfigurationError(_message_repertoire_absent(parent))
     return path
+
+
+def _dans_un_conteneur() -> bool:
+    """Le conseil à donner n'est pas le même selon l'endroit.
+
+    Sur un poste, un répertoire manquant se crée avec `mkdir`. Sur une
+    plateforme d'hébergement il n'y a pas de shell, et le répertoire n'est pas
+    à créer : c'est le POINT DE MONTAGE d'un disque. S'il manque, le disque
+    n'est pas attaché — et créer le répertoire ferait écrire la collecte sur le
+    système de fichiers du conteneur, effacé au déploiement suivant.
+    """
+    if Path("/.dockerenv").exists():
+        return True
+    return any(cle in os.environ for cle in
+               ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT",
+                "FLY_APP_NAME", "KUBERNETES_SERVICE_HOST"))
+
+
+def _message_repertoire_absent(parent: Path) -> str:
+    commun = (
+        f"Le répertoire {parent} n'existe pas, et il n'est volontairement pas "
+        f"créé automatiquement : une base créée à la volée dans un chemin "
+        f"inattendu part vide et se perd au redémarrage suivant, ce qui est "
+        f"précisément le problème que la spec §1.1 cherche à empêcher."
+    )
+    if not _dans_un_conteneur():
+        return f"{commun} Créez-le : mkdir -p {parent}"
+    return (
+        f"{commun}\n"
+        f"\n"
+        f"Vous êtes dans un CONTENEUR, où ce répertoire n'est pas à créer : "
+        f"c'est le point de montage d'un disque persistant, et son absence "
+        f"signifie que le disque n'est pas attaché.\n"
+        f"\n"
+        f"  Render   : tableau de bord du service > Disks > Add Disk, avec "
+        f"Mount Path = {parent}. Les disques ne sont pas disponibles sur "
+        f"l'offre gratuite. Si le service a été créé à la main, le disque "
+        f"déclaré dans render.yaml est ignoré : il faut soit l'ajouter ici, "
+        f"soit recréer le service en Blueprint.\n"
+        f"  Railway  : Volumes > New Volume, monté sur {parent}.\n"
+        f"  Fly.io   : fly volumes create, puis [mounts] dans fly.toml.\n"
+        f"\n"
+        f"Créer ce répertoire dans l'image ne réglerait rien : la collecte "
+        f"partirait sur le système de fichiers du conteneur et disparaîtrait "
+        f"au déploiement suivant."
+    )
 
 
 def backups_dir() -> Path:
