@@ -213,16 +213,15 @@ def main(argv: list[str] | None = None) -> int:
 
     resultat: dict = {}
     debut = time.monotonic()
-    # `private_mode=True` n'enregistre aucun cookie : c'est ce qui garantit une
-    # page de connexion vierge quand une session valide traîne encore.
-    fenetre = webview.create_window(
-        "Connexion Pocket Option", URL_CABINET,
-        private_mode=args.nouvelle_session,
-    )
+    fenetre = webview.create_window("Connexion Pocket Option", URL_CABINET)
 
     # `webview.start` est BLOQUANT : il tient la boucle graphique jusqu'à la
     # fermeture de la fenêtre. Toute la surveillance se fait donc dans le
     # callback, que pywebview exécute dans un thread séparé.
+    # `private_mode` appartient à `start()`, pas à `create_window()`, et son
+    # défaut est True — c'est-à-dire AUCUN cookie conservé. Passer False est
+    # donc ce qui permet de retrouver une session d'une exécution précédente ;
+    # True force une page de connexion vierge.
     webview.start(
         lambda w: _surveiller(w, resultat, args.delai, not args.reel),
         fenetre, private_mode=args.nouvelle_session,
