@@ -382,3 +382,53 @@ def test_compte_reel_avertit(caplog):
     with caplog.at_level("WARNING"):
         PocketOptionSource(demo=False)
     assert any("compte démo" in m for m in caplog.messages)
+
+
+# --------------------------------------------------------------------------- #
+# Compatibilité Python 3.12+
+# --------------------------------------------------------------------------- #
+
+def test_une_boucle_asyncio_est_installee_avant_la_construction(source):
+    """Régression.
+
+    `PocketOptionAPI.__init__` et `WebsocketClient.__init__` appellent
+    `asyncio.get_event_loop()`. Jusqu'à Python 3.10 cet appel créait une boucle
+    quand le thread n'en avait pas ; depuis 3.12 il lève. La bibliothèque a été
+    écrite avant ce changement, et sans ce correctif elle est inutilisable sur
+    un Python récent — l'erreur survient à la construction, avant même la
+    moindre tentative de connexion.
+    """
+    import asyncio
+
+    assert source._boucle is not None
+    assert not source._boucle.is_closed()
+    # La vraie exigence, formulée comme la bibliothèque la formule : cet appel
+    # ne doit pas lever. C'est exactement la ligne qui échouait auparavant.
+    assert asyncio.get_event_loop() is source._boucle
+
+
+def test_la_boucle_est_fermee_a_la_fermeture(source):
+    """Sans cela, chaque reconnexion laisserait un descripteur ouvert — et il y
+    en a une par coupure réseau sur quatorze jours de collecte."""
+    boucle = source._boucle
+    source.close()
+    assert boucle.is_closed()
+    assert source._boucle is None
+
+
+def test_appel_depuis_une_boucle_en_cours_refuse(broker):
+    """Remplacer une boucle en cours casserait le serveur HTTP de
+    `hosting.service`. Mieux vaut refuser que contourner."""
+    import asyncio
+
+    async def depuis_une_coroutine():
+        PocketOptionSource(demo=True).connect()
+
+    with pytest.raises(SourceIndisponible, match="propre thread"):
+        asyncio.run(depuis_une_coroutine())
+
+
+def test_la_boucle_est_reutilisee_entre_deux_connexions(source):
+    premiere = source._boucle
+    source._installer_boucle_asyncio()
+    assert source._boucle is premiere, "une boucle de plus à chaque reconnexion"

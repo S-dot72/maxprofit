@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""
+r"""
 Diagnostic de la source Pocket Option — à lancer UNE fois, avant de collecter.
 
     .venv\Scripts\python.exe outils\diagnostic_pocketoption.py --duree 90

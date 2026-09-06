@@ -57,6 +57,7 @@ diagnostic_pocketoption.py` y répond en une minute de connexion :
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -118,6 +119,7 @@ class PocketOptionSource:
         self._souscrites: List[str] = []
         self._vus: dict[str, int] = {}
         self._unite: str | None = None   # "sec" ou "ms", détectée au 1er tick
+        self._boucle: asyncio.AbstractEventLoop | None = None
 
     # --- connexion ----------------------------------------------------------
 
@@ -161,6 +163,7 @@ class PocketOptionSource:
                 )
             log.info("Aucun SSID : ouverture d'une fenêtre de connexion manuelle.")
 
+        self._installer_boucle_asyncio()
         self._client = PocketOption(demo=self.demo, ssid=ssid)
         self._client.connect()
 
@@ -182,6 +185,40 @@ class PocketOptionSource:
             f"broker injoignable."
         )
 
+    def _installer_boucle_asyncio(self) -> None:
+        """Compatibilité Python 3.12+ : installer une boucle avant la construction.
+
+        `PocketOptionAPI.__init__` et `WebsocketClient.__init__` appellent
+        `asyncio.get_event_loop()`. Jusqu'à Python 3.10, cet appel CRÉAIT une
+        boucle quand le thread n'en avait pas. Depuis, il ne le fait plus, et
+        depuis 3.12 il lève `RuntimeError: There is no current event loop`. La
+        bibliothèque a été écrite avant ce changement.
+
+        On installe donc la boucle nous-mêmes, dans le thread qui va construire
+        le client. Le thread WebSocket que la bibliothèque démarre ensuite crée
+        correctement la sienne (`asyncio.new_event_loop()` dans api.py), donc il
+        n'y a rien à faire de ce côté.
+
+        Le cas d'une boucle DÉJÀ EN COURS dans ce thread est refusé plutôt que
+        contourné : cela signifierait qu'on appelle ce `connect()` bloquant
+        depuis une coroutine, et remplacer la boucle en place casserait le
+        serveur HTTP de `maxprofit.hosting.service`.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass                      # cas normal : aucun événement en cours
+        else:
+            raise SourceIndisponible(
+                "connect() a été appelé depuis un thread où une boucle asyncio "
+                "tourne déjà. Le collecteur doit tourner dans son propre thread "
+                "— c'est ce que fait maxprofit.hosting.service."
+            )
+
+        if self._boucle is None or self._boucle.is_closed():
+            self._boucle = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._boucle)
+
     def close(self) -> None:
         if self._client is not None:
             try:
@@ -189,6 +226,12 @@ class PocketOptionSource:
             except Exception as erreur:      # noqa: BLE001 - fermeture au mieux
                 log.debug("Fermeture imparfaite : %s", erreur)
             self._client = None
+        if self._boucle is not None and not self._boucle.is_closed():
+            # La boucle que NOUS avons installée. Ne pas la fermer laisserait un
+            # descripteur ouvert à chaque reconnexion du collecteur, et il y en a
+            # une par coupure réseau sur quatorze jours.
+            self._boucle.close()
+            self._boucle = None
 
     # --- paires -------------------------------------------------------------
 

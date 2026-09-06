@@ -125,6 +125,12 @@ Le diagnostic affiche aussi le SSID à injecter par `POCKET_OPTION_SSID` en
 hébergement : la bibliothèque sait l'obtenir en ouvrant une fenêtre de
 connexion, ce qui n'a aucun sens dans un conteneur.
 
+La bibliothèque a été écrite avant Python 3.12 : elle appelle
+`asyncio.get_event_loop()` en comptant sur l'ancien comportement, qui créait
+une boucle quand le thread n'en avait pas. Depuis 3.12 cet appel lève, et la
+bibliothèque est inutilisable telle quelle sur un Python récent. L'adaptateur
+installe la boucle lui-même avant de construire le client.
+
 L'essentiel de l'adaptateur consiste à **retraduire le silence en exceptions**.
 La bibliothèque avale toutes ses erreurs (`except: return None`) ; un collecteur
 bâti dessus tel quel tournerait des jours sans rien enregistrer et sans une
