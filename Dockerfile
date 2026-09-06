@@ -9,9 +9,19 @@ WORKDIR /app
 
 # Les dépendances d'abord : cette couche est mise en cache tant que
 # requirements.txt ne change pas, ce qui rend les redéploiements de code rapides.
-COPY requirements.txt .
+COPY requirements.txt requirements-broker.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r requirements-broker.txt
+
+# `pocketoptionapi.stable_api` fait `import webview` au niveau module, même
+# quand le SSID vient de l'environnement et qu'aucune fenêtre ne sera ouverte.
+# Cet import n'initialise aucun backend graphique — il ne charge que du Python
+# pur — mais si un jour il échoue sur cette image, c'est ici qu'il faut agir :
+# soit ajouter les paquets système correspondants, soit installer la
+# bibliothèque avec --no-deps et lister ses dépendances à la main. On vérifie
+# donc à la CONSTRUCTION plutôt qu'au premier démarrage en production.
+RUN python -c "import webview, pocketoptionapi.stable_api; print('adaptateur broker importable')"
 
 COPY maxprofit/ ./maxprofit/
 COPY reset_db.py pyproject.toml ./

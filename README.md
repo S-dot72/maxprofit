@@ -159,6 +159,43 @@ La bibliothèque avale toutes ses erreurs (`except: return None`) ; un collecteu
 bâti dessus tel quel tournerait des jours sans rien enregistrer et sans une
 seule erreur dans les logs.
 
+## Déploiement
+
+Avant tout, en local, avec la configuration de production :
+
+    .venv\Scripts\python outilserifier_deploiement.py
+
+Il contrôle ce qu'aucun test ne peut couvrir, parce que cela dépend de comptes
+réels : que le jeton Telegram est valide, et surtout que `TELEGRAM_CHAT_ID`
+désigne bien VOTRE conversation — il vous envoie un message pour le prouver.
+L'erreur la plus fréquente est d'y mettre l'identifiant du bot ; un bot ne
+s'envoie pas de message à lui-même, et aucune alerte ne parviendrait jamais.
+
+Déployer d'abord et déboguer ensuite dans le visualiseur de journaux d'un
+hébergeur coûte plusieurs minutes par aller-retour, souvent avec une erreur
+tronquée. Ce contrôle prend quinze secondes.
+
+### Renouvellement du jeton, sans copier-coller
+
+Le SSID expire. Quand cela arrive :
+
+1. le service **arrête** la collecte, garde le processus en vie et vous alerte
+   sur Telegram — la sonde `/health` passe au rouge, car un processus vivant
+   qui n'enregistre rien est exactement ce qu'elle dénonce ;
+2. chez vous, une commande capture ET envoie le jeton :
+
+       .venv\Scripts\python outils\capturer_ssid.py --envoyer https://votre-service
+
+3. le service l'installe sur le volume persistant et reprend seul.
+
+La capture exige un navigateur — les cookies naissent sur la machine qui se
+connecte, jamais sur le serveur. Aucune fenêtre « ouverte à travers Telegram »
+n'y changerait rien. Mais rien n'oblige un humain à faire le transport.
+
+`POST /session` répond 404 tant qu'`ADMIN_SECRET` n'est pas défini : un point
+d'entrée acceptant un jeton de session sans authentification permettrait à
+quiconque connaît l'URL de détourner la collecte vers un autre compte.
+
 ## Hébergement
 
 `Dockerfile`, `Procfile` et `render.yaml` déploient le COLLECTEUR — c'est
