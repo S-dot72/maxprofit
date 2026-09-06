@@ -6,7 +6,12 @@ requires-python = ">=3.11"
 # Le noyau, la persistance et le collecteur n'utilisent que la
 # bibliothèque standard. aiohttp ne sert qu'à la sonde HTTP exigée par
 # l'hébergeur (voir requirements.txt pour le détail du raisonnement).
-dependencies = ["aiohttp>=3.10,<4"]
+dependencies = [
+    "aiohttp>=3.10,<4",
+    # Base IANA des fuseaux. Absente de Windows et des images slim :
+    # sans elle, zoneinfo ne connaît pas America/Port-au-Prince.
+    "tzdata>=2024.1",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

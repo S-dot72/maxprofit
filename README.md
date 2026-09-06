@@ -11,7 +11,7 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
 | 1 | Persistance + migrations | Le test de survie au déploiement passe | **fait** |
 | 2 | Collecteur | 14 jours de données, < 5 % de bougies écartées | **prêt à héberger** |
 | 3 | Indicateurs sans repeint | ZigZag et fractales à latence de confirmation | à faire |
-| 4 | Moteur de backtest | Les 5 tests-oracles passent | à faire |
+| 4 | Moteur de backtest | Les 5 tests-oracles passent | **fait** |
 | 5 | Stratégie + journalisation | 400+ évaluations avec features et contrefactuels | à faire |
 | 6 | Analyse d'attribution | Rapport produit ; décision go/no-go honnête | à faire |
 | 7 | Modèle + walk-forward | Avantage hors échantillon sur 3 fenêtres | à faire |
@@ -38,6 +38,9 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
         fractals.py     latence constante de 2 bougies
         oscillators.py  MA, Bollinger %B, stochastique, ATR à fenêtre finie
         geometry.py     corps et mèches
+      backtest/     moteur : exécution réaliste, qualité, payout d'époque
+        execution.py    latence, prix d'entrée/règlement, égalités, irrésolus
+        engine.py       boucle, garde-fous §2.4, rapport
       hosting/      processus hébergé : collecteur + sonde HTTP
       strategies/   le SEUL endroit où une Strategy peut être définie
       collect/      enregistre ; n'analyse ni ne décide
@@ -61,6 +64,15 @@ Processus hébergé (collecteur + sonde HTTP) :
     export TRADING_DB_PATH=/chemin/absolu/trading_data/market.db
     export MIN_PAYOUT_PCT=92
     .venv/Scripts/python -m maxprofit.hosting.service --source sim
+
+## Fuseau horaire
+
+Tout ce qui est stocké est en UTC, sans exception (§5). L'heure locale est
+dérivée à l'analyse, via `TIMEZONE_AFFICHAGE` (défaut :
+`America/Port-au-Prince`). Haïti applique l'heure d'été — UTC−5 en hiver,
+UTC−4 de mars à novembre — donc un décalage fixe serait faux la moitié de
+l'année et décalerait d'une heure la segmentation horaire du §3.2. Un nom de
+fuseau IANA est exigé ; « UTC-5 » est refusé.
 
 ## Hébergement
 
@@ -107,6 +119,12 @@ couvre aussi le rollback (code plus vieux que la base), la migration qui
 
 `tests/test_hosting.py` vérifie que la sonde ne ment pas : une collecte
 arrêtée doit produire un 503, jamais un `status: ok`.
+
+`tests/test_oracles.py` porte les cinq tests-oracles du §2.7, critère de
+sortie de l'étape 4. `tests/test_oracles_detectent.py` casse le moteur de
+trois façons et montre quel oracle attrape quoi — deux des trois fautes
+échappent à l'oracle des entrées aléatoires, ce qui est la meilleure raison
+d'en avoir cinq.
 
 `tests/test_causalite.py` vérifie qu'aucun indicateur ne repeint : un pivot
 confirmé ne change plus jamais, aucun pivot n'est visible avant sa

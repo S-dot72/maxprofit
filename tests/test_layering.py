@@ -121,6 +121,7 @@ def test_le_noyau_ne_depend_que_de_la_bibliotheque_standard():
     stdlib_ok = {
         "__future__", "abc", "ast", "collections", "dataclasses", "datetime",
         "enum", "json", "math", "os", "pathlib", "re", "types", "typing",
+        "zoneinfo",
         "maxprofit",
     }
     for path, sub, tree in modules():

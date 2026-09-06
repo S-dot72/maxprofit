@@ -18,3 +18,9 @@
 # aiohttp : sonde HTTP exigée par l'hébergeur. Pas de version épinglée basse
 # comme 3.9.1 — cette série traîne des CVE corrigées depuis.
 aiohttp>=3.10,<4
+
+# Base IANA des fuseaux horaires : absente des images python:slim.
+# Sans elle, zoneinfo ignore America/Port-au-Prince et l'heure d'été
+# haïtienne, ce qui décalerait d'une heure la segmentation horaire (§3.2)
+# sur la moitié de l'année.
+tzdata>=2024.1

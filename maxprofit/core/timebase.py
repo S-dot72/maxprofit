@@ -125,3 +125,83 @@ def format_sec(ts_sec: int) -> str:
 
 def format_ms(ts_ms: int) -> str:
     return utc_from_ms(ts_ms).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC"
+
+
+# --------------------------------------------------------------------------- #
+# Heure locale — AFFICHAGE ET ANALYSE UNIQUEMENT
+# --------------------------------------------------------------------------- #
+#
+# Rien de ce qui est stocké, comparé ou calculé n'utilise l'heure locale. Tout
+# ce qui entre en base est en UTC, sans exception (§5). Ces fonctions servent à
+# deux choses, et à rien d'autre :
+#
+#   - lire un horodatage dans les rapports sans faire le calcul de tête ;
+#   - segmenter par heure de la journée telle qu'elle est VÉCUE (§3.2), parce
+#     que si un edge horaire existe, il est lié aux sessions de marché et aux
+#     habitudes, pas au méridien de Greenwich.
+#
+# Pourquoi un fuseau nommé et pas un décalage fixe de -5 : Haïti applique
+# l'heure d'été. Le pays est à UTC-5 (EST) de novembre à mars, et à UTC-4 (EDT)
+# de mars à novembre. Un décalage codé en dur serait donc faux la moitié de
+# l'année, et l'erreur ne se verrait pas : elle décalerait simplement d'une
+# heure la moitié des données dans une segmentation horaire, ce qui suffit à
+# faire apparaître un edge à une heure où il n'y en a pas, ou à en effacer un.
+# `zoneinfo` connaît les dates de transition et les applique par horodatage.
+
+import os
+from zoneinfo import ZoneInfo
+
+#: Fuseau d'affichage. Peut être changé par la variable d'environnement, mais
+#: n'a PAS besoin de l'être : contrairement au chemin de base ou au payout, se
+#: tromper ici ne fausse aucun résultat, cela rend seulement un rapport moins
+#: lisible. Un défaut est donc légitime (cf. §5, qui vise l'argent et les
+#: données).
+ENV_TIMEZONE = "TIMEZONE_AFFICHAGE"
+TIMEZONE_DEFAUT = "America/Port-au-Prince"
+
+
+def fuseau_affichage() -> ZoneInfo:
+    nom = os.environ.get(ENV_TIMEZONE, "").strip() or TIMEZONE_DEFAUT
+    try:
+        return ZoneInfo(nom)
+    except Exception as erreur:
+        raise TimebaseError(
+            f"Fuseau horaire inconnu : {nom!r} ({erreur}). Utilisez un nom IANA "
+            f"comme 'America/Port-au-Prince'. Un décalage fixe ('UTC-5') est "
+            f"refusé : il ignore l'heure d'été."
+        ) from None
+
+
+def local_from_sec(ts_sec: int) -> datetime:
+    return utc_from_sec(ts_sec).astimezone(fuseau_affichage())
+
+
+def local_from_ms(ts_ms: int) -> datetime:
+    return utc_from_ms(ts_ms).astimezone(fuseau_affichage())
+
+
+def heure_locale(ts_sec: int) -> int:
+    """Heure de la journée vécue localement, 0-23.
+
+    C'est cette valeur qu'il faut utiliser pour la segmentation horaire du
+    §3.2 — mais la feature stockée dans `evaluations` reste `heure_utc`, brute
+    et non ambiguë. On dérive l'heure locale au moment de l'analyse, jamais à
+    l'enregistrement : une donnée stockée dans un fuseau qui change deux fois
+    par an n'est plus interprétable une fois les règles de transition modifiées.
+    """
+    return local_from_sec(ts_sec).hour
+
+
+def decalage_local_heures(ts_sec: int) -> float:
+    """Décalage local à cet instant précis, en heures. -5 en hiver, -4 en été."""
+    offset = local_from_sec(ts_sec).utcoffset()
+    return offset.total_seconds() / 3600 if offset else 0.0
+
+
+def format_local_sec(ts_sec: int) -> str:
+    return local_from_sec(ts_sec).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def format_local_ms(ts_ms: int) -> str:
+    d = local_from_ms(ts_ms)
+    return d.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + d.strftime(" %Z")
