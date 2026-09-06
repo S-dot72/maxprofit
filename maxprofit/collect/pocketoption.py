@@ -248,6 +248,26 @@ class HorlogeIncoherente(BotError):
     """
 
 
+class BrokerInjoignable(BotError):
+    """Aucune poignée de main n'aboutit depuis ce processus.
+
+    Volontairement FATALE, et distincte d'une coupure : réessayer ne répare pas
+    une adresse bloquée, et la bibliothèque continue de composer toutes les dix
+    secondes tant que le processus vit — ce qui ne peut qu'aggraver une
+    limitation de débit.
+
+    Le symptôme est caractéristique : « timed out during opening handshake » dès
+    la PREMIÈRE tentative d'un processus neuf, sans qu'aucun thread hérité ne
+    soit en cause. Mesuré le 6 septembre 2026 : depuis un centre de données, tous
+    les essais expiraient ; depuis une connexion résidentielle, quatre minutes
+    plus tard, avec le même jeton et le même code, la connexion aboutissait en
+    3,5 secondes et les ticks arrivaient.
+
+    Un courtier qui ne souhaite pas être moissonné bloque les plages d'adresses
+    des hébergeurs. Aucune quantité de code n'y changera rien.
+    """
+
+
 class RedemarrageRequis(BotError):
     """Une reconnexion exige un processus neuf. Volontairement FATALE.
 
@@ -425,9 +445,22 @@ class PocketOptionSource:
                 return
             time.sleep(0.5)
 
-        raise SourceIndisponible(
-            f"Pas de connexion après {DELAI_CONNEXION_SEC} s. SSID expiré ou "
-            f"broker injoignable."
+        raise BrokerInjoignable(
+            f"Aucune connexion au broker après {DELAI_CONNEXION_SEC} s, dès la "
+            f"première tentative de ce processus.\n"
+            f"\n"
+            f"Si le journal montre « timed out during opening handshake » à "
+            f"chaque essai, ce n'est pas le jeton : c'est l'adresse. Les "
+            f"courtiers bloquent les plages des hébergeurs, et la même "
+            f"configuration fonctionne depuis une connexion résidentielle.\n"
+            f"\n"
+            f"Pour trancher en une minute, lancez depuis chez vous :\n"
+            f"    outils/diagnostic_pocketoption.py --duree 25\n"
+            f"Si cela marche là et pas ici, aucun changement de code n'y fera "
+            f"rien.\n"
+            f"\n"
+            f"Autres causes possibles, moins probables : SSID expiré "
+            f"(recapturez-le), ou panne du broker."
         )
 
     def _installer_boucle_asyncio(self) -> None:

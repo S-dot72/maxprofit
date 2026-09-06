@@ -94,6 +94,30 @@ UTC−4 de mars à novembre — donc un décalage fixe serait faux la moitié de
 l'année et décalerait d'une heure la segmentation horaire du §3.2. Un nom de
 fuseau IANA est exigé ; « UTC-5 » est refusé.
 
+## Le broker bloque les adresses d'hébergeurs
+
+Mesure du 6 septembre 2026, à quatre minutes d'intervalle, avec le même jeton et
+le même code :
+
+    22:22 UTC, depuis Render     « timed out during opening handshake » à chaque
+                                 essai, dès la première tentative
+    22:26 UTC, depuis le domicile connexion en 3,5 s, 183 actifs, ticks reçus
+
+La seule variable est l'adresse IP. Pocket Option bloque les plages des
+hébergeurs — ce qui n'a rien d'étonnant pour un courtier qui ne souhaite pas
+être moissonné.
+
+Aucun changement de code n'y remédiera, et le projet le dit désormais lui-même :
+`BrokerInjoignable` est levée dès la première poignée de main échouée, avec la
+marche à suivre pour trancher en une minute. Réessayer serait pire qu'inutile —
+la bibliothèque compose toutes les dix secondes tant que le processus vit, ce
+qui ne peut qu'aggraver une limitation de débit.
+
+Conséquence pratique : **la collecte doit partir d'une connexion résidentielle**
+(voir `outils/collecter.ps1`). Tout le reste — Turso, le bot Telegram, les
+alertes, le renouvellement du jeton à distance — fonctionne indifféremment
+depuis un poste ou un hébergeur.
+
 ## Source Pocket Option
 
 Il n'existe aucune API officielle. L'adaptateur s'appuie sur

@@ -38,6 +38,7 @@ from maxprofit.collect.collector import Collector, Config
 from maxprofit.collect.pocketoption import (
     ENV_FICHIER_SESSION,
     ENV_SSID,
+    BrokerInjoignable,
     RedemarrageRequis,
     SessionExpiree,
     ecrire_session,
@@ -106,6 +107,21 @@ class Superviseur:
             if erreur is None:
                 log.info("Le collecteur s'est arrêté de lui-même.")
                 return
+            if isinstance(erreur, BrokerInjoignable):
+                log.error("Broker injoignable depuis cet hébergeur : %s", erreur)
+                self.derniere_erreur = str(erreur)
+                await self._alerte(
+                    "🚫 <b>Broker injoignable depuis l'hébergeur</b>\n\n"
+                    "Aucune poignée de main n'aboutit, dès la première "
+                    "tentative. Ce n'est probablement pas le jeton : les "
+                    "courtiers bloquent les plages d'adresses des hébergeurs.\n\n"
+                    "Pour trancher, lancez le diagnostic depuis chez vous. S'il "
+                    "fonctionne là et pas ici, aucun changement de code n'y "
+                    "fera rien — il faudra collecter depuis une connexion "
+                    "résidentielle."
+                )
+                raise erreur
+
             if isinstance(erreur, RedemarrageRequis):
                 # Attendu, pas alarmant. La bibliothèque du broker ne sait pas
                 # arrêter son thread WebSocket : un processus neuf est la seule
