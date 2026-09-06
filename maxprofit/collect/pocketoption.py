@@ -123,6 +123,12 @@ TOLERANCE_HORLOGE_SEC = 90
 #: faux d'une heure du jour au lendemain, sur une collecte de quatorze jours.
 INTERVALLE_VERIF_HORLOGE_SEC = 300
 
+#: Budget laissé au client EXISTANT pour se rétablir seul après une coupure.
+#: Généreux : sa boucle interne réessaie sans qu'on ait rien à faire, et la
+#: seule alternative est de tuer le processus. Au-delà, on considère que la
+#: session ou le réseau ne reviendront pas d'eux-mêmes.
+DELAI_RETABLISSEMENT_SEC = 180
+
 #: Décalage maximal admissible, en heures. Le fuseau le plus extrême de la
 #: planète est UTC+14 (Kiribati). Au-delà, ce n'est plus un fuseau : c'est une
 #: horloge fausse, un horodatage périmé rejoué, ou un champ mal interprété. Sans
@@ -242,6 +248,27 @@ class HorlogeIncoherente(BotError):
     """
 
 
+class RedemarrageRequis(BotError):
+    """Une reconnexion exige un processus neuf. Volontairement FATALE.
+
+    `PocketOptionAPI.start_websocket()` se termine par `loop.run_forever()` :
+    le thread qu'il occupe ne revient JAMAIS, et il porte sa propre boucle de
+    reconnexion. `disconnect()` tente d'arrêter une autre boucle — celle du
+    thread principal — donc l'ancienne continue d'appeler le broker
+    indéfiniment.
+
+    Chaque reconnexion dans le même processus ajoute donc un thread qui
+    n'arrêtera plus jamais de composer. Observé en production : au bout de
+    quelques cycles, une dizaine de tentatives simultanées, et le broker ne
+    répond plus à personne — « timed out during opening handshake » en boucle.
+    Une panne réseau d'une seconde suffisait à condamner la collecte.
+
+    On refuse donc de reconnecter en interne. Le processus meurt, l'hébergeur le
+    relance, et l'on repart avec un seul thread. Trente secondes d'arrêt valent
+    mieux qu'une spirale dont on ne sort pas.
+    """
+
+
 class SourceIndisponible(BotError):
     """Le broker ou la bibliothèque ne répond pas.
 
@@ -353,15 +380,18 @@ class PocketOptionSource:
                 f"message quand un cookie de traceur manque."
             )
 
-        # Fermer AVANT de rouvrir. `PocketOption.connect()` démarre un thread
-        # WebSocket sans en garder la référence, et l'état de la bibliothèque
-        # (`global_value.pairs`, `websocket_is_connected`) est global au module.
-        # Deux clients vivants écriraient dans les mêmes tampons et se
-        # disputeraient les mêmes drapeaux : le collecteur appelant `connect()`
-        # à chaque coupure réseau, la situation surviendrait dès la première.
         if self._client is not None:
-            log.info("Reconnexion : fermeture du client précédent.")
-            self.close()
+            # NE PAS créer un second client. Son thread tourne sur une boucle
+            # `run_forever()` que `disconnect()` n'arrête pas — il vise une
+            # autre boucle — et cette boucle RECONNECTE toute seule. En ouvrir
+            # un deuxième n'ajouterait donc pas une connexion : cela ajouterait
+            # un concurrent, puis un troisième, jusqu'à ce que le broker cesse
+            # de répondre à tout le monde.
+            #
+            # On attend simplement que le client existant se rétablisse. C'est
+            # le contraire de l'intuition — ne rien faire est ici l'action utile.
+            self._attendre_retablissement()
+            return
 
         if self._threads_au_repos is None:
             self._threads_au_repos = threading.active_count()
@@ -440,7 +470,10 @@ class PocketOptionSource:
                 self._client.disconnect()
             except Exception as erreur:      # noqa: BLE001 - fermeture au mieux
                 log.debug("Fermeture imparfaite : %s", erreur)
-            self._client = None
+            # `self._client` n'est PAS remis à None : son thread survit de toute
+            # façon, et l'oublier ferait croire à `connect()` qu'aucun client
+            # n'existe — il en ouvrirait un second, ce que tout ce mécanisme
+            # cherche à empêcher.
         if self._boucle is not None and not self._boucle.is_closed():
             # La boucle que NOUS avons installée. Ne pas la fermer laisserait un
             # descripteur ouvert à chaque reconnexion du collecteur, et il y en a
@@ -714,6 +747,44 @@ class PocketOptionSource:
             self._decalage_sec = nouveau
 
         self._prochaine_verif_horloge = maintenant + INTERVALLE_VERIF_HORLOGE_SEC
+
+    def _attendre_retablissement(self) -> None:
+        """Attend que le client existant retrouve le broker.
+
+        La bibliothèque reconnecte d'elle-même dans son thread. Notre travail se
+        borne donc à patienter et à constater — pas à ouvrir une connexion de
+        plus, qui se disputerait le broker avec la précédente.
+
+        Passé le budget, on lève une erreur FATALE plutôt que de boucler : à ce
+        stade seul un processus neuf peut repartir sur des bases saines, et
+        l'hébergeur sait relancer un processus.
+        """
+        log.info("Coupure : attente du rétablissement (le client reconnecte "
+                 "de lui-même, aucun second client n'est ouvert).")
+        limite = time.monotonic() + DELAI_RETABLISSEMENT_SEC
+
+        while time.monotonic() < limite:
+            # Le drapeau d'erreur est consommé : il reflète la tentative
+            # précédente, pas l'état courant, et le laisser ferait échouer
+            # toutes les vérifications suivantes.
+            self._globals.check_websocket_if_error = False
+            if self._client.check_connect():
+                paires = self._paires_brutes(self.delai_payouts_sec)
+                log.info("Rétabli (%d actifs au catalogue).", len(paires))
+                self._vus.clear()
+                self._decalage_sec = None
+                self._prochaine_verif_horloge = 0.0
+                return
+            time.sleep(2.0)
+
+        raise RedemarrageRequis(
+            f"Toujours pas de connexion au broker après "
+            f"{DELAI_RETABLISSEMENT_SEC} s d'attente. Ouvrir un second client "
+            f"n'y changerait rien : la bibliothèque ne sait pas arrêter le "
+            f"thread du premier, qui continuerait d'appeler le broker en "
+            f"parallèle jusqu'à ce qu'il ne réponde plus à personne. Le "
+            f"processus s'arrête ; l'hébergeur le relancera propre."
+        )
 
     def _verifier_fuite_de_threads(self) -> None:
         """Signale l'accumulation de threads WebSocket.

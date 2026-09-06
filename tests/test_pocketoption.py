@@ -69,10 +69,12 @@ class FauxClient:
         self.g = globals_
         self._paires = CATALOGUE if paires is None else paires
         self.appels_getpairs = 0
+        self.connexions = 0
         self.symboles_demandes: list[tuple[str, int]] = []
         self.ferme = False
 
     def connect(self):
+        self.connexions += 1
         return True
 
     def check_connect(self):
@@ -782,23 +784,69 @@ def test_un_tick_valide_remet_le_compteur_a_zero(source, broker):
     assert source._rejets_consecutifs == 1
 
 
-def test_une_reconnexion_ferme_le_client_precedent(broker, caplog):
-    """La bibliothèque démarre un thread WebSocket à chaque `connect()` sans en
-    garder la référence, et son état (`global_value.pairs`,
-    `websocket_is_connected`) est global au module. Deux clients vivants
-    écriraient dans les mêmes tampons et se disputeraient les mêmes drapeaux —
-    et le collecteur appelle `connect()` à chaque coupure réseau, donc la
-    situation surviendrait dès la première."""
+def test_une_reconnexion_n_ouvre_pas_de_second_client(broker):
+    """Régression du pire incident de la mise en production.
+
+    `PocketOptionAPI.start_websocket()` se termine par `loop.run_forever()` : le
+    thread ne revient jamais, porte sa PROPRE boucle de reconnexion, et
+    `disconnect()` ne l'arrête pas — il vise une autre boucle. Ouvrir un second
+    client n'ajoutait donc pas une connexion : il ajoutait un concurrent, puis
+    un troisième.
+
+    Observé : au bout de quelques cycles, une dizaine de tentatives simultanées
+    et « timed out during opening handshake » en boucle, le broker ne répondant
+    plus à personne. Une coupure d'une seconde condamnait la collecte.
+
+    Le client existant se rétablissant seul, la bonne action est d'attendre.
+    """
     client, _ = broker
     src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
-
     src.connect()
-    assert not client.ferme
+    premier = src._client
 
-    with caplog.at_level("INFO"):
+    src.connect()      # une « reconnexion » : ne doit rien créer
+    assert src._client is premier, "un second client a été ouvert"
+    assert client.connexions == 1, "la bibliothèque a été relancée"
+
+
+def test_une_coupure_durable_reclame_un_processus_neuf(broker, monkeypatch):
+    """Régression du pire incident de la mise en production.
+
+    `PocketOptionAPI.start_websocket()` se termine par `loop.run_forever()` : le
+    thread ne revient jamais et porte sa propre boucle de reconnexion, que
+    `disconnect()` n'arrête pas — il vise une autre boucle. Chaque reconnexion
+    en interne ajoutait donc un thread qui n'arrêterait plus jamais d'appeler le
+    broker.
+
+    Observé : au bout de quelques cycles, une dizaine de tentatives simultanées
+    et « timed out during opening handshake » en boucle, le broker ne répondant
+    plus à personne. Une coupure réseau d'une seconde condamnait la collecte.
+
+    Mieux vaut mourir et laisser l'hébergeur relancer un processus propre.
+    """
+    import maxprofit.collect.pocketoption as module
+    from maxprofit.collect.pocketoption import RedemarrageRequis
+
+    client, globals_ = broker
+    src = PocketOptionSource(demo=True, delai_payouts_sec=0.5)
+    src.connect()
+
+    # Le broker ne revient pas, et le budget d'attente est court pour le test.
+    monkeypatch.setattr(module, "DELAI_RETABLISSEMENT_SEC", 0.5)
+    globals_.websocket_is_connected = False
+
+    with pytest.raises(RedemarrageRequis, match="Ouvrir un second client"):
         src.connect()
-    assert client.ferme, "le client précédent n'a pas été fermé"
-    assert any("Reconnexion" in m for m in caplog.messages)
+
+
+def test_un_redemarrage_requis_est_fatal_pour_le_collecteur():
+    """Il ne doit PAS être rattrapé comme une indisponibilité passagère : la
+    boucle de reconnexion est précisément ce qui creuse le trou."""
+    from maxprofit.collect.collector import FATALES
+    from maxprofit.collect.pocketoption import RedemarrageRequis, SourceIndisponible
+
+    assert not issubclass(RedemarrageRequis, SourceIndisponible)
+    assert any(issubclass(RedemarrageRequis, f) for f in FATALES)
 
 
 def test_une_indisponibilite_passagere_est_reessayee_pas_fatale():

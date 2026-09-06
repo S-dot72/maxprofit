@@ -169,3 +169,25 @@ def test_le_jeton_est_ecrit_a_cote_de_la_base(cfg):
 def test_le_type_de_compte_est_reconnu(cfg):
     sup, _ = _superviseur(cfg, [])
     assert "RÉEL" in asyncio.run(sup.installer_jeton(JETON_REEL))
+
+
+def test_un_redemarrage_requis_fait_sortir_avec_un_message_calme(cfg, monkeypatch):
+    """Le processus doit mourir — c'est la seule façon de repartir sans laisser
+    derrière soi un thread qui continuerait d'appeler le broker — mais ce n'est
+    pas une panne : la collecte reprend seule au redémarrage, et les données
+    sont chez Turso."""
+    from maxprofit.collect.pocketoption import RedemarrageRequis
+
+    alertes: list[str] = []
+    sup, faux = _superviseur(cfg, [RedemarrageRequis("coupure trop longue")],
+                             alertes)
+    _patch(sup, faux, monkeypatch)
+
+    with pytest.raises(RedemarrageRequis):
+        asyncio.run(sup.boucler())
+
+    assert faux.executions == 1, "un redémarrage requis a été réessayé"
+    message = "".join(alertes)
+    assert "Redémarrage" in message
+    assert "rien n'est perdu" in message.lower()
+    assert "❌" not in message, "un redémarrage attendu ne doit pas alarmer"

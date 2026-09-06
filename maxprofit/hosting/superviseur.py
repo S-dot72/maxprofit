@@ -38,6 +38,7 @@ from maxprofit.collect.collector import Collector, Config
 from maxprofit.collect.pocketoption import (
     ENV_FICHIER_SESSION,
     ENV_SSID,
+    RedemarrageRequis,
     SessionExpiree,
     ecrire_session,
 )
@@ -105,6 +106,22 @@ class Superviseur:
             if erreur is None:
                 log.info("Le collecteur s'est arrêté de lui-même.")
                 return
+            if isinstance(erreur, RedemarrageRequis):
+                # Attendu, pas alarmant. La bibliothèque du broker ne sait pas
+                # arrêter son thread WebSocket : un processus neuf est la seule
+                # façon de repartir sans laisser derrière soi un thread qui
+                # continuerait d'appeler le broker en parallèle.
+                log.warning("Redémarrage requis : %s", erreur)
+                self.derniere_erreur = str(erreur)
+                await self._alerte(
+                    "🔄 <b>Redémarrage du collecteur</b>\n\n"
+                    "La connexion au broker est restée coupée trop longtemps. "
+                    "Le processus repart à neuf et la collecte reprend seule.\n\n"
+                    "Les données déjà collectées sont dans Turso : rien n'est "
+                    "perdu."
+                )
+                raise erreur
+
             if not isinstance(erreur, SessionExpiree):
                 log.error("Collecteur arrêté sur une erreur non récupérable : %s",
                           erreur)
