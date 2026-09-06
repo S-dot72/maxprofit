@@ -13,4 +13,17 @@
 #
 # Cette liste tire aussi pandas (~50 Mo), dont rien d'autre dans le projet n'a
 # besoin.
-PocketOptionAPI-v2 @ git+https://github.com/Mastaaa1987/PocketOptionAPI-v2.git
+# ARCHIVE, pas `git+https://` : `python:3.12-slim` n'a pas git, et un clone
+# à la construction ferait échouer le build. Une archive s'installe avec le
+# seul pip.
+#
+# Et surtout : le commit est ÉPINGLÉ. `git+https://…​.git` sans référence
+# installe l'état de `main` au moment du build — pour une bibliothèque non
+# officielle qui peut changer sans préavis, cela signifie qu'un simple
+# redéploiement pourrait installer autre chose que ce qui a été testé, sans que
+# rien ne le signale. Ce commit est exactement celui contre lequel l'adaptateur
+# et ses tests ont été écrits.
+#
+# Pour le mettre à jour : relire le code de la bibliothèque, relancer
+# outils/diagnostic_pocketoption.py, puis changer ce sha.
+https://github.com/Mastaaa1987/PocketOptionAPI-v2/archive/c94c2b087f4cc9735c2171adc4d6dcb2c85b981f.tar.gz

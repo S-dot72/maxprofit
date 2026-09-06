@@ -19,7 +19,8 @@ dev = ["pytest>=8.0"]
 # dont ni le noyau, ni la persistance, ni le backtest n'ont besoin. Seul le
 # collecteur en production l'installe.
 pocketoption = [
-    "PocketOptionAPI-v2 @ git+https://github.com/Mastaaa1987/PocketOptionAPI-v2.git",
+    # Commit épinglé : voir requirements-broker.txt pour le raisonnement.
+    "pocketoptionapi @ https://github.com/Mastaaa1987/PocketOptionAPI-v2/archive/c94c2b087f4cc9735c2171adc4d6dcb2c85b981f.tar.gz",
 ]
 
 [tool.pytest.ini_options]

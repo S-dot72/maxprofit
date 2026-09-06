@@ -213,6 +213,27 @@ def verifier_admin(r: Rapport) -> None:
 def verifier_image(r: Rapport) -> None:
     print("\n— Image —")
     dockerfile = (RACINE / "Dockerfile").read_text(encoding="utf-8")
+    # Seules les lignes ACTIVES comptent : le fichier explique en commentaire
+    # pourquoi `git+` est écarté, et chercher la chaîne partout accuserait sa
+    # propre documentation.
+    broker = "\n".join(
+        ligne for ligne in
+        (RACINE / "requirements-broker.txt").read_text(encoding="utf-8").splitlines()
+        if ligne.strip() and not ligne.lstrip().startswith("#")
+    )
+    if "git+" in broker:
+        r.echec("requirements-broker.txt",
+                "dépendance déclarée par `git+https://`, ce qui exige git — "
+                "absent de python:3.12-slim. La construction échouera. Utilisez "
+                "une URL d'archive avec un commit épinglé.")
+    elif "/archive/" not in broker:
+        r.alerte("requirements-broker.txt",
+                 "la bibliothèque du broker n'est pas épinglée à un commit : "
+                 "un redéploiement peut installer autre chose que ce qui a été "
+                 "testé.")
+    else:
+        r.ok("requirements-broker.txt", "commit épinglé, sans git")
+
     if "requirements-broker.txt" not in dockerfile:
         r.echec("Dockerfile",
                 "n'installe pas requirements-broker.txt : l'adaptateur Pocket "

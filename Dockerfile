@@ -1,7 +1,14 @@
 FROM python:3.12-slim
 
-# Pas de wget/unzip/git : rien ici ne télécharge ni ne clone à l'exécution.
-# Chaque paquet système en moins est une vulnérabilité de moins à suivre.
+# Aucun paquet système ajouté — pas même git.
+#
+# La première construction a échoué ici : `requirements-broker.txt` demandait la
+# bibliothèque du broker par `git+https://…`, ce qui exige un clone, donc git,
+# absent de python:3.12-slim. Plutôt que d'installer git puis de le retirer, la
+# dépendance est déclarée par ARCHIVE et le commit est ÉPINGLÉ — ce qui règle du
+# même coup un problème plus sérieux que le build : sans référence, un
+# redéploiement installait l'état du moment de `main`, pour une bibliothèque non
+# officielle qui peut changer sans préavis.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
