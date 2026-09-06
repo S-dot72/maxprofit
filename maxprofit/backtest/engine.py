@@ -15,6 +15,9 @@ garantit :
    de 10 %, c'est la collecte qu'il faut réparer, pas la stratégie.
 4. Le payout utilisé est celui en vigueur à l'instant du trade (§2.3).
 5. Un trade non résolvable est exclu, jamais compté perdant (§2.2).
+6. Chaque bougie évaluée est journalisable AVEC son contrefactuel : ce qui
+   serait arrivé si le trade avait été pris, même quand aucun signal n'a été
+   émis (§3.1). C'est ce qui rend chaque condition mesurable à l'étape 6.
 
 Ce que le moteur ne garantit pas, et qu'il faut vérifier autrement : qu'il ne
 ment pas. C'est le rôle des cinq tests-oracles du §2.7, dans
@@ -32,7 +35,7 @@ from typing import Sequence
 from maxprofit.core.errors import BotError
 from maxprofit.core.market_view import SequenceMarketView, assert_no_look_ahead
 from maxprofit.core.strategy import Strategy
-from maxprofit.core.types import Candle
+from maxprofit.core.types import Candle, Signal
 from maxprofit.backtest.execution import (
     ExecutionConfig,
     Resultat,
@@ -70,6 +73,10 @@ class Rapport:
     n_evaluations: int = 0
     n_signaux: int = 0
     trades: list[Trade] = field(default_factory=list)
+    #: Trades qui AURAIENT eu lieu si les conditions avaient passé (§3.1).
+    #: Ils ne comptent dans aucune statistique de performance : ce ne sont
+    #: pas des trades pris. Ils sont la matière de l'analyse d'attribution.
+    contrefactuels: list[Trade] = field(default_factory=list)
     exclusions: Counter = field(default_factory=Counter)
 
     # --- comptages ----------------------------------------------------------
@@ -152,6 +159,8 @@ class Rapport:
             lignes.append(f"Taux de réussite : {self.taux_reussite * 100:.2f} %")
         if self.pnl_moyen is not None:
             lignes.append(f"P&L moyen par trade : {self.pnl_moyen * 100:+.2f} % de la mise")
+        lignes.append(
+            f"Contrefactuels (quasi-signaux résolus) : {len(self.contrefactuels):,}")
         lignes.append(f"Bougies écartées pour qualité : {self.pct_bougies_ecartees:.1f} %")
         if self.collecte_suspecte:
             lignes.append(
@@ -183,7 +192,7 @@ class BacktestEngine:
         self.min_ticks = min_ticks_par_bougie
 
     def run(self, strategie: Strategy, candles: Sequence[Candle], *,
-            lookback: int) -> Rapport:
+            lookback: int, journal=None) -> Rapport:
         if lookback < 1:
             raise BotError(f"lookback doit valoir au moins 1, reçu {lookback}")
         serie = tuple(candles)
@@ -209,22 +218,70 @@ class BacktestEngine:
             assert_no_look_ahead(vue, tf_sec=tf_sec)
             rapport.n_evaluations += 1
 
-            signal = strategie.on_bar(vue)
-            if signal is None:
-                continue
+            evaluation = strategie.evaluer(vue)
+            self._verifier_evaluation(evaluation, vue)
 
-            self._verifier_signal(signal, vue)
-            rapport.n_signaux += 1
+            signal = evaluation.signal
+            if signal is not None:
+                self._verifier_signal(signal, vue)
+                rapport.n_signaux += 1
 
-            payout = self.payouts.payout_at(signal.pair, serie[i].close_ts_sec)
-            if not payout_eligible(payout, self.cfg):
+            payout = self.payouts.payout_at(pair, serie[i].close_ts_sec)
+            eligible = payout_eligible(payout, self.cfg)
+            if signal is not None and not eligible:
                 # Pas un trade perdant : un trade qui n'aurait pas existé.
                 rapport.exclusions[MotifExclusion.PAIRE_NON_ELIGIBLE] += 1
-                continue
 
-            rapport.trades.append(executer(signal, payout, self.ticks, self.cfg))
+            contrefactuel = None
+            if eligible and evaluation.direction_envisagee is not None:
+                # LE point du §3.1 : on résout le trade même quand aucun signal
+                # n'a été émis. « Quel aurait été le résultat si on avait pris
+                # le trade. » Sans cette ligne, les quasi-signaux ne sont que
+                # des lignes de journal sans conclusion, et aucune condition
+                # n'est mesurable.
+                contrefactuel = executer(
+                    signal or self._signal_hypothetique(evaluation, vue),
+                    payout, self.ticks, self.cfg,
+                )
+                if signal is not None:
+                    rapport.trades.append(contrefactuel)
+                else:
+                    rapport.contrefactuels.append(contrefactuel)
+
+            if journal is not None:
+                journal.enregistrer(
+                    evaluation, contrefactuel=contrefactuel,
+                    payout_pct=payout.payout_pct if payout else None,
+                )
 
         return rapport
+
+    def _signal_hypothetique(self, evaluation, vue) -> Signal:
+        """Le signal qui aurait été émis si les conditions avaient passé.
+
+        Il n'est jamais retourné à l'appelant ni compté comme un signal : il ne
+        sert qu'à faire passer la direction envisagée au moteur d'exécution,
+        pour obtenir le contrefactuel. C'est exactement le même chemin de
+        résolution que pour un vrai trade — c'est ce qui rend les deux
+        comparables.
+        """
+        return Signal(
+            pair=evaluation.pair, direction=evaluation.direction_envisagee,
+            decided_at_ms=vue.now_ms, expiry_sec=self.cfg.expiry_sec,
+            features=evaluation.features, reason="contrefactuel",
+        )
+
+    def _verifier_evaluation(self, evaluation, vue) -> None:
+        if evaluation.ts_ms != vue.now_ms:
+            raise BotError(
+                f"Évaluation datée {evaluation.ts_ms} alors que la vue est à "
+                f"{vue.now_ms}."
+            )
+        if evaluation.pair != vue.pair:
+            raise BotError(
+                f"Évaluation sur {evaluation.pair} produite par une vue de "
+                f"{vue.pair}"
+            )
 
     # --- garde-fous ---------------------------------------------------------
 

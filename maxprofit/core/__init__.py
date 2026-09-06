@@ -16,13 +16,23 @@ from maxprofit.core.errors import (
 )
 from maxprofit.core.market_view import MarketView, SequenceMarketView, assert_no_look_ahead
 from maxprofit.core.strategy import Strategy
-from maxprofit.core.types import Candle, Direction, PairInfo, Signal, Tick
+from maxprofit.core.types import (
+    Candle,
+    ConditionResult,
+    Direction,
+    Evaluation,
+    PairInfo,
+    Signal,
+    Tick,
+)
 
 __all__ = [
     "BotError",
     "Candle",
+    "ConditionResult",
     "ConfigurationError",
     "Direction",
+    "Evaluation",
     "LayerViolation",
     "LookAheadError",
     "MarketView",

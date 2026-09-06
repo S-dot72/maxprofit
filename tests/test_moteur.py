@@ -26,7 +26,15 @@ from maxprofit.backtest.execution import (
 from maxprofit.core.errors import BotError
 from maxprofit.core.market_view import MarketView
 from maxprofit.core.strategy import Strategy
-from maxprofit.core.types import Candle, Direction, PairInfo, Signal, Tick
+from maxprofit.core.types import (
+    Candle,
+    ConditionResult,
+    Direction,
+    Evaluation,
+    PairInfo,
+    Signal,
+    Tick,
+)
 
 PAIRE = "TEST_otc"
 T0_SEC = 1_704_067_200
@@ -50,6 +58,18 @@ def ticks_reguliers(n_bougies: int, prix: float = 1.1) -> list[Tick]:
     return [Tick(PAIRE, T0_MS + i * 1000, prix) for i in range(n_bougies * 60 + 300)]
 
 
+def _evaluation(view, direction, *, expiry_sec, decided_at_ms) -> Evaluation:
+    """L'Evaluation porte `ts_ms = view.now_ms` ; c'est le SIGNAL qu'on date
+    volontairement à côté dans les tests de rejet, puisque c'est le signal que
+    le moteur vérifie."""
+    signal = Signal(pair=view.pair, direction=direction,
+                    decided_at_ms=decided_at_ms, expiry_sec=expiry_sec)
+    return Evaluation(pair=view.pair, ts_ms=decided_at_ms,
+                      direction_envisagee=direction,
+                      conditions=(ConditionResult("toujours", True, 1.0),),
+                      features={}, signal=signal)
+
+
 class ToujoursCall(Strategy):
     name = "toujours-call"
 
@@ -57,9 +77,9 @@ class ToujoursCall(Strategy):
     def params(self) -> Mapping[str, Any]:
         return {}
 
-    def on_bar(self, view: MarketView) -> Signal | None:
-        return Signal(pair=view.pair, direction=Direction.CALL,
-                      decided_at_ms=view.now_ms, expiry_sec=60)
+    def evaluer(self, view: MarketView) -> Evaluation:
+        return _evaluation(view, Direction.CALL, expiry_sec=60,
+                           decided_at_ms=view.now_ms)
 
 
 def construire(bougies, ticks, *, trous=(), payout=92, ouvert=True):
@@ -252,25 +272,50 @@ def test_regle_d_egalite_remboursement_contre_perte():
 # Rejets
 # --------------------------------------------------------------------------- #
 
-def test_signal_mal_date_est_rejete():
-    """Rejeté, pas recalé : recaler silencieusement réparerait le symptôme d'un
-    bug qui continuerait ailleurs."""
+def test_le_type_evaluation_interdit_deja_un_signal_mal_date():
+    """Première ligne de défense : le type.
+
+    Une `Evaluation` datée à t ne peut pas contenir un signal daté ailleurs.
+    L'incohérence est donc impossible à construire, pas seulement rejetée à
+    l'exécution.
+    """
+    signal = Signal(PAIRE, Direction.CALL, T0_MS, expiry_sec=60)
+    with pytest.raises(BotError, match="signal daté"):
+        Evaluation(pair=PAIRE, ts_ms=T0_MS + 60_000,
+                   direction_envisagee=Direction.CALL,
+                   conditions=(ConditionResult("x", True),), features={},
+                   signal=signal)
+
+
+def test_evaluation_mal_datee_est_rejetee_par_le_moteur():
+    """Seconde ligne : rejetée, pas recalée. Recaler silencieusement
+    réparerait le symptôme d'un bug qui continuerait ailleurs."""
     class MalDatee(ToujoursCall):
-        def on_bar(self, view):
-            return Signal(pair=view.pair, direction=Direction.CALL,
-                          decided_at_ms=view.now_ms - 60_000, expiry_sec=60)
+        def evaluer(self, view):
+            return _evaluation(view, Direction.CALL, expiry_sec=60,
+                               decided_at_ms=view.now_ms - 60_000)
 
     moteur, serie = construire([bougie(i, 1.1) for i in range(5)], ticks_reguliers(5))
-    with pytest.raises(BotError, match="instant de décision"):
+    with pytest.raises(BotError, match="Évaluation datée"):
         moteur.run(MalDatee(), serie, lookback=1)
+
+
+def test_un_signal_ne_peut_pas_contredire_ses_conditions():
+    """Le couple décision/journal ne peut pas diverger : un signal émis alors
+    qu'une condition a échoué est refusé à la construction."""
+    signal = Signal(PAIRE, Direction.CALL, T0_MS, expiry_sec=60)
+    with pytest.raises(BotError, match="condition a échoué"):
+        Evaluation(pair=PAIRE, ts_ms=T0_MS, direction_envisagee=Direction.CALL,
+                   conditions=(ConditionResult("x", False),), features={},
+                   signal=signal)
 
 
 def test_expiration_incoherente_est_rejetee():
     """Le rapport annoncerait une expiration qui n'est pas celle simulée."""
     class MauvaiseExpiration(ToujoursCall):
-        def on_bar(self, view):
-            return Signal(pair=view.pair, direction=Direction.CALL,
-                          decided_at_ms=view.now_ms, expiry_sec=300)
+        def evaluer(self, view):
+            return _evaluation(view, Direction.CALL, expiry_sec=300,
+                               decided_at_ms=view.now_ms)
 
     moteur, serie = construire([bougie(i, 1.1) for i in range(5)], ticks_reguliers(5))
     with pytest.raises(BotError, match="expiration"):

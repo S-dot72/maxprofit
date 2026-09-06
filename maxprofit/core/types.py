@@ -183,3 +183,96 @@ class Signal:
         réelle part de l'instant d'ENTRÉE (décision + latence) et c'est le
         moteur d'exécution qui la calcule."""
         return self.decided_at_ms + self.expiry_sec * MS_PER_SEC
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionResult:
+    """Le résultat d'UNE condition, avec la valeur brute qui l'a produit.
+
+    Garder la valeur numérique et pas seulement le booléen est ce qui rend
+    l'analyse d'attribution possible (§3.2). Un « stochastique : non » ne dit
+    pas s'il manquait un point ou trente ; `valeur = 21.4` contre un seuil de 20
+    dit que la condition a failli passer, et c'est cette information qui permet
+    de savoir si un seuil est mal placé ou si la condition ne sert à rien.
+    """
+
+    nom: str
+    validee: bool
+    valeur: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.nom:
+            raise BotError("ConditionResult sans nom")
+
+
+@dataclass(frozen=True, slots=True)
+class Evaluation:
+    """Ce qu'on enregistre à CHAQUE bougie évaluée, signal ou non (§3.1).
+
+    « C'est le point le plus important de la spec. Sans les quasi-signaux et
+    leur résultat contrefactuel, vous ne pouvez pas répondre à "qu'est-ce que
+    le bot a raté". Avec eux, chaque condition devient mesurable. »
+
+    `direction_envisagee` est renseignée même quand aucun signal n'est émis :
+    c'est elle qui permet de calculer le résultat contrefactuel — ce qui serait
+    arrivé si on avait pris le trade. Une évaluation sans direction envisagée
+    ne produit pas de contrefactuel, et c'est un cas légitime (le marché
+    n'oriente ni dans un sens ni dans l'autre).
+
+    `features` est figée à la construction. Elles sont enregistrées AU MOMENT
+    de la décision et jamais recalculées après coup : un recalcul ultérieur sur
+    du code modifié réintroduit du look-ahead (§3.1).
+    """
+
+    pair: str
+    ts_ms: int
+    direction_envisagee: "Direction | None"
+    conditions: tuple[ConditionResult, ...]
+    features: Mapping[str, float]
+    signal: "Signal | None" = None
+
+    def __post_init__(self) -> None:
+        if not self.pair:
+            raise BotError("Evaluation sans paire")
+        ensure_ms(self.ts_ms, what=f"Evaluation({self.pair}).ts_ms")
+        if self.signal is not None:
+            if self.signal.decided_at_ms != self.ts_ms:
+                raise BotError(
+                    f"Evaluation à {self.ts_ms} portant un signal daté "
+                    f"{self.signal.decided_at_ms}"
+                )
+            if self.signal.direction is not self.direction_envisagee:
+                raise BotError(
+                    "Le signal émis ne va pas dans la direction envisagée : "
+                    "l'enregistrement et la décision se contrediraient."
+                )
+            if not self.toutes_validees:
+                raise BotError(
+                    "Signal émis alors qu'une condition a échoué. La porte ET "
+                    "et le signal doivent venir du même calcul."
+                )
+        object.__setattr__(self, "features", MappingProxyType(dict(self.features)))
+        object.__setattr__(self, "conditions", tuple(self.conditions))
+
+    @property
+    def signal_emis(self) -> bool:
+        return self.signal is not None
+
+    @property
+    def toutes_validees(self) -> bool:
+        return all(c.validee for c in self.conditions)
+
+    @property
+    def condition_bloquante(self) -> str | None:
+        """La PREMIÈRE condition échouée, dans l'ordre d'évaluation.
+
+        « Première » et non « toutes » parce que c'est ce que demande la spec,
+        mais l'ordre compte donc : une condition placée en tête sera créditée
+        de tous les blocages qu'une condition suivante aurait aussi provoqués.
+        Le détail complet reste disponible dans `conditions` ; ce champ n'est
+        qu'un raccourci pour les comptages rapides.
+        """
+        for c in self.conditions:
+            if not c.validee:
+                return c.nom
+        return None

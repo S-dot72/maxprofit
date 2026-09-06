@@ -15,7 +15,7 @@ import pytest
 
 from maxprofit.core.market_view import MarketView, SequenceMarketView
 from maxprofit.core.strategy import Strategy
-from maxprofit.core.types import Direction, Signal
+from maxprofit.core.types import ConditionResult, Direction, Evaluation, Signal
 from conftest import make_candle
 
 
@@ -37,22 +37,37 @@ class StrategieDeTest(Strategy):
     def params(self) -> Mapping[str, Any]:
         return {"lookback": self.lookback, "expiry_sec": self.expiry_sec}
 
-    def on_bar(self, view: MarketView) -> Signal | None:
+    def evaluer(self, view: MarketView) -> Evaluation:
         self.vues += 1
         window = view.candles(self.lookback)
         if len(window) < self.lookback:
-            return None  # historique insuffisant : on s'abstient
+            # Historique insuffisant : on s'abstient, et on l'enregistre.
+            return Evaluation(
+                pair=view.pair, ts_ms=view.now_ms, direction_envisagee=None,
+                conditions=(ConditionResult("historique", False, len(window)),),
+                features={},
+            )
+
         moyenne = sum(c.close for c in window) / len(window)
         dernier = window[-1].close
-        if dernier <= moyenne:
-            return None
-        return Signal(
-            pair=view.pair,
-            direction=Direction.CALL,
-            decided_at_ms=view.now_ms,
-            expiry_sec=self.expiry_sec,
-            features={"ecart_moyenne_pct": (dernier / moyenne - 1) * 100},
-            reason="cloture > moyenne",
+        ecart = (dernier / moyenne - 1) * 100
+        features = {"ecart_moyenne_pct": ecart}
+        au_dessus = dernier > moyenne
+        conditions = (ConditionResult("au_dessus_moyenne", au_dessus, ecart),)
+
+        # La direction est envisagée même quand la condition échoue : c'est
+        # elle qui permettra de calculer le contrefactuel (§3.1).
+        signal = None
+        if au_dessus:
+            signal = Signal(
+                pair=view.pair, direction=Direction.CALL,
+                decided_at_ms=view.now_ms, expiry_sec=self.expiry_sec,
+                features=features, reason="cloture > moyenne",
+            )
+        return Evaluation(
+            pair=view.pair, ts_ms=view.now_ms,
+            direction_envisagee=Direction.CALL, conditions=conditions,
+            features=features, signal=signal,
         )
 
     def reset(self) -> None:
@@ -70,7 +85,7 @@ def _parcours(strategie: Strategy, series) -> list[Signal]:
             return signaux
 
 
-def test_strategy_ne_peut_pas_etre_instanciee_sans_on_bar():
+def test_strategy_ne_peut_pas_etre_instanciee_sans_evaluer():
     class Incomplete(Strategy):
         @property
         def params(self):
@@ -78,6 +93,20 @@ def test_strategy_ne_peut_pas_etre_instanciee_sans_on_bar():
 
     with pytest.raises(TypeError):
         Incomplete()
+
+
+def test_on_bar_derive_de_evaluer_et_ne_peut_pas_diverger(series):
+    """Invariant n°1 appliqué au couple décision/journal : le signal émis est
+    littéralement celui qui est enregistré, parce qu'il n'y a qu'un calcul."""
+    strat = StrategieDeTest(lookback=3, expiry_sec=60)
+    view = SequenceMarketView("TEST_otc", series, index=5)
+
+    evaluation = strat.evaluer(view)
+    strat.reset()
+    signal = strat.on_bar(view)
+
+    assert signal == evaluation.signal
+    assert evaluation.features == signal.features
 
 
 def test_s_abstient_tant_que_l_historique_est_trop_court(series):
@@ -123,9 +152,12 @@ def test_le_futur_est_hors_de_portee(series):
     vues: list[float] = []
 
     class Curieuse(StrategieDeTest):
-        def on_bar(self, view):
+        def evaluer(self, view):
             vues.extend(c.close for c in view.candles(1000))
-            return None
+            return Evaluation(pair=view.pair, ts_ms=view.now_ms,
+                              direction_envisagee=None,
+                              conditions=(ConditionResult("rien", False),),
+                              features={})
 
     strat = Curieuse(lookback=3, expiry_sec=60)
     view = SequenceMarketView("TEST_otc", series, index=5)

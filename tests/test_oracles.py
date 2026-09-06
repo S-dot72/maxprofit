@@ -39,7 +39,15 @@ from maxprofit.backtest.execution import (
 )
 from maxprofit.core.market_view import MarketView
 from maxprofit.core.strategy import Strategy
-from maxprofit.core.types import Candle, Direction, PairInfo, Signal, Tick
+from maxprofit.core.types import (
+    Candle,
+    ConditionResult,
+    Direction,
+    Evaluation,
+    PairInfo,
+    Signal,
+    Tick,
+)
 
 PAIRE = "TEST_otc"
 T0_SEC = 1_704_067_200
@@ -111,6 +119,26 @@ def moteur(ticks: list[Tick]) -> BacktestEngine:
     )
 
 
+def _rien(view) -> Evaluation:
+    """Évaluation sans direction envisagée : pas de signal, pas de
+    contrefactuel. C'est un cas légitime, pas une erreur."""
+    return Evaluation(pair=view.pair, ts_ms=view.now_ms, direction_envisagee=None,
+                      conditions=(ConditionResult("historique", False, 0.0),),
+                      features={})
+
+
+def _tout_valide(view, direction) -> Evaluation:
+    """Évaluation dont toutes les conditions passent : une stratégie-oracle
+    n'a qu'une condition, « oui »."""
+    signal = Signal(pair=view.pair, direction=direction,
+                    decided_at_ms=view.now_ms, expiry_sec=EXPIRY_SEC)
+    return Evaluation(pair=view.pair, ts_ms=view.now_ms,
+                      direction_envisagee=direction,
+                      conditions=(ConditionResult("oracle", True, 1.0),),
+                      features={"prix": view.candles(1)[-1].close},
+                      signal=signal)
+
+
 # --------------------------------------------------------------------------- #
 # Stratégies-oracles
 # --------------------------------------------------------------------------- #
@@ -132,14 +160,13 @@ class Aleatoire(Strategy):
     def reset(self) -> None:
         self.rng = random.Random(self.graine)
 
-    def on_bar(self, view: MarketView) -> Signal | None:
+    def evaluer(self, view: MarketView) -> Evaluation:
         if len(view.candles(LOOKBACK)) < LOOKBACK:
-            return None
+            return _rien(view)
         direction = self.rng.choice([Direction.CALL, Direction.PUT])
         if self.inverser:
             direction = direction.opposite
-        return Signal(pair=view.pair, direction=direction,
-                      decided_at_ms=view.now_ms, expiry_sec=EXPIRY_SEC)
+        return _tout_valide(view, direction)
 
 
 class Clairvoyante(Strategy):
@@ -161,18 +188,17 @@ class Clairvoyante(Strategy):
     def params(self) -> Mapping[str, Any]:
         return {"triche": True}
 
-    def on_bar(self, view: MarketView) -> Signal | None:
+    def evaluer(self, view: MarketView) -> Evaluation:
         if len(view.candles(LOOKBACK)) < LOOKBACK:
-            return None
+            return _rien(view)
         entree_ms = view.now_ms + self.cfg.latence_ms
         reglement_ms = entree_ms + self.cfg.expiry_sec * 1000
         depart = self.ticks.premier_a_partir_de(view.pair, entree_ms, 2000)
         arrivee = self.ticks.dernier_jusqu_a(view.pair, reglement_ms, 2000)
         if depart is None or arrivee is None or arrivee.price == depart.price:
-            return None
+            return _rien(view)
         direction = Direction.CALL if arrivee.price > depart.price else Direction.PUT
-        return Signal(pair=view.pair, direction=direction,
-                      decided_at_ms=view.now_ms, expiry_sec=EXPIRY_SEC)
+        return _tout_valide(view, direction)
 
 
 # --------------------------------------------------------------------------- #
@@ -250,13 +276,11 @@ def test_oracle_2b_clairvoyante_inversee_perd_toujours():
     source = TicksEnMemoire(ticks)
 
     class Aveugle(Clairvoyante):
-        def on_bar(self, view):
-            signal = super().on_bar(view)
-            if signal is None:
-                return None
-            return Signal(pair=signal.pair, direction=signal.direction.opposite,
-                          decided_at_ms=signal.decided_at_ms,
-                          expiry_sec=signal.expiry_sec)
+        def evaluer(self, view):
+            vue_juste = super().evaluer(view)
+            if vue_juste.direction_envisagee is None:
+                return vue_juste
+            return _tout_valide(view, vue_juste.direction_envisagee.opposite)
 
     rapport = moteur(ticks).run(Aveugle(source, config()), agreger(ticks),
                                 lookback=LOOKBACK)

@@ -5,6 +5,12 @@ Strategy — l'invariant n°1 de la spec (§0).
 Strategy, une seule méthode on_bar(view) -> Signal | None. Deux implémentations
 divergeront, toujours, et le backtest deviendra un mensonge. »
 
+`on_bar(view) -> Signal | None` reste la méthode que les deux moteurs
+appellent, avec la même signature. Elle est devenue CONCRÈTE et dérive de
+`evaluer`, qui retourne le compte rendu complet exigé par le §3.1. Voir la
+docstring de `on_bar` pour le raisonnement : c'est le même invariant,
+appliqué au couple décision/journal au lieu du couple backtest/live.
+
 Cet invariant n'est pas une consigne, il est vérifié mécaniquement :
 tests/test_layering.py refuse toute sous-classe de `Strategy` définie ailleurs
 que dans `maxprofit/strategies/`, et refuse que `maxprofit.live` ou
@@ -13,7 +19,7 @@ moteurs importent le même objet ; il n'y a pas de second endroit où diverger.
 
 Contrat que doit respecter toute implémentation :
 
-1. `on_bar` est PURE vis-à-vis de la vue. Aucune lecture de l'horloge murale
+1. `evaluer` est PURE vis-à-vis de la vue. Aucune lecture de l'horloge murale
    (`time.time()`, `datetime.now()`), aucun accès réseau ou disque, aucun
    aléatoire non graine. Le test-oracle de déterminisme (spec §2.7.5) exige que
    deux exécutions identiques produisent des résultats identiques au bit près ;
@@ -34,7 +40,7 @@ import abc
 from typing import Any, Mapping
 
 from maxprofit.core.market_view import MarketView
-from maxprofit.core.types import Signal
+from maxprofit.core.types import Evaluation, Signal
 
 
 class Strategy(abc.ABC):
@@ -54,20 +60,41 @@ class Strategy(abc.ABC):
         """
 
     @abc.abstractmethod
-    def on_bar(self, view: MarketView) -> Signal | None:
-        """Décide à la clôture d'une bougie.
+    def evaluer(self, view: MarketView) -> Evaluation:
+        """Évalue une bougie et retourne le compte rendu COMPLET.
+
+        C'est la méthode que l'on implémente. Elle retourne une `Evaluation`
+        même quand aucun signal n'est émis — ce qui est le cas de la très
+        grande majorité des bougies — avec les features observées, l'état de
+        chaque condition et la direction envisagée.
 
         `view` n'expose que l'historique jusqu'à `view.now_ms` inclus. Il n'y a
         pas d'accès au futur à contourner : il n'existe pas.
 
-        Retourne `None` pour ne rien faire — ce qui est le cas de la très
-        grande majorité des bougies. Retourner `None` n'est pas une absence
-        d'information : la couche de journalisation enregistre l'évaluation
-        quand même, avec les features et la condition bloquante (spec §3.1).
-
-        Si un `Signal` est retourné, son `decided_at_ms` DOIT valoir
+        Si un `Signal` est produit, son `decided_at_ms` DOIT valoir
         `view.now_ms` — le moteur le vérifie et rejette le signal sinon.
         """
+
+    def on_bar(self, view: MarketView) -> Signal | None:
+        """Le contrat de la spec §0, désormais DÉRIVÉ de `evaluer`.
+
+        C'est toujours cette méthode que les deux moteurs appellent, et elle a
+        toujours la même signature. Ce qui change : elle n'est plus
+        implémentable séparément.
+
+        Pourquoi. Le §3.1 demande d'enregistrer, à chaque bougie, les features
+        et la condition bloquante — donc quelqu'un doit les calculer. Si
+        `on_bar` restait la seule méthode, le journal devrait les recalculer de
+        son côté, et l'on aurait deux implémentations de la même logique. C'est
+        exactement ce que l'invariant n°1 interdit, appliqué non plus au couple
+        backtest/live mais au couple décision/journal : elles divergeraient, et
+        l'analyse d'attribution porterait alors sur des conditions qui ne sont
+        pas celles qui ont décidé.
+
+        Rendre `on_bar` concrète garantit qu'il n'existe qu'un seul calcul. Le
+        signal enregistré est littéralement celui qui est émis.
+        """
+        return self.evaluer(view).signal
 
     def reset(self) -> None:
         """Remet l'état interne à zéro. Appelée par le moteur avant chaque

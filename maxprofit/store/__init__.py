@@ -24,18 +24,34 @@ from maxprofit.store.db import (
     schema_version,
 )
 from maxprofit.store.market import MarketReader, MarketWriter
+from maxprofit.store.research import (
+    MIGRATIONS_RECHERCHE,
+    Journal,
+    commit_git_courant,
+    compter_experiences,
+    hash_jeu_de_donnees,
+    open_recherche,
+    open_recherche_lecture,
+)
 from maxprofit.store.migrations import MIGRATIONS, SCHEMA_VERSION, Migration
 
 __all__ = [
     "MIGRATIONS",
+    "MIGRATIONS_RECHERCHE",
     "SCHEMA_VERSION",
+    "Journal",
     "MarketReader",
     "MarketWriter",
     "Migration",
     "SchemaError",
     "apply_migrations",
+    "commit_git_courant",
+    "compter_experiences",
+    "hash_jeu_de_donnees",
     "creer_sauvegarde",
     "open_read_only",
+    "open_recherche",
+    "open_recherche_lecture",
     "open_read_write",
     "purger",
     "sauvegarder_et_purger",

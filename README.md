@@ -12,7 +12,7 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
 | 2 | Collecteur | 14 jours de données, < 5 % de bougies écartées | **prêt à héberger** |
 | 3 | Indicateurs sans repeint | ZigZag et fractales à latence de confirmation | à faire |
 | 4 | Moteur de backtest | Les 5 tests-oracles passent | **fait** |
-| 5 | Stratégie + journalisation | 400+ évaluations avec features et contrefactuels | à faire |
+| 5 | Stratégie + journalisation | 400+ évaluations avec features et contrefactuels | **fait** |
 | 6 | Analyse d'attribution | Rapport produit ; décision go/no-go honnête | à faire |
 | 7 | Modèle + walk-forward | Avantage hors échantillon sur 3 fenêtres | à faire |
 | 8 | Bot Telegram | Uniquement si 7 est concluant | à faire |
@@ -32,12 +32,15 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
         migrations.py   versionnées, en avant seulement (§1.3)
         db.py           PRAGMA user_version, mode=ro pour le backtest
         market.py       MarketWriter (collecte) / MarketReader (backtest)
+        research.py     research.db : expériences, évaluations, contrefactuels
         backup.py       VACUUM INTO + rétention 7j/4sem (§1.4)
       indicators/   fonctions pures d'une fenêtre de bougies, sans repeint
         zigzag.py       automate causal, latence VARIABLE (§2.1)
         fractals.py     latence constante de 2 bougies
         oscillators.py  MA, Bollinger %B, stochastique, ATR à fenêtre finie
         geometry.py     corps et mèches
+      strategies/   le SEUL endroit où une Strategy peut être définie
+        six_conditions.py  la stratégie initiale, six hypothèses à mesurer
       backtest/     moteur : exécution réaliste, qualité, payout d'époque
         execution.py    latence, prix d'entrée/règlement, égalités, irrésolus
         engine.py       boucle, garde-fous §2.4, rapport
@@ -64,6 +67,22 @@ Processus hébergé (collecteur + sonde HTTP) :
     export TRADING_DB_PATH=/chemin/absolu/trading_data/market.db
     export MIN_PAYOUT_PCT=92
     .venv/Scripts/python -m maxprofit.hosting.service --source sim
+
+## Deux bases de données
+
+    market.db     collecte. Écrite par le collecteur seul. Irremplaçable :
+                  quatorze jours de collecte ne se régénèrent pas.
+    research.db   analyses. Écrite par le backtest. Entièrement
+                  reconstructible en rejouant les backtests.
+
+Le backtest ouvre `market.db` en lecture seule (`mode=ro`) : un bug
+d'analyse ne peut pas corrompre les données de marché. `research.db` peut
+être supprimée sans réfléchir ; l'autre, jamais. Son chemin est
+`RESEARCH_DB_PATH`, ou par défaut `research.db` à côté de `market.db`.
+
+Les expériences y sont **immuables** : des déclencheurs SQLite refusent
+tout UPDATE et tout DELETE (§2.6). Un compteur d'hypothèses qu'on peut
+nettoyer ne compte plus rien.
 
 ## Fuseau horaire
 

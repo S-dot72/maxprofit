@@ -117,3 +117,28 @@ def db_path() -> Path:
 def backups_dir() -> Path:
     """Répertoire des sauvegardes, à côté de la base (spec §1.4)."""
     return db_path().parent / "backups"
+
+
+#: Base de RECHERCHE. Contrairement à `TRADING_DB_PATH`, elle a une valeur
+#: dérivée par défaut, et c'est délibéré : cette base est entièrement
+#: reconstructible en rejouant les backtests. La perdre coûte du temps de
+#: calcul, pas des données. La règle « pas de défaut silencieux » du §5 vise ce
+#: qu'on ne peut pas régénérer.
+ENV_RESEARCH_DB_PATH = "RESEARCH_DB_PATH"
+
+
+def research_db_path() -> Path:
+    """`RESEARCH_DB_PATH` si définie, sinon `research.db` à côté de la base de
+    marché — dans le même répertoire persistant, jamais dans le code."""
+    brut = os.environ.get(ENV_RESEARCH_DB_PATH, "").strip()
+    if not brut:
+        return db_path().parent / "research.db"
+    chemin = Path(brut)
+    if not chemin.is_absolute():
+        raise ConfigurationError(
+            f"{ENV_RESEARCH_DB_PATH}={chemin} est un chemin relatif. Donnez un "
+            f"chemin absolu, comme pour {ENV_DB_PATH}."
+        )
+    if not chemin.parent.is_dir():
+        raise ConfigurationError(f"Le répertoire {chemin.parent} n'existe pas.")
+    return chemin
