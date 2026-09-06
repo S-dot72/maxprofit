@@ -235,3 +235,109 @@ def test_l_echec_initial_designe_l_option_tursodb(monkeypatch, tmp_path):
     assert "TursoDB" in message
     assert "ÉTEINT" in message
     assert "jeton expiré" in message
+
+
+# --------------------------------------------------------------------------- #
+# Le régime transactionnel de libsql
+# --------------------------------------------------------------------------- #
+
+class ConnexionRepliquee:
+    """Double fidèle du régime `libsql` : une transaction est DÉJÀ ouverte.
+
+    C'est la différence qui a fait échouer le premier démarrage sur Turso.
+    `sqlite3` est ouvert ici en validation automatique — rien n'est en cours, un
+    `BEGIN` explicite est nécessaire. `libsql` ouvre au contraire une
+    transaction implicite dès la connexion, et y envoyer un `BEGIN` lève
+    « connection has reached an invalid state, started with Txn ».
+    """
+
+    def __init__(self, chemin):
+        import sqlite3
+
+        self._conn = sqlite3.connect(chemin)
+        self.syncs = 0
+        self.commits = 0
+
+    def execute(self, sql, params=()):
+        if sql.strip().upper().startswith(("BEGIN", "COMMIT", "ROLLBACK")):
+            raise ValueError(
+                "connection has reached an invalid state, started with Txn")
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql, rows):
+        return self._conn.executemany(sql, rows)
+
+    def commit(self):
+        self.commits += 1
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def sync(self):
+        self.syncs += 1
+
+    def close(self):
+        self._conn.close()
+
+
+def test_les_migrations_passent_sur_une_connexion_a_transaction_implicite(tmp_path):
+    """Régression du premier déploiement Turso.
+
+    Le moteur refusait `BEGIN`, et la migration échouait avant d'avoir créé la
+    moindre table. Le message — « invalid state, started with Txn » — ne disait
+    rien de la cause à qui ne connaît pas les deux régimes.
+    """
+    from maxprofit.store.db import apply_migrations, schema_version
+    from maxprofit.store.migrations import SCHEMA_VERSION
+
+    conn = ConnexionRepliquee(str(tmp_path / "replique.db"))
+    try:
+        assert apply_migrations(conn) == SCHEMA_VERSION
+        assert schema_version(conn) == SCHEMA_VERSION
+        # Les tables existent réellement, pas seulement le numéro de version.
+        for table in ("ticks", "candles", "payouts", "uptime"):
+            conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    finally:
+        conn.close()
+
+
+def test_une_migration_qui_echoue_est_annulee_sur_replique(tmp_path):
+    """L'annulation doit passer par `rollback()`, pas par un ROLLBACK textuel
+    que le moteur refuserait."""
+    from maxprofit.store.db import apply_migrations
+    from maxprofit.store.migrations import MIGRATIONS, Migration
+
+    def _v2_casse(c):
+        c.execute("CREATE TABLE provisoire (x INTEGER)")
+        raise RuntimeError("panne au milieu")
+
+    conn = ConnexionRepliquee(str(tmp_path / "replique.db"))
+    try:
+        with pytest.raises(RuntimeError, match="panne au milieu"):
+            apply_migrations(conn, MIGRATIONS + (Migration(2, "v2", _v2_casse),))
+    finally:
+        conn.close()
+
+
+def test_les_ecritures_sont_validees_avant_la_synchronisation(tmp_path):
+    """Sans validation explicite, `libsql` accumulerait indéfiniment dans sa
+    transaction implicite et rien ne partirait jamais vers Turso — la collecte
+    aurait l'air de tourner et la base distante resterait vide."""
+    from maxprofit.core.types import Tick
+    from maxprofit.store.db import apply_migrations, valider
+    from maxprofit.store.market import MarketWriter
+
+    conn = ConnexionRepliquee(str(tmp_path / "replique.db"))
+    try:
+        apply_migrations(conn)
+        commits_avant = conn.commits
+
+        MarketWriter(conn).insert_ticks(
+            [Tick("EURUSD_otc", 1_757_073_600_000 + i, 1.1) for i in range(5)])
+        valider(conn)
+
+        assert conn.commits > commits_avant, "les écritures n'ont pas été validées"
+        assert conn.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 5
+    finally:
+        conn.close()

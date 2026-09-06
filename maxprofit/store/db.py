@@ -48,6 +48,65 @@ def _user_version(conn) -> int:
     return version_schema.lire(conn)
 
 
+def _debuter(conn) -> None:
+    """Ouvre une transaction, quel que soit le moteur.
+
+    Deux régimes incompatibles, et les confondre coûte un déploiement :
+
+    `sqlite3` est ouvert ici en `isolation_level=None`, c'est-à-dire en
+    validation automatique : rien n'est en cours, et un `BEGIN` explicite est
+    nécessaire pour grouper une migration.
+
+    `libsql` ouvre au contraire une transaction IMPLICITE dès la connexion. Y
+    envoyer un `BEGIN` lève « connection has reached an invalid state, started
+    with Txn » — l'erreur qui a fait échouer le premier démarrage sur Turso.
+    """
+    if _valide_implicitement(conn):
+        return
+    conn.execute("BEGIN")
+
+
+def _valider(conn) -> None:
+    if _valide_implicitement(conn):
+        conn.commit()
+    else:
+        conn.execute("COMMIT")
+
+
+def _annuler(conn) -> None:
+    if _valide_implicitement(conn):
+        conn.rollback()
+        return
+    # `in_transaction` est faux si l'instruction a émis un COMMIT implicite.
+    # Tenter un ROLLBACK dans ce cas masquerait l'erreur d'origine par un
+    # « no transaction is active » et rendrait la panne illisible.
+    if getattr(conn, "in_transaction", False):
+        conn.execute("ROLLBACK")
+
+
+def _valide_implicitement(conn) -> bool:
+    """La connexion tient-elle déjà une transaction ouverte ?
+
+    Reconnu à la présence de `sync` — donc à la nature de la connexion — plutôt
+    qu'à un drapeau passé par l'appelant, qui se désynchroniserait.
+    """
+    return turso.est_replique(conn)
+
+
+def valider(conn) -> None:
+    """Rend les écritures durables. Publique : le collecteur l'appelle après
+    chaque vidage de tampon.
+
+    Sans elle, `libsql` accumulerait indéfiniment dans sa transaction implicite
+    et rien ne serait jamais poussé vers Turso. En `sqlite3` autocommit, c'est
+    sans effet — le même code sert les deux modes.
+    """
+    try:
+        conn.commit()
+    except Exception as erreur:                          # noqa: BLE001
+        log.debug("commit sans effet : %s", erreur)
+
+
 def _configure(conn) -> None:
     """Réglages du moteur, appliqués au mieux.
 
@@ -99,6 +158,7 @@ def apply_migrations(
     # `lire` ne doit rien écrire, puisqu'on l'appelle aussi sur des connexions
     # en lecture seule.
     version_schema.initialiser(conn)
+    valider(conn)      # la table de version doit exister pour de bon
     courante = _user_version(conn)
 
     if courante > cible:
@@ -117,18 +177,13 @@ def apply_migrations(
         if migration.version <= courante:
             continue
         log.info("Migration %d : %s", migration.version, migration.label)
-        conn.execute("BEGIN")
+        _debuter(conn)
         try:
             migration.apply(conn)
             version_schema.ecrire(conn, migration.version)
-            conn.execute("COMMIT")
+            _valider(conn)
         except Exception:
-            # `in_transaction` est faux si la migration a émis un COMMIT
-            # implicite (executescript, PRAGMA journal_mode...). Tenter un
-            # ROLLBACK dans ce cas masquerait l'erreur d'origine par un
-            # « no transaction is active » et rendrait la panne illisible.
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
+            _annuler(conn)
             log.error("Migration %d échouée, base laissée en version %d",
                       migration.version, _user_version(conn))
             raise

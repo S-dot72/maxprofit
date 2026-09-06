@@ -113,6 +113,21 @@ class ClientTelegram:
         except Exception as erreur:                      # noqa: BLE001
             log.debug("Message %s non effacé : %s", message_id, erreur)
 
+    async def declarer_commandes(self, commandes) -> None:
+        """Fait apparaître le bouton ☰ Menu dans le client Telegram.
+
+        Échoue sans conséquence : un menu absent est un désagrément, pas une
+        panne, et le bot doit démarrer même si Telegram est momentanément
+        injoignable — c'est justement quand tout va mal qu'on a besoin de ses
+        alertes.
+        """
+        try:
+            await self._appeler("setMyCommands", commands=[
+                {"command": nom, "description": texte} for nom, texte in commandes
+            ])
+        except Exception as erreur:                      # noqa: BLE001
+            log.warning("Menu non déclaré : %s", erreur)
+
     async def recevoir(self, depuis: int) -> list[dict]:
         return await self._appeler(
             "getUpdates", offset=depuis, timeout=ATTENTE_LONGUE_SEC,
@@ -120,7 +135,20 @@ class ClientTelegram:
         )
 
 
-CLAVIER = [["📊 État", "🔑 Renouveler le jeton"], ["❓ Aide"]]
+#: Clavier affiché sous la zone de saisie. Des libellés, pas des commandes :
+#: on tape rarement « /etat » au téléphone.
+CLAVIER = [["📊 État", "🔑 Renouveler le jeton"], ["📈 Paires", "❓ Aide"]]
+
+#: Commandes déclarées à Telegram par `setMyCommands`. C'est ce qui fait
+#: apparaître le bouton ☰ Menu à gauche de la zone de saisie, et l'autocomplétion
+#: quand on tape « / ». Sans cet appel, les commandes fonctionnent mais restent
+#: invisibles — il faut les connaître pour s'en servir.
+COMMANDES = [
+    ("etat", "État de la collecte"),
+    ("paires", "Paires actuellement suivies"),
+    ("ssid", "Installer un nouveau jeton de session"),
+    ("aide", "Comment ça marche"),
+]
 
 AIDE = (
     "<b>Bot d'exploitation</b>\n\n"
@@ -153,11 +181,13 @@ class BotExploitation:
 
     def __init__(self, client: ClientTelegram, chat_autorise: str, *,
                  etat: Callable[[], Awaitable[str]],
-                 installer_jeton: Callable[[str], Awaitable[str]]):
+                 installer_jeton: Callable[[str], Awaitable[str]],
+                 paires: Callable[[], Awaitable[str]] | None = None):
         self.client = client
         self.chat_autorise = str(chat_autorise)
         self._etat = etat
         self._installer_jeton = installer_jeton
+        self._paires = paires
         self._offset = 0
         self.actif = True
 
@@ -166,12 +196,26 @@ class BotExploitation:
         try:
             await self.client.envoyer(self.chat_autorise, texte, CLAVIER)
         except Exception as erreur:                      # noqa: BLE001
-            # Une alerte qui n'part pas ne doit pas emporter le processus
+            # Une alerte qui ne part pas ne doit pas emporter le processus
             # qu'elle signale : ce serait remplacer une panne visible par une
             # panne muette.
             log.error("Alerte Telegram non envoyée : %s", erreur)
+            if "can't send messages to the bot" in str(erreur):
+                # Erreur fréquente et opaque : TELEGRAM_CHAT_ID contient
+                # l'identifiant du BOT au lieu de celui de la conversation. Un
+                # bot ne s'envoie pas de message à lui-même — donc AUCUNE alerte
+                # n'arrivera jamais, y compris celle qui annoncera l'expiration
+                # du jeton. La collecte s'arrêterait alors sans que personne ne
+                # le sache.
+                log.error(
+                    "TELEGRAM_CHAT_ID = %s est l'identifiant du BOT, pas celui "
+                    "de votre conversation. Écrivez à @userinfobot pour obtenir "
+                    "le vôtre. En l'état, aucune alerte ne vous parviendra.",
+                    self.chat_autorise,
+                )
 
     async def boucler(self) -> None:
+        await self.client.declarer_commandes(COMMANDES)
         delai = 1
         while self.actif:
             try:
@@ -203,6 +247,11 @@ class BotExploitation:
             await self._commande_ssid(chat, texte, message.get("message_id"))
         elif texte.startswith("/etat") or texte.startswith("📊"):
             await self.client.envoyer(chat, await self._etat(), CLAVIER)
+        elif texte.startswith("/paires") or texte.startswith("📈"):
+            if self._paires is None:
+                await self.client.envoyer(chat, "Information indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._paires(), CLAVIER)
         elif texte.startswith("🔑") or texte.startswith("/renouveler"):
             await self.client.envoyer(chat, INSTRUCTIONS_JETON, CLAVIER)
         elif texte.startswith("/start"):

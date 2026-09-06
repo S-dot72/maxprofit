@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from maxprofit.core.config import backups_dir, charger_env_local
-from maxprofit.store.db import chemin_donnees
+from maxprofit.store.db import chemin_donnees, valider
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import bucket_of_ms
 from maxprofit.core.types import Candle, Tick
@@ -203,6 +203,10 @@ class Collector:
         n_t = self.store.insert_ticks(self.buf)
         n_c = self.store.upsert_candles(self.agg.drain_closed())
         self.buf.clear()
+        # Valider explicitement : `libsql` tient une transaction implicite et
+        # accumulerait sans fin sans jamais rien pousser vers Turso. En sqlite3
+        # autocommit, c'est sans effet.
+        valider(self.conn)
         if n_t or n_c:
             log.debug("flush: %d ticks, %d bougies", n_t, n_c)
 

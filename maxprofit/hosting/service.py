@@ -92,6 +92,7 @@ async def _servir(args) -> int:
         if bot is not None:
             bot._etat = lambda: _resume(superviseur, etat_collecte)
             bot._installer_jeton = superviseur.installer_jeton
+            bot._paires = lambda: _paires(superviseur)
 
         # Le serveur est démarré APRÈS le superviseur, pour lui passer
         # l'installateur à la construction : aiohttp déprécie la modification
@@ -188,6 +189,27 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
             f"bougies : {compteurs.get('candles', 0):,}"
         )
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
+    return "\n".join(lignes)
+
+
+async def _paires(superviseur: Superviseur) -> str:
+    """Ce à quoi la collecte est réellement abonnée.
+
+    Répond à la question qu'aucun compteur global ne tranche : le collecteur
+    tourne peut-être, mais suit-il les bonnes paires ? Le week-end, seules les
+    paires OTC cotent, et le seuil de payout peut n'en laisser aucune.
+    """
+    collecteur = superviseur.collecteur
+    souscrites = list(getattr(collecteur, "subscribed", []) or [])
+    if not souscrites:
+        return ("<b>Aucune paire suivie</b>\n\n"
+                "Soit la collecte n'a pas démarré, soit aucune paire n'atteint "
+                "le payout minimal à cette heure. Le week-end, seules les "
+                "paires OTC cotent.")
+    lignes = [f"<b>{len(souscrites)} paire(s) suivie(s)</b>", ""]
+    lignes += [f"• {nom}" for nom in souscrites[:30]]
+    if len(souscrites) > 30:
+        lignes.append(f"… et {len(souscrites) - 30} autres")
     return "\n".join(lignes)
 
 
