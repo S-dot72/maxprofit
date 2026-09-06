@@ -778,3 +778,22 @@ def test_un_tick_valide_remet_le_compteur_a_zero(source, broker):
     ticks = list(source._drainer("EURUSD_otc"))
     assert [t.price for t in ticks] == [1.1]
     assert source._rejets_consecutifs == 1
+
+
+def test_une_reconnexion_ferme_le_client_precedent(broker, caplog):
+    """La bibliothèque démarre un thread WebSocket à chaque `connect()` sans en
+    garder la référence, et son état (`global_value.pairs`,
+    `websocket_is_connected`) est global au module. Deux clients vivants
+    écriraient dans les mêmes tampons et se disputeraient les mêmes drapeaux —
+    et le collecteur appelle `connect()` à chaque coupure réseau, donc la
+    situation surviendrait dès la première."""
+    client, _ = broker
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+
+    src.connect()
+    assert not client.ferme
+
+    with caplog.at_level("INFO"):
+        src.connect()
+    assert client.ferme, "le client précédent n'a pas été fermé"
+    assert any("Reconnexion" in m for m in caplog.messages)

@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Iterator, List, Sequence
 
@@ -134,6 +135,14 @@ DECALAGE_MAX_HEURES = 14
 #: collecteur indéfiniment en ne produisant que des avertissements — vivant aux
 #: yeux de la sonde, et sans une ligne en base.
 REJETS_AVANT_ALERTE = 100
+
+#: Croissance du nombre de threads au-delà de laquelle on signale une fuite.
+#: `PocketOption.connect()` démarre un thread WebSocket à chaque appel sans en
+#: garder la référence, et son `disconnect()` échoue à le rejoindre. Le
+#: collecteur appelant `connect()` à chaque coupure réseau, les threads
+#: s'accumuleraient sur quatorze jours — chacun conservant un socket et écrivant
+#: dans les mêmes tampons globaux.
+CROISSANCE_THREADS_SUSPECTE = 3
 
 
 def chemin_session() -> Path:
@@ -272,6 +281,7 @@ class PocketOptionSource:
         self._unite: str | None = None   # "sec" ou "ms", détectée au 1er tick
         self._decalage_sec: int | None = None    # horloge broker - UTC vrai
         self._rejets_consecutifs = 0
+        self._threads_au_repos: int | None = None
         self._prochaine_verif_horloge = 0.0
         self._boucle: asyncio.AbstractEventLoop | None = None
 
@@ -326,6 +336,19 @@ class PocketOptionSource:
                 f"message quand un cookie de traceur manque."
             )
 
+        # Fermer AVANT de rouvrir. `PocketOption.connect()` démarre un thread
+        # WebSocket sans en garder la référence, et l'état de la bibliothèque
+        # (`global_value.pairs`, `websocket_is_connected`) est global au module.
+        # Deux clients vivants écriraient dans les mêmes tampons et se
+        # disputeraient les mêmes drapeaux : le collecteur appelant `connect()`
+        # à chaque coupure réseau, la situation surviendrait dès la première.
+        if self._client is not None:
+            log.info("Reconnexion : fermeture du client précédent.")
+            self.close()
+
+        if self._threads_au_repos is None:
+            self._threads_au_repos = threading.active_count()
+
         self._installer_boucle_asyncio()
         self._client = PocketOption(demo=self.demo, ssid=ssid)
         self._client.connect()
@@ -351,6 +374,7 @@ class PocketOptionSource:
                 paires = self._paires_brutes(self.delai_payouts_sec)
                 log.info("Connecté (démo=%s), %d actifs au catalogue.",
                          self.demo, len(paires))
+                self._verifier_fuite_de_threads()
                 return
             time.sleep(0.5)
 
@@ -549,6 +573,7 @@ class PocketOptionSource:
                 ) from None
             return None
         self._rejets_consecutifs = 0
+        self._threads_au_repos: int | None = None
         return tick
 
     def _vers_ms(self, brut) -> int:
@@ -673,6 +698,32 @@ class PocketOptionSource:
             self._decalage_sec = nouveau
 
         self._prochaine_verif_horloge = maintenant + INTERVALLE_VERIF_HORLOGE_SEC
+
+    def _verifier_fuite_de_threads(self) -> None:
+        """Signale l'accumulation de threads WebSocket.
+
+        On ne peut pas l'empêcher depuis l'extérieur : la bibliothèque ne garde
+        pas de référence sur le thread qu'elle démarre, et son `disconnect()`
+        échoue à le rejoindre (« 'NoneType' object has no attribute 'join' »).
+        Fermer avant de rouvrir limite la casse ; ce contrôle rend le reste
+        visible plutôt que de le laisser ronger la mémoire en silence.
+
+        Le risque n'est pas seulement la mémoire : `PocketOptionAPI.connect()`
+        se termine par une attente active (`while True` avec `except: pass`) du
+        premier horodatage serveur. Un thread resté bloqué là consomme un coeur
+        entier — sur une petite instance hébergée, deux suffisent à tout figer.
+        """
+        if self._threads_au_repos is None:
+            return
+        croissance = threading.active_count() - self._threads_au_repos
+        if croissance >= CROISSANCE_THREADS_SUSPECTE:
+            log.warning(
+                "%d threads de plus qu'au démarrage. La bibliothèque n'arrête "
+                "pas ses threads WebSocket à la déconnexion ; certains attendent "
+                "activement et consomment du CPU. Si cela continue de croître, "
+                "redémarrez le processus — l'hébergeur le fera de toute façon "
+                "quand la sonde /health passera au rouge.", croissance,
+            )
 
     @property
     def decalage_horloge_heures(self) -> float | None:
