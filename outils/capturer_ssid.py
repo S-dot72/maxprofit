@@ -188,6 +188,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="Ouvre une fenêtre SANS cookies enregistrés. À "
                          "utiliser si la fenêtre se referme aussitôt : cela "
                          "signifie qu'une session valide existait déjà.")
+    ap.add_argument("--envoyer", metavar="URL", default=None,
+                    help="Envoie le jeton au service hébergé, qui reprend la "
+                         "collecte seul. Ex. : https://mon-bot.onrender.com "
+                         "Le secret est lu dans ADMIN_SECRET.")
     ap.add_argument("--afficher", action="store_true",
                     help="Affiche le SSID en clair. Utile seulement pour le "
                          "copier dans les variables d'un hébergeur.")
@@ -257,6 +261,12 @@ def main(argv: list[str] | None = None) -> int:
         commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
                     else ".venv/bin/python")
         separateur = "\\" if os.name == "nt" else "/"
+        if args.envoyer:
+            code = _envoyer_au_serveur(args.envoyer, resultat["ssid"])
+            if code != 0:
+                return code
+            print()
+
         print("Étape suivante :")
         print(f"    {commande} outils{separateur}diagnostic_pocketoption.py --duree 90")
         print()
@@ -287,6 +297,60 @@ def main(argv: list[str] | None = None) -> int:
     print("    outils de développement, onglet Réseau, filtre WS, et cherchez")
     print("    la trame émise qui commence par 42[\"auth\",{ — c'est le SSID.")
     return 1
+
+
+def _envoyer_au_serveur(base_url: str, ssid: str) -> int:
+    """POSTe le jeton au service hébergé.
+
+    C'est ce qui supprime le copier-coller. Le serveur ne peut pas capturer le
+    jeton lui-même — cela demande un navigateur, et les cookies naîtraient de
+    toute façon sur la machine qui se connecte, pas sur la sienne. Mais rien
+    n'oblige un humain à faire le transport.
+
+    Le secret vient de `ADMIN_SECRET`, la même valeur que celle configurée sur
+    l'hébergeur. Sans lui, la route n'existe même pas côté serveur : un point
+    d'entrée acceptant un jeton de session sans authentification permettrait à
+    quiconque connaît l'URL de détourner la collecte vers un autre compte.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    secret = os.environ.get("ADMIN_SECRET", "").strip()
+    if not secret:
+        print("ADMIN_SECRET n'est pas défini : impossible d'authentifier "
+              "l'envoi.", file=sys.stderr)
+        print("Définissez la même valeur que sur l'hébergeur :", file=sys.stderr)
+        print('    $env:ADMIN_SECRET = "..."', file=sys.stderr)
+        return 2
+
+    url = base_url.rstrip("/") + "/session"
+    requete = urllib.request.Request(
+        url, method="POST",
+        data=json.dumps({"ssid": ssid}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Admin-Secret": secret},
+    )
+    print(f"Envoi à {url} ...")
+    try:
+        with urllib.request.urlopen(requete, timeout=30) as reponse:
+            corps = json.loads(reponse.read().decode("utf-8"))
+    except urllib.error.HTTPError as erreur:
+        detail = erreur.read().decode("utf-8", "replace")[:300]
+        print(f"Refus du serveur ({erreur.code}) : {detail}", file=sys.stderr)
+        if erreur.code == 401:
+            print("ADMIN_SECRET ne correspond pas à celui du serveur.",
+                  file=sys.stderr)
+        elif erreur.code == 404:
+            print("La route est désactivée : ADMIN_SECRET n'est pas défini "
+                  "côté serveur.", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as erreur:
+        print(f"Serveur injoignable : {erreur.reason}", file=sys.stderr)
+        return 1
+
+    print(f"Serveur : {corps.get('message', corps)}")
+    print("La collecte reprend. Rien d'autre à faire.")
+    return 0
 
 
 def _masquer(ssid: str) -> str:

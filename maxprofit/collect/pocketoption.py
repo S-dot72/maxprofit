@@ -245,9 +245,26 @@ class HorlogeIncoherente(BotError):
 class SourceIndisponible(BotError):
     """Le broker ou la bibliothèque ne répond pas.
 
-    Distincte de `BotError` parce que le collecteur doit la traiter comme une
-    perte de connexion (à réessayer avec backoff) et non comme une erreur de
-    programmation (fatale). Voir `FATALES` dans collector.py.
+    Le collecteur la traite comme une perte de connexion — à réessayer avec
+    backoff — et non comme une erreur de programmation. Elle est donc rattrapée
+    AVANT `FATALES` dans la boucle du collecteur : sans cela, héritant de
+    `BotError`, elle y serait comprise et tuerait la collecte à la première
+    indisponibilité passagère du broker.
+    """
+
+
+class SessionExpiree(SourceIndisponible):
+    """Le SSID n'est plus accepté : il faut un humain, pas une nouvelle tentative.
+
+    Distincte d'une coupure réseau, et la distinction est opérationnelle. Une
+    coupure se répare toute seule en réessayant ; une session expirée non. Un
+    collecteur qui réessaie indéfiniment avec un jeton mort tourne des jours
+    sans rien enregistrer, en journalisant « connexion perdue » toutes les
+    minutes — vivant aux yeux de l'hébergeur, et inutile.
+
+    Le symptôme observé est particulier : le socket s'ouvre et se déclare
+    connecté, mais le catalogue des actifs n'arrive jamais. Le serveur accepte
+    la poignée de main et refuse les données.
     """
 
 
@@ -454,13 +471,12 @@ class PocketOptionSource:
             if brut:
                 return brut
             if time.monotonic() >= limite:
-                raise SourceIndisponible(
-                    f"Aucune donnée de payout après {delai_sec:.0f} s. "
-                    f"GetPairs() renvoie {brut!r} : soit le catalogue des actifs "
-                    f"n'a pas été poussé par le serveur, soit le SSID est "
-                    f"accepté par le socket mais refusé pour les données "
-                    f"(session expirée). Recapturez-le avec "
-                    f"outils/capturer_ssid.py."
+                raise SessionExpiree(
+                    f"Socket connecté mais aucune donnée de payout après "
+                    f"{delai_sec:.0f} s. Le serveur accepte la poignée de main "
+                    f"et refuse les données : le SSID est expiré. Recapturez-le "
+                    f"avec outils/capturer_ssid.py, ou envoyez-en un nouveau au "
+                    f"bot Telegram avec /ssid."
                 )
             time.sleep(0.5)
 

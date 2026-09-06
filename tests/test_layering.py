@@ -53,6 +53,10 @@ ALLOWED: dict[str, set[str]] = {
     # Couche d'exécution : démarre les processus et expose la sonde HTTP
     # attendue par l'hébergeur. Aucune logique métier — elle assemble.
     "hosting": {"core", "store", "collect"},
+    # Note : `hosting` importe Telegram, mais UNIQUEMENT pour
+    # l'exploitation — alertes et renouvellement du jeton de session.
+    # Aucun signal, aucune stratégie : le bot de signaux reste
+    # l'étape 8, conditionnée par une étape 7 concluante.
 }
 
 

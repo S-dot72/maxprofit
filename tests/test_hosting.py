@@ -175,3 +175,71 @@ def test_ecoute_sur_toutes_les_interfaces(db):
 
     adresses = asyncio.run(_demarrer())
     assert any("0.0.0.0" in a for a in adresses), adresses
+
+
+# --------------------------------------------------------------------------- #
+# POST /session — le renouvellement sans copier-coller
+# --------------------------------------------------------------------------- #
+
+def _poster(db: Path, corps, secret=None):
+    from maxprofit.hosting.health import INSTALLER, build_app
+
+    async def _appeler():
+        app = build_app(db)
+        recus = []
+
+        async def installer(jeton):
+            if not jeton.startswith('42["auth"'):
+                raise ValueError("jeton invalide")
+            recus.append(jeton)
+            return "installé"
+
+        app[INSTALLER] = installer
+        entetes = {"X-Admin-Secret": secret} if secret is not None else {}
+        async with TestClient(TestServer(app)) as client:
+            reponse = await client.post("/session", json=corps, headers=entetes)
+            return reponse.status, await reponse.json(), recus
+
+    return asyncio.run(_appeler())
+
+
+def test_sans_secret_configure_la_route_n_existe_pas(db, monkeypatch):
+    """Un point d'entrée qui accepte un jeton de session sans authentification
+    permettrait à quiconque connaît l'URL de détourner la collecte vers un
+    autre compte. Tant qu'aucun secret n'est défini, la route répond 404."""
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    statut, _, recus = _poster(db, {"ssid": '42["auth",{}]'}, secret="peu importe")
+    assert statut == 404
+    assert recus == []
+
+
+def test_un_mauvais_secret_est_refuse(db, monkeypatch, caplog):
+    monkeypatch.setenv("ADMIN_SECRET", "le-bon")
+    with caplog.at_level("WARNING"):
+        statut, _, recus = _poster(db, {"ssid": '42["auth",{}]'}, secret="le-mauvais")
+    assert statut == 401
+    assert recus == []
+    assert any("secret invalide" in m for m in caplog.messages)
+
+
+def test_un_secret_absent_est_refuse(db, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "le-bon")
+    statut, _, recus = _poster(db, {"ssid": '42["auth",{}]'})
+    assert statut == 401
+    assert recus == []
+
+
+def test_le_bon_secret_installe_le_jeton(db, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "le-bon")
+    jeton = '42["auth",{"session":"x","isDemo":1}]'
+    statut, corps, recus = _poster(db, {"ssid": jeton}, secret="le-bon")
+    assert statut == 200
+    assert corps["ok"] is True
+    assert recus == [jeton]
+
+
+def test_un_jeton_refuse_donne_400_et_la_raison(db, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "le-bon")
+    statut, corps, _ = _poster(db, {"ssid": "pas un jeton"}, secret="le-bon")
+    assert statut == 400
+    assert "invalide" in corps["erreur"]

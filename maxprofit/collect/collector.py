@@ -29,6 +29,7 @@ from maxprofit.core.config import backups_dir, charger_env_local, db_path
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import bucket_of_ms
 from maxprofit.core.types import Candle, Tick
+from maxprofit.collect.pocketoption import SessionExpiree, SourceIndisponible
 from maxprofit.collect.sources import (
     MarketDataSource,
     PocketOptionSource,
@@ -227,6 +228,29 @@ class Collector:
                     self._consume()
                 except KeyboardInterrupt:
                     self.stop()
+                except SourceIndisponible as erreur:
+                    if isinstance(erreur, SessionExpiree):
+                        raise
+                    # Indisponibilité passagère du broker : exactement ce que
+                    # le backoff sert à absorber. Sans ce cas explicite, elle
+                    # tomberait dans FATALES — qui contient BotError, dont elle
+                    # hérite — et tuerait la collecte à la première alerte.
+                    log.warning("Source indisponible (%s). Reconnexion dans %ds",
+                                erreur, backoff)
+                    self._vider_tampons()
+                    if not self.running:
+                        break
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, self.cfg.max_backoff_sec)
+                except SessionExpiree:
+                    # Réessayer ne peut rien réparer : il faut un nouveau jeton,
+                    # donc un humain. On laisse remonter pour que le superviseur
+                    # alerte, plutôt que de boucler des jours sur un jeton mort
+                    # en journalisant « connexion perdue » toutes les minutes.
+                    log.error("Session expirée : arrêt en attente d'un nouveau "
+                              "jeton.")
+                    self._vider_tampons()
+                    raise
                 except FATALES:
                     # Réessayer ne peut rien réparer. On sauve ce qu'on a et on
                     # laisse remonter : mieux vaut un processus mort et visible

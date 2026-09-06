@@ -35,14 +35,24 @@ import logging
 import os
 import signal
 import sys
-import threading
 from pathlib import Path
 
-from maxprofit.collect.collector import Collector, build_config
-from maxprofit.core.config import charger_env_local
+import aiohttp
+
+from maxprofit.collect.collector import build_config
 from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
+from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
-from maxprofit.hosting.health import start_http_server
+from maxprofit.hosting.health import (
+    INSTALLER,
+    EtatCollecte,
+    start_http_server,
+)
+from maxprofit.hosting.superviseur import Superviseur
+from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
+
+ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
+ENV_TELEGRAM_CHAT = "TELEGRAM_CHAT_ID"
 
 log = logging.getLogger("hosting.service")
 
@@ -76,46 +86,108 @@ async def _servir(args) -> int:
     log.info("Base : %s", cfg.db)
 
     runner = await start_http_server(cfg.db)
+    etat_collecte = EtatCollecte(cfg.db)
 
-    source = _fabriquer_source(args.source)
-    collecteur = Collector(source, cfg)
+    async with aiohttp.ClientSession() as http:
+        bot = _fabriquer_bot(http)
+        superviseur = Superviseur(
+            lambda: _fabriquer_source(args.source), cfg,
+            alerter=(bot.alerter if bot else None),
+        )
+        if bot is not None:
+            bot._etat = lambda: _resume(superviseur, etat_collecte)
+            bot._installer_jeton = superviseur.installer_jeton
+        # Deux chemins pour un même geste : Telegram quand on a le jeton sous
+        # la main, POST /session quand l'outil de capture l'envoie lui-même.
+        runner.app[INSTALLER] = superviseur.installer_jeton
 
-    fin = asyncio.Event()
-    boucle = asyncio.get_running_loop()
+        boucle = asyncio.get_running_loop()
 
-    def _tourner():
+        def _arreter(*_):
+            log.info("Signal reçu, arrêt du collecteur...")
+            superviseur.arreter()
+            if bot is not None:
+                bot.actif = False
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                boucle.add_signal_handler(sig, _arreter)
+            except NotImplementedError:
+                # Windows : add_signal_handler n'existe pas sur la boucle Proactor.
+                signal.signal(sig, lambda *_: _arreter())
+
+        if args.duration:
+            boucle.call_later(args.duration, _arreter)
+
+        taches = [asyncio.create_task(superviseur.boucler(), name="superviseur")]
+        if bot is not None:
+            await bot.alerter("🟢 <b>Collecte démarrée</b>")
+            taches.append(asyncio.create_task(bot.boucler(), name="telegram"))
+
+        # Le superviseur commande : quand il rend la main, le processus s'arrête.
+        # Le bot n'est qu'un canal ; le laisser maintenir le processus en vie
+        # donnerait une instance verte côté hébergeur qui n'enregistre plus rien.
         try:
-            collecteur.run()
+            await taches[0]
         except Exception:
             log.exception("Le collecteur s'est arrêté sur une exception")
         finally:
-            # Réveille le thread principal : le processus doit mourir avec le
-            # collecteur. Rester en vie avec un serveur HTTP seul donnerait une
-            # instance « verte » côté hébergeur qui n'enregistre plus rien.
-            boucle.call_soon_threadsafe(fin.set)
+            for tache in taches[1:]:
+                tache.cancel()
+            await asyncio.gather(*taches[1:], return_exceptions=True)
+            await runner.cleanup()
 
-    thread = threading.Thread(target=_tourner, name="collecteur", daemon=True)
-    thread.start()
-
-    def _arreter(*_):
-        log.info("Signal reçu, arrêt du collecteur...")
-        collecteur.stop()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            boucle.add_signal_handler(sig, _arreter)
-        except NotImplementedError:
-            # Windows : add_signal_handler n'existe pas sur la boucle Proactor.
-            signal.signal(sig, lambda *_: _arreter())
-
-    if args.duration:
-        boucle.call_later(args.duration, _arreter)
-
-    await fin.wait()
-    thread.join(timeout=30)
-    await runner.cleanup()
     log.info("Processus terminé.")
     return 0
+
+
+def _fabriquer_bot(http) -> BotExploitation | None:
+    """`None` si Telegram n'est pas configuré : la collecte doit tourner sans.
+
+    Les deux variables vont ensemble. Un jeton sans identifiant de conversation
+    donnerait un bot sans liste blanche, donc pilotable par quiconque le
+    découvre — on refuse plutôt que de démarrer à moitié.
+    """
+    jeton = os.environ.get(ENV_TELEGRAM_JETON, "").strip()
+    chat = os.environ.get(ENV_TELEGRAM_CHAT, "").strip()
+    if not jeton and not chat:
+        log.info("Telegram non configuré : ni alertes ni renouvellement à "
+                 "distance.")
+        return None
+    if not (jeton and chat):
+        raise BotError(
+            f"{ENV_TELEGRAM_JETON} et {ENV_TELEGRAM_CHAT} vont ensemble. Un "
+            f"jeton sans identifiant de conversation donnerait un bot sans "
+            f"liste blanche, pilotable par quiconque le découvre."
+        )
+    log.info("Telegram actif (conversation %s).", chat)
+    return BotExploitation(
+        ClientTelegram(jeton, http), chat,
+        etat=None, installer_jeton=None,       # branchés juste après
+    )
+
+
+async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
+    """Ce que raconte /etat. Aucune décision ici : on formate (§0)."""
+    sain, details = etat.rapport()
+    compteurs = details.get("compteurs") or {}
+    lignes = [
+        "<b>État de la collecte</b>",
+        "",
+        superviseur.resume(),
+        "",
+        f"Sonde : {'🟢' if sain else '🔴'} {details.get('status')}",
+    ]
+    age = details.get("age_battement_sec")
+    if age is not None:
+        lignes.append(f"Dernier battement : il y a {age} s")
+    if compteurs:
+        lignes.append(
+            f"Ticks : {compteurs.get('ticks', 0):,} — "
+            f"bougies : {compteurs.get('candles', 0):,}"
+        )
+    lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
+    return "\n".join(lignes)
 
 
 def main(argv: list[str] | None = None) -> int:

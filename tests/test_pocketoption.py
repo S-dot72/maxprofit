@@ -224,7 +224,9 @@ def test_get_pairs_qui_renvoie_none_leve(source, broker):
     """
     client, _ = broker
     client._paires = None
-    with pytest.raises(SourceIndisponible, match="Aucune donnée de payout"):
+    # SessionExpiree hérite de SourceIndisponible : le silence de GetPairs est
+    # bien traduit en exception, et qualifié — ce n'est pas une coupure réseau.
+    with pytest.raises(SourceIndisponible, match="SSID est expiré"):
         source.list_pairs()
 
 
@@ -525,7 +527,7 @@ def test_catalogue_vide_traite_comme_absent(broker):
     client, _ = broker
     client._paires = {}
     src = PocketOptionSource(demo=True, delai_payouts_sec=0.5)
-    with pytest.raises(SourceIndisponible, match="Aucune donnée de payout"):
+    with pytest.raises(SourceIndisponible, match="refuse les données"):
         src.connect()
 
 
@@ -797,3 +799,21 @@ def test_une_reconnexion_ferme_le_client_precedent(broker, caplog):
         src.connect()
     assert client.ferme, "le client précédent n'a pas été fermé"
     assert any("Reconnexion" in m for m in caplog.messages)
+
+
+def test_une_indisponibilite_passagere_est_reessayee_pas_fatale():
+    """Régression : `SourceIndisponible` hérite de `BotError`, qui figure dans
+    `FATALES`. Sans un cas explicite AVANT, une indisponibilité passagère du
+    broker tuait la collecte au lieu d'être absorbée par le backoff — l'inverse
+    exact de ce que sa docstring promet.
+
+    `SessionExpiree`, elle, doit rester fatale : réessayer avec un jeton mort ne
+    répare rien, il faut un humain."""
+    from maxprofit.collect.collector import FATALES
+    from maxprofit.collect.pocketoption import SessionExpiree, SourceIndisponible
+
+    assert issubclass(SessionExpiree, SourceIndisponible)
+    assert issubclass(SourceIndisponible, BotError)
+    # BotError est dans FATALES : c'est bien l'ORDRE des `except` qui protège,
+    # et c'est pourquoi ce test existe.
+    assert any(issubclass(SourceIndisponible, f) for f in FATALES)

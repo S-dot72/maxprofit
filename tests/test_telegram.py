@@ -1,0 +1,201 @@
+"""
+Le bot d'exploitation et le renouvellement du jeton, sans réseau.
+
+Trois choses comptent ici, et ce sont les trois qu'un test doit protéger.
+
+**La liste blanche.** `TELEGRAM_CHAT_ID` n'est pas une destination, c'est une
+autorisation. Sans elle, quiconque découvre le bot peut lui injecter un SSID —
+c'est-à-dire détourner la collecte vers un autre compte — ou lire l'état de
+l'infrastructure. C'est la faille la plus grave que ce module puisse avoir.
+
+**L'effacement du jeton.** Un SSID envoyé par Telegram reste dans l'historique
+de la conversation. Le bot doit effacer le message, et l'effacer AVANT de
+répondre.
+
+**La reprise de la collecte.** Tout ceci ne sert à rien si un jeton reçu ne
+relance pas effectivement le collecteur.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from maxprofit.core.errors import BotError
+from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
+
+CHAT = "12345"
+INTRUS = "99999"
+JETON_VALIDE = '42["auth",{"session":"abc","isDemo":1,"uid":1,"platform":2}]'
+
+
+class FauxClient:
+    """Enregistre ce qui aurait été envoyé, sans réseau."""
+
+    def __init__(self):
+        self.envoyes: list[tuple[str, str]] = []
+        self.effaces: list[tuple[str, int]] = []
+
+    async def envoyer(self, chat_id, texte, clavier=None):
+        self.envoyes.append((str(chat_id), texte))
+
+    async def effacer(self, chat_id, message_id):
+        self.effaces.append((str(chat_id), message_id))
+
+
+def _message(texte: str, chat: str = CHAT, message_id: int = 7) -> dict:
+    return {"message": {"chat": {"id": chat}, "text": texte,
+                        "message_id": message_id}}
+
+
+def _bot(client, *, etat="état", installer=None):
+    async def _etat():
+        return etat
+
+    async def _installer(jeton):
+        if installer is None:
+            return f"installé:{jeton[:12]}"
+        return await installer(jeton)
+
+    return BotExploitation(client, CHAT, etat=_etat, installer_jeton=_installer)
+
+
+def _traiter(bot, message):
+    asyncio.run(bot._traiter(message["message"]))
+
+
+# --------------------------------------------------------------------------- #
+# Liste blanche
+# --------------------------------------------------------------------------- #
+
+def test_un_chat_non_autorise_est_ignore(caplog):
+    """LE test de ce fichier.
+
+    Sans cette vérification, n'importe qui découvrant le bot pourrait lui
+    envoyer un SSID et détourner la collecte vers son propre compte."""
+    client = FauxClient()
+    bot = _bot(client)
+
+    with caplog.at_level("WARNING"):
+        _traiter(bot, _message(f"/ssid {JETON_VALIDE}", chat=INTRUS))
+
+    assert client.envoyes == [], "le bot a répondu à un inconnu"
+    assert client.effaces == []
+    assert any("non autorisé" in m for m in caplog.messages)
+
+
+def test_un_intrus_ne_peut_pas_lire_l_etat():
+    client = FauxClient()
+    _traiter(_bot(client), _message("/etat", chat=INTRUS))
+    assert client.envoyes == []
+
+
+def test_le_chat_autorise_est_servi():
+    client = FauxClient()
+    _traiter(_bot(client, etat="🟢 tout va bien"), _message("/etat"))
+    assert client.envoyes == [(CHAT, "🟢 tout va bien")]
+
+
+# --------------------------------------------------------------------------- #
+# Le jeton ne traîne pas
+# --------------------------------------------------------------------------- #
+
+def test_le_message_portant_le_jeton_est_efface():
+    """Un SSID reste sinon dans l'historique de la conversation. L'effacer ne
+    l'ôte pas des serveurs de Telegram — raison de plus pour n'utiliser qu'un
+    compte de démonstration — mais il ne doit pas rester affiché."""
+    client = FauxClient()
+    _traiter(_bot(client), _message(f"/ssid {JETON_VALIDE}", message_id=42))
+    assert client.effaces == [(CHAT, 42)]
+
+
+def test_le_jeton_n_est_jamais_renvoye_dans_une_reponse():
+    client = FauxClient()
+    _traiter(_bot(client), _message(f"/ssid {JETON_VALIDE}"))
+    for _, texte in client.envoyes:
+        assert "abc" not in texte, "le jeton a été renvoyé en clair"
+
+
+def test_un_jeton_refuse_donne_la_raison():
+    async def _refuser(jeton):
+        raise BotError("Jeton sans champ « session » : il est tronqué.")
+
+    client = FauxClient()
+    _traiter(_bot(client, installer=_refuser), _message("/ssid 42[tronque"))
+    assert "tronqué" in client.envoyes[-1][1]
+
+
+def test_ssid_sans_argument_affiche_les_instructions():
+    client = FauxClient()
+    _traiter(_bot(client), _message("/ssid"))
+    assert "capturer_ssid" in client.envoyes[-1][1]
+
+
+# --------------------------------------------------------------------------- #
+# Menu
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("commande", ["/start", "/aide", "bonjour", "❓ Aide"])
+def test_le_menu_repond_toujours_quelque_chose(commande):
+    client = FauxClient()
+    _traiter(_bot(client), _message(commande))
+    assert client.envoyes, f"aucune réponse à {commande!r}"
+
+
+def test_le_bouton_etat_equivaut_a_la_commande():
+    client = FauxClient()
+    bot = _bot(client, etat="🟢 ok")
+    _traiter(bot, _message("📊 État"))
+    assert client.envoyes[-1][1] == "🟢 ok"
+
+
+def test_le_bouton_renouveler_explique_la_marche_a_suivre():
+    client = FauxClient()
+    _traiter(_bot(client), _message("🔑 Renouveler le jeton"))
+    assert "capturer_ssid" in client.envoyes[-1][1]
+
+
+def test_un_message_vide_ne_fait_rien():
+    client = FauxClient()
+    asyncio.run(_bot(client)._traiter({"chat": {"id": CHAT}}))
+    assert client.envoyes == []
+
+
+# --------------------------------------------------------------------------- #
+# Alertes
+# --------------------------------------------------------------------------- #
+
+def test_une_alerte_qui_echoue_n_emporte_pas_le_processus():
+    """Une alerte qui ne part pas ne doit pas tuer le processus qu'elle
+    signale : ce serait remplacer une panne visible par une panne muette."""
+    class ClientCasse(FauxClient):
+        async def envoyer(self, *a, **k):
+            raise RuntimeError("Telegram injoignable")
+
+    bot = _bot(ClientCasse())
+    asyncio.run(bot.alerter("panne"))     # ne doit pas lever
+
+
+def test_le_client_signale_un_refus_de_telegram():
+    """L'API répond 200 avec `ok: false` : sans contrôle, une erreur passerait
+    pour un envoi réussi."""
+    class FausseReponse:
+        content_type = "application/json"
+
+        async def json(self):
+            return {"ok": False, "description": "chat not found"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FausseSession:
+        def post(self, *a, **k):
+            return FausseReponse()
+
+    client = ClientTelegram("jeton", FausseSession())
+    with pytest.raises(RuntimeError, match="chat not found"):
+        asyncio.run(client.envoyer(CHAT, "coucou"))

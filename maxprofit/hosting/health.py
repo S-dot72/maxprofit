@@ -48,6 +48,12 @@ SEUIL_PANNE_SEC = 180
 #: touche ni à l'argent ni aux données, et l'hébergeur injecte $PORT lui-même.
 PORT_PAR_DEFAUT = 10000
 
+#: Secret partagé protégeant `POST /session`. Sans lui, la route n'est pas
+#: montée du tout : un point d'entrée qui accepte un jeton de session sans
+#: authentification permettrait à quiconque connaît l'URL de détourner la
+#: collecte vers un autre compte.
+ENV_SECRET_ADMIN = "ADMIN_SECRET"
+
 
 #: Clé typée : `app["etat"]` en chaîne libre est déprécié par aiohttp et
 #: n'attrape pas les fautes de frappe.
@@ -141,6 +147,51 @@ async def ping(request: web.Request) -> web.Response:
     return web.Response(text="pong")
 
 
+INSTALLER = web.AppKey("installer_jeton")
+
+
+async def poster_session(request: web.Request) -> web.Response:
+    """Reçoit un SSID depuis le poste de l'utilisateur.
+
+    C'est la réponse au problème du renouvellement : plutôt que de recopier un
+    jeton à la main, l'outil de capture le POSTe directement ici et la collecte
+    reprend seule. Le geste manuel se réduit à une commande locale, parce que
+    la connexion au broker exige un navigateur et que rien ne peut y changer.
+
+    La comparaison du secret est faite en temps constant. C'est peut-être
+    excessif pour un service à trois requêtes par jour, mais une comparaison
+    naïve laisse fuir la longueur du préfixe correct, et le coût de faire
+    autrement est nul.
+    """
+    import hmac
+
+    secret = os.environ.get(ENV_SECRET_ADMIN, "").strip()
+    if not secret:
+        return web.json_response({"erreur": "route désactivée"}, status=404)
+
+    fourni = request.headers.get("X-Admin-Secret", "")
+    if not hmac.compare_digest(fourni, secret):
+        log.warning("POST /session refusé : secret invalide (depuis %s).",
+                    request.remote)
+        return web.json_response({"erreur": "non autorisé"}, status=401)
+
+    installer = request.app.get(INSTALLER)
+    if installer is None:
+        return web.json_response({"erreur": "superviseur absent"}, status=503)
+
+    try:
+        corps = await request.json()
+        jeton = (corps.get("ssid") or "").strip()
+    except Exception:                                    # noqa: BLE001
+        return web.json_response({"erreur": "corps JSON attendu"}, status=400)
+
+    try:
+        message = await installer(jeton)
+    except Exception as erreur:                          # noqa: BLE001
+        return web.json_response({"erreur": str(erreur)}, status=400)
+    return web.json_response({"ok": True, "message": message})
+
+
 def build_app(db: Path) -> web.Application:
     """Construit l'application, sans l'écouter. Séparé de `start_http_server`
     pour que les tests puissent interroger les vraies routes sans ouvrir de
@@ -151,6 +202,7 @@ def build_app(db: Path) -> web.Application:
     app.router.add_get("/health", health_check)
     app.router.add_get("/ping", ping)
     app.router.add_get("/", health_check)
+    app.router.add_post("/session", poster_session)
     return app
 
 

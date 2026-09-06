@@ -31,9 +31,25 @@ services:
         value: "92"
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
       # tableau de bord Render, pour ne jamais entrer dans git.
+      # Jeton de session du broker. Il EXPIRE : le service alerte alors sur
+      # Telegram et attend un jeton neuf, sans redémarrer en boucle. Vous n'avez
+      # pas à revenir ici — `capturer_ssid.py --envoyer` le pousse directement.
       - key: POCKET_OPTION_SSID
         sync: false
+      # Le jeton reçu en cours de route est réécrit à côté de la base, donc sur
+      # le disque persistant : il survit à un redémarrage, pas à un
+      # redéploiement (qui recharge cette variable-ci).
+      - key: POCKET_OPTION_SESSION_FILE
+        value: /data/session.json
+      # Alertes et renouvellement à distance. Les deux vont ensemble : un jeton
+      # sans identifiant de conversation donnerait un bot sans liste blanche,
+      # pilotable par quiconque le découvre.
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Secret partagé protégeant POST /session. Sans lui la route répond 404 :
+      # un point d'entrée acceptant un jeton sans authentification permettrait
+      # de détourner la collecte vers un autre compte.
+      - key: ADMIN_SECRET
         sync: false
