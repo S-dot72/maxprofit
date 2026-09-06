@@ -1,0 +1,18 @@
+# Spec §1 (critère d'acceptation) et §2.7 : « Ces tests tournent en CI. Aucun
+# résultat de stratégie n'est crédible tant qu'ils ne passent pas tous. »
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - run: python -m pytest

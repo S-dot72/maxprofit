@@ -1,0 +1,14 @@
+[project]
+name = "maxprofit"
+version = "0.0.0"
+description = "Bot de signaux évolutif — voir SPEC_bot_evolutif.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"

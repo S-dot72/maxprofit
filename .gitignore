@@ -1,0 +1,19 @@
+# Spec §1.1 : aucune base de données ne doit jamais entrer dans le dépôt.
+# Un `git checkout` ou un déploiement ne doit pas pouvoir écraser trois
+# semaines de collecte.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backups/
+
+# Secrets de session broker
+session.json
+.env
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
