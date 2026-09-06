@@ -142,3 +142,54 @@ def research_db_path() -> Path:
     if not chemin.parent.is_dir():
         raise ConfigurationError(f"Le répertoire {chemin.parent} n'existe pas.")
     return chemin
+
+
+# --------------------------------------------------------------------------- #
+# Chargement de .env
+# --------------------------------------------------------------------------- #
+
+def charger_env_local(chemin: Path | None = None) -> list[str]:
+    """Charge `.env` dans l'environnement. Retourne les clés définies.
+
+    Appelée EXPLICITEMENT par les points d'entrée, jamais à l'import d'un
+    module. Un fichier qui modifie l'environnement du seul fait qu'on importe
+    une bibliothèque rend le comportement dépendant de l'ordre des imports, et
+    les tests dépendants du répertoire courant.
+
+    Les variables DÉJÀ définies dans l'environnement l'emportent : en
+    hébergement, la plateforme injecte ses propres valeurs et un `.env` oublié
+    dans l'image ne doit pas les écraser silencieusement.
+
+    Volontairement minimal — pas de dépendance à python-dotenv pour lire des
+    lignes `CLE=valeur`. Ni interpolation, ni export, ni multi-lignes : si un
+    jour il en faut, ce sera un choix explicite.
+    """
+    chemin = chemin or (Path.cwd() / ".env")
+    if not chemin.is_file():
+        return []
+
+    definies: list[str] = []
+    for numero, ligne in enumerate(
+        chemin.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        nue = ligne.strip()
+        if not nue or nue.startswith("#"):
+            continue
+        cle, separateur, valeur = nue.partition("=")
+        if not separateur:
+            raise ConfigurationError(
+                f"{chemin}:{numero} : ligne sans '=' ({ligne!r}). Format "
+                f"attendu : CLE=valeur."
+            )
+        cle = cle.strip()
+        if not cle:
+            raise ConfigurationError(f"{chemin}:{numero} : clé vide")
+        if cle in os.environ:
+            continue          # l'environnement réel l'emporte
+        valeur = valeur.strip()
+        # Guillemets facultatifs, retirés seulement s'ils encadrent la valeur.
+        if len(valeur) >= 2 and valeur[0] == valeur[-1] and valeur[0] in "\"'":
+            valeur = valeur[1:-1]
+        os.environ[cle] = valeur
+        definies.append(cle)
+    return definies

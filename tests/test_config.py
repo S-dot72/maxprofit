@@ -7,6 +7,8 @@ tourne en local » réapparaît à chaque refactor.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from maxprofit.core import config
@@ -81,3 +83,53 @@ def test_db_path_valide(monkeypatch, tmp_path):
     monkeypatch.setenv(config.ENV_DB_PATH, str(cible))
     assert config.db_path() == cible
     assert config.backups_dir() == tmp_path / "backups"
+
+
+# --------------------------------------------------------------------------- #
+# Chargement de .env
+# --------------------------------------------------------------------------- #
+
+def test_charge_les_cles_du_fichier(tmp_path, monkeypatch):
+    fichier = tmp_path / ".env"
+    fichier.write_text(
+        "# un commentaire\n"
+        "\n"
+        "MIN_PAYOUT_PCT=92\n"
+        "  TRADING_DB_PATH = /data/market.db  \n"
+        'POCKET_OPTION_SSID="42[\\"auth\\",{}]"\n',
+        encoding="utf-8",
+    )
+    for cle in ("MIN_PAYOUT_PCT", "TRADING_DB_PATH", "POCKET_OPTION_SSID"):
+        monkeypatch.delenv(cle, raising=False)
+
+    definies = config.charger_env_local(fichier)
+
+    assert set(definies) == {"MIN_PAYOUT_PCT", "TRADING_DB_PATH", "POCKET_OPTION_SSID"}
+    assert os.environ["MIN_PAYOUT_PCT"] == "92"
+    assert os.environ["TRADING_DB_PATH"] == "/data/market.db"
+    assert os.environ["POCKET_OPTION_SSID"] == '42[\\"auth\\",{}]'
+
+
+def test_l_environnement_reel_l_emporte_sur_le_fichier(tmp_path, monkeypatch):
+    """En hébergement, la plateforme injecte ses propres valeurs. Un `.env`
+    resté dans l'image ne doit pas les écraser en silence — c'est le genre
+    d'erreur qui fait pointer la base sur un chemin périmé."""
+    fichier = tmp_path / ".env"
+    fichier.write_text("MIN_PAYOUT_PCT=50\n", encoding="utf-8")
+    monkeypatch.setenv("MIN_PAYOUT_PCT", "92")
+
+    assert config.charger_env_local(fichier) == []
+    assert os.environ["MIN_PAYOUT_PCT"] == "92"
+
+
+def test_fichier_absent_n_est_pas_une_erreur(tmp_path):
+    """En production il n'y a pas de `.env` : tout vient de l'environnement."""
+    assert config.charger_env_local(tmp_path / "absent") == []
+
+
+def test_ligne_malformee_leve(tmp_path):
+    """Une ligne ignorée en silence, c'est une variable qu'on croit définie."""
+    fichier = tmp_path / ".env"
+    fichier.write_text("MIN_PAYOUT_PCT 92\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="sans '='"):
+        config.charger_env_local(fichier)

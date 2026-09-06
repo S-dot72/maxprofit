@@ -39,6 +39,7 @@ import threading
 from pathlib import Path
 
 from maxprofit.collect.collector import Collector, build_config
+from maxprofit.core.config import charger_env_local
 from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
 from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import start_http_server
@@ -133,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
+
+    charger_env_local()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

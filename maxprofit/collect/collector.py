@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from maxprofit.core.config import backups_dir, db_path
+from maxprofit.core.config import backups_dir, charger_env_local, db_path
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import bucket_of_ms
 from maxprofit.core.types import Candle, Tick
@@ -307,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
+
+    charger_env_local()
 
     logging.basicConfig(
         level=logging.DEBUG if a.verbose else logging.INFO,

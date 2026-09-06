@@ -103,6 +103,7 @@ préavis. **Compte démo dédié** : son usage viole probablement les conditions
 broker.
 
     .venv\Scripts\python -m pip install -e ".[pocketoption]"
+    .venv\Scripts\python outils\capturer_ssid.py            # une seule fois
     .venv\Scripts\python outils\diagnostic_pocketoption.py --duree 90
 
 Utilisez le Python du venv, pas celui du système : c'est là que la
@@ -121,9 +122,16 @@ trancher en lisant du code :
    qu'un symbole actif, il faut une rotation, qui divise la densité de ticks
    par le nombre de paires.
 
-Le diagnostic affiche aussi le SSID à injecter par `POCKET_OPTION_SSID` en
-hébergement : la bibliothèque sait l'obtenir en ouvrant une fenêtre de
-connexion, ce qui n'a aucun sens dans un conteneur.
+Le SSID est OBLIGATOIRE : `capturer_ssid.py` l'obtient une fois, on le met
+dans `.env`, et plus aucune fenêtre ne s'ouvre. La connexion intégrée de la
+bibliothèque n'est pas utilisée — elle exige sept cookies simultanés dont six
+traceurs tiers, et quand l'un manque elle se bloque indéfiniment sans un
+message.
+
+`.env` est lu par les points d'entrée (collecteur, service, diagnostic), pas à
+l'import. L'environnement réel l'emporte toujours sur le fichier : en
+hébergement, la plateforme injecte ses valeurs et un `.env` oublié dans
+l'image ne doit pas les écraser.
 
 La bibliothèque a été écrite avant Python 3.12 : elle appelle
 `asyncio.get_event_loop()` en comptant sur l'ancien comportement, qui créait

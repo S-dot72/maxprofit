@@ -88,6 +88,7 @@ def _verifier_interpreteur() -> None:
 _verifier_interpreteur()
 
 from maxprofit.collect.pocketoption import ENV_SSID, PocketOptionSource  # noqa: E402
+from maxprofit.core.config import charger_env_local  # noqa: E402
 from maxprofit.core.errors import BotError  # noqa: E402
 from maxprofit.core.timebase import format_local_ms, format_ms  # noqa: E402
 
@@ -102,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reel", action="store_true",
                     help="Compte RÉEL au lieu du compte démo. Déconseillé.")
     args = ap.parse_args(argv)
+
+    chargees = charger_env_local()
+    if chargees:
+        print(f"Chargé depuis .env : {', '.join(chargees)}")
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s")
