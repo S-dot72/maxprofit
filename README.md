@@ -159,6 +159,34 @@ La bibliothèque avale toutes ses erreurs (`except: return None`) ; un collecteu
 bâti dessus tel quel tournerait des jours sans rien enregistrer et sans une
 seule erreur dans les logs.
 
+## Stockage : Turso, pour se passer de disque persistant
+
+Aucune offre d'hébergement gratuite ne fournit de disque persistant. Sur un
+disque éphémère, la base repart vide à chaque redémarrage — on croit collecter
+sans rien accumuler, le désastre silencieux que vise la §1.1.
+
+[Turso](https://turso.tech) le règle : 5 Go gratuits, et c'est du SQLite, donc
+le schéma, les migrations et les requêtes sont inchangés. Le mode **réplique
+embarquée** est ce qui compte : les écritures vont dans un fichier local — pas
+d'aller-retour réseau par tick — et `sync()` pousse vers Turso ; au démarrage,
+la connexion tire l'état distant. Le disque du conteneur devient un cache dont
+la perte ne coûte rien.
+
+    turso db create maxprofit
+    turso db show maxprofit --url        # -> TURSO_DATABASE_URL
+    turso db tokens create maxprofit     # -> TURSO_AUTH_TOKEN
+
+Les deux variables vont ensemble : le code refuse de démarrer si l'une manque,
+plutôt que de retomber en silence sur un disque éphémère.
+
+Ce qu'on perd et qu'il faut regarder en face : entre deux synchronisations
+(une minute), les données ne sont qu'en local. Une coupure brutale perd cet
+intervalle — ce qui laisse un trou dans `uptime`, donc une fenêtre que le
+backtest écartera (§2.4) au lieu de raisonner dessus. Une dernière
+synchronisation est faite à l'arrêt.
+
+Un volume de 32 paires sur 14 jours pèse ~3,1 Go, sous les 5 Go gratuits.
+
 ## Où faire tourner la collecte
 
 Il n'existe pas, en 2026, d'hébergement gratuit offrant un disque persistant

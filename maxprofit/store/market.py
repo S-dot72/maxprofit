@@ -120,7 +120,11 @@ class MarketReader:
         ).fetchone()
         if row is None:
             return None
-        return PairInfo(row["pair"], bool(row["is_open"]), int(row["payout_pct"]))
+        # Accès POSITIONNEL, et colonnes énumérées dans le SELECT. Le pilote
+        # libSQL ne garantit pas l'accès par nom que donne `sqlite3.Row`, et un
+        # `SELECT *` rendrait la position dépendante de l'ordre des colonnes
+        # dans le schéma — donc d'une future migration.
+        return PairInfo(row[0], bool(row[2]), int(row[1]))
 
     def candles(self, pair: str, tf_sec: int, start_sec: int, end_sec: int) -> list[Candle]:
         """Bougies de `[start_sec, end_sec)`, ordonnées. Les bougies non
@@ -130,27 +134,29 @@ class MarketReader:
         if start_sec > end_sec:
             raise BotError(f"Fenêtre inversée : {start_sec} > {end_sec}")
         rows = self.conn.execute(
-            """SELECT * FROM candles
+            """SELECT pair, tf_sec, ts_sec, open, high, low, close,
+                      tick_count, complete
+               FROM candles
                WHERE pair = ? AND tf_sec = ? AND ts_sec >= ? AND ts_sec < ?
                ORDER BY ts_sec""",
             (pair, tf_sec, start_sec, end_sec),
         ).fetchall()
         return [
             Candle(
-                pair=r["pair"], tf_sec=r["tf_sec"], ts_sec=r["ts_sec"],
-                open=r["open"], high=r["high"], low=r["low"], close=r["close"],
-                tick_count=r["tick_count"], complete=bool(r["complete"]),
+                pair=r[0], tf_sec=r[1], ts_sec=r[2],
+                open=r[3], high=r[4], low=r[5], close=r[6],
+                tick_count=r[7], complete=bool(r[8]),
             )
             for r in rows
         ]
 
     def last_candle_ts_sec(self) -> int | None:
-        row = self.conn.execute("SELECT MAX(ts_sec) AS m FROM candles").fetchone()
-        return None if row["m"] is None else int(row["m"])
+        row = self.conn.execute("SELECT MAX(ts_sec) FROM candles").fetchone()
+        return None if row is None or row[0] is None else int(row[0])
 
     def last_heartbeat_sec(self) -> int | None:
-        row = self.conn.execute("SELECT MAX(ts_sec) AS m FROM uptime").fetchone()
-        return None if row["m"] is None else int(row["m"])
+        row = self.conn.execute("SELECT MAX(ts_sec) FROM uptime").fetchone()
+        return None if row is None or row[0] is None else int(row[0])
 
     def close(self) -> None:
         self.conn.close()
@@ -158,6 +164,6 @@ class MarketReader:
 
 def _counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {
-        table: int(conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"])
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         for table in ("ticks", "candles", "payouts", "uptime")
     }

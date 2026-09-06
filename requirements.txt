@@ -24,3 +24,14 @@ aiohttp>=3.10,<4
 # haïtienne, ce qui décalerait d'une heure la segmentation horaire (§3.2)
 # sur la moitié de l'année.
 tzdata>=2024.1
+
+# Stockage durable quand la machine n'a pas de disque persistant. Mode réplique
+# embarquée : les écritures vont dans un fichier SQLite local, `sync()` pousse
+# vers Turso, et l'ouverture retire l'état distant. Le disque du conteneur
+# devient un cache dont la perte ne coûte rien.
+#
+# Sans wheel pour Windows/Python 3.14 : le pilote ne s'installe donc pas sur un
+# poste sous cette version, seulement dans l'image (Linux, Python 3.12). Le
+# code le contourne — Turso ne s'active que si TURSO_DATABASE_URL est défini,
+# et tests/test_turso.py l'éprouve avec un double.
+libsql>=0.1.11

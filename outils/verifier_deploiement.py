@@ -78,9 +78,30 @@ def _telegram(jeton: str, methode: str, **params):
 
 def verifier_donnees(r: Rapport) -> None:
     print("\n— Données —")
+    from maxprofit.store import turso
+    try:
+        replique = turso.configure()
+    except Exception:                                    # noqa: BLE001
+        replique = False
+
     chemin = os.environ.get("TRADING_DB_PATH", "").strip()
     if not chemin:
-        r.echec("TRADING_DB_PATH", "absente. Aucune valeur par défaut (§5).")
+        if replique:
+            r.ok("TRADING_DB_PATH", f"non définie — cache dans "
+                                    f"{turso.chemin_cache()}")
+        else:
+            r.echec("TRADING_DB_PATH", "absente. Aucune valeur par défaut (§5).")
+            return
+    if replique:
+        # Le fichier n'est qu'un cache : ni chemin absolu ni répertoire
+        # existant ne sont exigés, contrairement au stockage durable.
+        if chemin:
+            r.ok("TRADING_DB_PATH", f"{chemin} (réplique locale)")
+        payout = os.environ.get("MIN_PAYOUT_PCT", "").strip()
+        if not payout.isdigit():
+            r.echec("MIN_PAYOUT_PCT", f"« {payout} » n'est pas un entier.")
+        else:
+            r.ok("MIN_PAYOUT_PCT", f"{payout} %")
         return
     p = Path(chemin)
     if not p.is_absolute():
@@ -107,6 +128,43 @@ def verifier_donnees(r: Rapport) -> None:
                 f"par défaut sur ce qui touche à l'argent (§5).")
     else:
         r.ok("MIN_PAYOUT_PCT", f"{payout} %")
+
+
+def verifier_stockage(r: Rapport) -> None:
+    """Sur un hébergement sans disque, c'est le point qui décide de tout.
+
+    Une collecte posée sur un disque éphémère tourne, a l'air saine, et repart
+    de zéro à chaque redémarrage. Rien ne le signale — c'est le désastre
+    silencieux de la §1.1, et le seul moyen de le voir est de vérifier ici.
+    """
+    print("\n— Stockage durable —")
+    from maxprofit.store import turso
+
+    try:
+        actif = turso.configure()
+    except Exception as erreur:                          # noqa: BLE001
+        r.echec("Turso", str(erreur))
+        return
+
+    if not actif:
+        r.alerte("Turso",
+                 "non configuré : la base vit sur le disque local. Correct sur "
+                 "un poste ou avec un volume persistant ; sur un hébergement "
+                 "gratuit, la collecte disparaîtra au premier redémarrage.")
+        return
+
+    try:
+        import libsql  # noqa: F401
+    except ImportError as erreur:
+        r.alerte("Pilote libsql",
+                 f"absent de CE poste ({erreur}). Sans wheel pour Windows/"
+                 f"Python 3.14 ; l'image Docker, elle, l'installe et le "
+                 f"vérifie à la construction.")
+    else:
+        r.ok("Pilote libsql", "présent")
+
+    r.ok("Turso", f"{os.environ[turso.ENV_URL]} — cache local : "
+                  f"{turso.chemin_cache()}")
 
 
 def verifier_broker(r: Rapport) -> None:
@@ -273,6 +331,7 @@ def main() -> int:
 
     r = Rapport()
     verifier_donnees(r)
+    verifier_stockage(r)
     verifier_broker(r)
     verifier_telegram(r)
     verifier_admin(r)

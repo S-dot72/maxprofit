@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # soit ajouter les paquets système correspondants, soit installer la
 # bibliothèque avec --no-deps et lister ses dépendances à la main. On vérifie
 # donc à la CONSTRUCTION plutôt qu'au premier démarrage en production.
-RUN python -c "import webview, pocketoptionapi.stable_api; print('adaptateur broker importable')"
+RUN python -c "import webview, pocketoptionapi.stable_api, libsql; print('adaptateur broker et pilote Turso importables')"
 
 COPY maxprofit/ ./maxprofit/
 COPY reset_db.py pyproject.toml ./
@@ -44,7 +44,10 @@ USER bot
 # un VOLUME PERSISTANT monté par l'hébergeur (Render : Disk ; Railway : Volume ;
 # Fly : Volume). Le répertoire doit exister : le code refuse de le créer, pour
 # qu'une faute de frappe donne une erreur et non une base vide.
-ENV TRADING_DB_PATH=/data/market.db
+# Réplique locale : un CACHE, pas la base durable. Celle-ci est chez Turso
+# (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN), ce qui permet de se passer de
+# disque persistant — donc de tourner sur une offre gratuite.
+ENV TRADING_DB_PATH=/tmp/replique-market.db
 
 # Le SSID vient de l'environnement, JAMAIS de l'image : c'est un jeton de
 # session complet. La bibliothèque sait aussi l'obtenir en ouvrant une fenêtre

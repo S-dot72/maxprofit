@@ -131,7 +131,8 @@ def test_migration_qui_echoue_laisse_la_base_dans_son_etat_anterieur(db):
         open_read_write(db, migrations=MIGRATIONS + (Migration(2, "v2", _v2_casse),))
 
     conn = sqlite3.connect(db)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1, (
+    assert conn.execute(
+        "SELECT version FROM _schema_version WHERE id = 1").fetchone()[0] == 1, (
         "la version a été avancée alors que la migration a échoué"
     )
     colonnes = {r[1] for r in conn.execute("PRAGMA table_info(ticks)")}
@@ -287,7 +288,11 @@ def test_sauvegarde_est_une_copie_lisible_et_complete(db, tmp_path):
     assert copie.name == "market_20240101_0600.db"
     restaure = sqlite3.connect(copie)
     assert restaure.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 100
-    assert restaure.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    # La version vit en table, pas dans le PRAGMA : voir store/version.py — un
+    # PRAGMA silencieusement ignoré par un moteur compatible SQLite ferait
+    # rejouer toutes les migrations.
+    assert restaure.execute(
+        "SELECT version FROM _schema_version WHERE id = 1").fetchone()[0] == SCHEMA_VERSION
     restaure.close()
 
 
@@ -369,3 +374,42 @@ def test_purge_refuse_de_supprimer_la_base_vive(tmp_path):
 
     backup.purger(dossier, vive)
     assert vive.is_file(), "la base vive a été purgée comme une sauvegarde"
+
+
+def test_une_base_versionnee_par_pragma_est_reprise_sans_rejouer(tmp_path):
+    """Reprise des bases existantes.
+
+    Une base créée avant le passage à la table porte sa version dans
+    `PRAGMA user_version`. À la première ouverture, ce numéro est recopié dans
+    la table — aucune migration n'est rejouée, aucune donnée touchée. Rejouer
+    une migration non idempotente sur une base peuplée détruirait la collecte.
+    """
+    db = tmp_path / "ancienne.db"
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.executescript(
+        "CREATE TABLE ticks (pair TEXT, ts_ms INTEGER, price REAL);"
+        "INSERT INTO ticks VALUES ('X', 1704067200000, 1.1);"
+        "PRAGMA user_version = 1;"
+    )
+    conn.close()
+
+    ouverte = open_read_write(db)
+    try:
+        assert schema_version(ouverte) == 1, "la version héritée a été perdue"
+        assert ouverte.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1
+    finally:
+        ouverte.close()
+
+
+def test_la_lecture_seule_n_ecrit_rien(tmp_path):
+    """Régression : lire la version créait la table, ce qui faisait échouer
+    toute ouverture en lecture seule."""
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    conn.close()
+
+    ro = open_read_only(db)
+    try:
+        assert schema_version(ro) == SCHEMA_VERSION
+    finally:
+        ro.close()

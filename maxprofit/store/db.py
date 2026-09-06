@@ -28,6 +28,8 @@ import sqlite3
 from pathlib import Path
 
 from maxprofit.core.errors import BotError
+from maxprofit.store import turso
+from maxprofit.store import version as version_schema
 from maxprofit.store.migrations import MIGRATIONS, SCHEMA_VERSION, Migration
 
 log = logging.getLogger(__name__)
@@ -37,18 +39,35 @@ class SchemaError(BotError):
     """Le schéma en base et le code ne sont pas compatibles."""
 
 
-def _user_version(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+def _user_version(conn) -> int:
+    """Version de schéma, lue dans une table et non dans un PRAGMA.
+
+    Voir `store/version.py` : un PRAGMA silencieusement ignoré par un moteur
+    compatible SQLite ferait rejouer toutes les migrations à chaque démarrage.
+    """
+    return version_schema.lire(conn)
 
 
-def _configure(conn: sqlite3.Connection) -> None:
-    # WAL : lectures possibles pendant l'écriture (l'inspection et les backups
-    # tournent sans arrêter le collecteur), et résistance aux coupures.
-    # Ne peut pas s'exécuter dans une transaction, donc avant toute migration.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=30000")
+def _configure(conn) -> None:
+    """Réglages du moteur, appliqués au mieux.
+
+    WAL permet de lire pendant l'écriture — l'inspection et les sauvegardes
+    tournent sans arrêter le collecteur — et rend la base résistante aux
+    coupures. Ces PRAGMA ne peuvent pas s'exécuter dans une transaction, donc
+    avant toute migration.
+
+    Un moteur compatible SQLite peut refuser ou ignorer certains d'entre eux :
+    une réplique embarquée gère elle-même sa durabilité et n'a pas à recevoir
+    d'ordre sur son journal. On n'échoue donc pas là-dessus — ce sont des
+    optimisations, pas des garanties de correction. Ce qui, lui, ne doit jamais
+    être supposé, c'est la version de schéma : elle est en table.
+    """
+    for reglage in ("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL",
+                    "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=30000"):
+        try:
+            conn.execute(reglage)
+        except Exception as erreur:                      # noqa: BLE001
+            log.debug("%s refusé par le moteur : %s", reglage, erreur)
 
 
 def apply_migrations(
@@ -76,6 +95,10 @@ def apply_migrations(
             f"dans l'ordre."
         )
 
+    # La table de version est créée ici, sur le chemin d'ÉCRITURE seulement :
+    # `lire` ne doit rien écrire, puisqu'on l'appelle aussi sur des connexions
+    # en lecture seule.
+    version_schema.initialiser(conn)
     courante = _user_version(conn)
 
     if courante > cible:
@@ -97,9 +120,7 @@ def apply_migrations(
         conn.execute("BEGIN")
         try:
             migration.apply(conn)
-            # PRAGMA n'accepte pas de paramètre lié : le numéro vient de notre
-            # propre table de migrations, jamais d'une entrée externe.
-            conn.execute(f"PRAGMA user_version = {int(migration.version)}")
+            version_schema.ecrire(conn, migration.version)
             conn.execute("COMMIT")
         except Exception:
             # `in_transaction` est faux si la migration a émis un COMMIT
@@ -128,17 +149,31 @@ def open_read_write(
     erreur et non une base vide (§1.1).
     """
     path = Path(path)
-    if not path.parent.is_dir():
-        raise SchemaError(
-            f"Le répertoire {path.parent} n'existe pas. La base n'est pas créée "
-            f"à la volée dans un chemin inconnu : ce serait masquer une faute de "
-            f"frappe par une base vide."
-        )
-    conn = sqlite3.connect(str(path), timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
+
+    if turso.configure():
+        # Le fichier local n'est plus qu'un CACHE : la vérité est chez Turso,
+        # et la connexion la tire à l'ouverture. Son répertoire peut donc être
+        # créé — ce qui serait interdit pour une base durable (§1.1), mais qui
+        # est exactement ce qu'on veut pour un cache sur disque éphémère.
+        conn = turso.ouvrir(path)
+    else:
+        if not path.parent.is_dir():
+            raise SchemaError(
+                f"Le répertoire {path.parent} n'existe pas. La base n'est pas "
+                f"créée à la volée dans un chemin inconnu : ce serait masquer "
+                f"une faute de frappe par une base vide."
+            )
+        conn = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+
     _configure(conn)
     version = apply_migrations(conn, migrations)
-    log.info("Base %s ouverte en écriture, schéma v%d", path, version)
+    if turso.est_replique(conn):
+        # Les migrations viennent d'écrire : sans cette synchronisation, un
+        # conteneur qui redémarre aussitôt repartirait d'un schéma antérieur.
+        turso.synchroniser(conn)
+    log.info("Base %s ouverte en écriture, schéma v%d%s", path, version,
+             " (réplique Turso)" if turso.est_replique(conn) else "")
     return conn
 
 
@@ -181,3 +216,15 @@ def open_read_only(path: Path | str) -> sqlite3.Connection:
 
 def schema_version(conn: sqlite3.Connection) -> int:
     return _user_version(conn)
+
+
+def chemin_donnees() -> Path:
+    """Où écrire, selon le mode de stockage.
+
+    Turso configuré : une réplique locale, qui n'est qu'un cache et peut donc
+    vivre n'importe où — y compris sur le disque éphémère d'un conteneur.
+    Sinon : le chemin durable du §1.1, avec toutes ses exigences.
+    """
+    from maxprofit.core.config import db_path
+
+    return turso.chemin_cache() if turso.configure() else db_path()

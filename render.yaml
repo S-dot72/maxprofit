@@ -15,18 +15,26 @@ services:
     name: maxprofit-collector
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter          # gratuit = disque éphémère = collecte perdue
+    plan: free             # possible SANS disque, grâce à Turso (voir ci-dessous)
     healthCheckPath: /ping # vivacité du processus. /health (503 si la collecte
                            # est morte) est fait pour un moniteur externe, pas
                            # pour l'auto-redémarrage : un redémarrage ne répare
                            # pas une source de données coupée.
-    disk:
-      name: trading-data
-      mountPath: /data     # doit correspondre à TRADING_DB_PATH
-      sizeGB: 5
+    # PAS de disque : le stockage durable est chez Turso. Le conteneur n'écrit
+    # que dans une réplique locale, qu'il retire au démarrage — un disque
+    # éphémère suffit donc, et l'offre gratuite convient.
     envVars:
+      # Réplique locale : un simple cache, sur le disque éphémère du conteneur.
+      # Le perdre ne coûte que le temps d'une resynchronisation.
       - key: TRADING_DB_PATH
-        value: /data/market.db
+        value: /tmp/replique-market.db
+      # Stockage DURABLE. Sans ces deux variables, la collecte disparaîtrait à
+      # chaque redémarrage ; le code refuse de démarrer si l'une manque plutôt
+      # que de retomber en silence sur le disque local.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
       - key: MIN_PAYOUT_PCT
         value: "92"
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
@@ -40,7 +48,7 @@ services:
       # le disque persistant : il survit à un redémarrage, pas à un
       # redéploiement (qui recharge cette variable-ci).
       - key: POCKET_OPTION_SESSION_FILE
-        value: /data/session.json
+        value: /tmp/session.json
       # Alertes et renouvellement à distance. Les deux vont ensemble : un jeton
       # sans identifiant de conversation donnerait un bot sans liste blanche,
       # pilotable par quiconque le découvre.

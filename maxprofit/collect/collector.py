@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from maxprofit.core.config import backups_dir, charger_env_local, db_path
+from maxprofit.core.config import backups_dir, charger_env_local
+from maxprofit.store.db import chemin_donnees
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import bucket_of_ms
 from maxprofit.core.types import Candle, Tick
@@ -35,6 +36,7 @@ from maxprofit.collect.sources import (
     PocketOptionSource,
     SimulatedSource,
 )
+from maxprofit.store import turso
 from maxprofit.store.backup import sauvegarder_et_purger
 from maxprofit.store.db import open_read_write
 from maxprofit.store.market import MarketWriter
@@ -128,6 +130,11 @@ class Config:
     flush_sec: float = 2.0            # écriture disque groupée
     heartbeat_sec: int = 10           # trace de connexion, pour repérer les trous
     backup_sec: int = 6 * 3600        # sauvegarde toutes les 6 h (§1.4)
+    #: Synchronisation vers Turso. Sans effet en stockage local. C'est la
+    #: fenêtre de perte maximale si le conteneur est tué brutalement : une
+    #: minute de ticks, qui laissera un trou dans `uptime` et sera donc écartée
+    #: par le backtest (§2.4) plutôt que raisonnée dessus.
+    sync_sec: int = 60
     max_backoff_sec: int = 60
 
     def __post_init__(self) -> None:
@@ -163,6 +170,7 @@ class Collector:
         # dont un second relevé de payouts une seconde après le premier.
         maintenant = time.time()
         self._t_flush = self._t_beat = self._t_pairs = self._t_backup = maintenant
+        self._t_sync = maintenant
 
     def stop(self, *_):
         log.info("Arrêt demandé, vidage des tampons...")
@@ -284,6 +292,10 @@ class Collector:
         try:
             self.store.upsert_candles(self.agg.drain_all())
             self.flush()
+            # Synchroniser APRÈS avoir vidé les tampons, et sur chaque sortie de
+            # boucle : c'est la dernière occasion de pousser vers Turso avant
+            # qu'un arrêt ne fasse disparaître la réplique locale.
+            turso.synchroniser(self.conn)
         except Exception:
             log.exception("Impossible de vider les tampons")
 
@@ -307,13 +319,16 @@ class Collector:
             if now - self._t_backup >= self.cfg.backup_sec:
                 self.backup()
                 self._t_backup = now
+            if now - self._t_sync >= self.cfg.sync_sec:
+                turso.synchroniser(self.conn)
+                self._t_sync = now
 
 
 def build_config(args) -> Config:
     """Assemble la configuration. `--db` l'emporte sur `TRADING_DB_PATH` pour
     les tests et l'inspection ; en production, on ne passe pas `--db`."""
     return Config(
-        db=Path(args.db) if args.db else db_path(),
+        db=Path(args.db) if args.db else chemin_donnees(),
         min_payout=args.min_payout,
     )
 
