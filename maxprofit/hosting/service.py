@@ -43,11 +43,7 @@ from maxprofit.collect.collector import build_config
 from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
 from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
-from maxprofit.hosting.health import (
-    INSTALLER,
-    EtatCollecte,
-    start_http_server,
-)
+from maxprofit.hosting.health import EtatCollecte, start_http_server
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
@@ -85,7 +81,6 @@ async def _servir(args) -> int:
     _verifier_emplacement_base(cfg.db)
     log.info("Base : %s", cfg.db)
 
-    runner = await start_http_server(cfg.db)
     etat_collecte = EtatCollecte(cfg.db)
 
     async with aiohttp.ClientSession() as http:
@@ -97,9 +92,15 @@ async def _servir(args) -> int:
         if bot is not None:
             bot._etat = lambda: _resume(superviseur, etat_collecte)
             bot._installer_jeton = superviseur.installer_jeton
+
+        # Le serveur est démarré APRÈS le superviseur, pour lui passer
+        # l'installateur à la construction : aiohttp déprécie la modification
+        # d'une application déjà démarrée.
+        #
         # Deux chemins pour un même geste : Telegram quand on a le jeton sous
         # la main, POST /session quand l'outil de capture l'envoie lui-même.
-        runner.app[INSTALLER] = superviseur.installer_jeton
+        runner = await start_http_server(
+            cfg.db, installer=superviseur.installer_jeton)
 
         boucle = asyncio.get_running_loop()
 
@@ -212,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        # stdout et non stderr, le défaut de logging. Deux raisons : c'est la
+        # convention des applications en conteneur, et sous PowerShell une
+        # redirection `2>&1` sur un exécutable natif enveloppe CHAQUE ligne
+        # dans un objet d'erreur, rendant le journal illisible et faisant
+        # croire à une avalanche de pannes.
+        stream=sys.stdout,
     )
 
     if args.min_payout is None:

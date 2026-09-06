@@ -159,6 +159,33 @@ La bibliothèque avale toutes ses erreurs (`except: return None`) ; un collecteu
 bâti dessus tel quel tournerait des jours sans rien enregistrer et sans une
 seule erreur dans les logs.
 
+## Où faire tourner la collecte
+
+Il n'existe pas, en 2026, d'hébergement gratuit offrant un disque persistant
+adapté à quatorze jours de collecte. Render réserve les disques aux offres
+payantes et endort les instances gratuites ; Fly.io n'a plus de tier gratuit ;
+Railway suspend ses services quand le crédit d'essai est épuisé. Sur un disque
+éphémère, la base repart vide à chaque redémarrage — on croirait collecter sans
+rien accumuler, ce qui est exactement le désastre silencieux que la §1.1 vise.
+
+**Collecter depuis son poste ne coûte rien et fait presque aussi bien** :
+
+    .\outils\collecter.ps1
+
+Le lanceur empêche la mise en veille — sans quoi la collecte s'arrête au premier
+écran noir — relance le service s'il tombe, et journalise à côté de la base.
+Les alertes Telegram fonctionnent : elles n'ont besoin que d'une sortie HTTPS.
+Le renouvellement du jeton devient d'ailleurs immédiat, capture et collecte
+étant sur la même machine.
+
+Le seul inconvénient est l'uptime, et c'est précisément ce que la table `uptime`
+mesure : le backtest refuse de générer un signal sur une fenêtre chevauchant un
+trou de connexion (§2.4). Une interruption est une donnée manquante déclarée,
+pas une donnée fausse.
+
+Pour héberger malgré tout, il faut un disque persistant — Render Starter, ou une
+petite VPS. `render.yaml` et le `Dockerfile` sont prêts.
+
 ## Déploiement
 
 Avant tout, en local, avec la configuration de production :

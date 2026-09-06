@@ -192,13 +192,18 @@ async def poster_session(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "message": message})
 
 
-def build_app(db: Path) -> web.Application:
+def build_app(db: Path, installer=None) -> web.Application:
     """Construit l'application, sans l'écouter. Séparé de `start_http_server`
     pour que les tests puissent interroger les vraies routes sans ouvrir de
     port : une sonde testée sur autre chose que ses routes réelles ne prouve
     rien."""
     app = web.Application()
     app[ETAT] = EtatCollecte(db)
+    if installer is not None:
+        # Fourni à la CONSTRUCTION, pas après : aiohttp déprécie la
+        # modification d'une application déjà démarrée, et le fera bientôt
+        # échouer.
+        app[INSTALLER] = installer
     app.router.add_get("/health", health_check)
     app.router.add_get("/ping", ping)
     app.router.add_get("/", health_check)
@@ -206,9 +211,10 @@ def build_app(db: Path) -> web.Application:
     return app
 
 
-async def start_http_server(db: Path, port: int | None = None) -> web.AppRunner:
+async def start_http_server(db: Path, port: int | None = None,
+                            installer=None) -> web.AppRunner:
     """Démarre le serveur HTTP"""
-    app = build_app(db)
+    app = build_app(db, installer=installer)
 
     runner = web.AppRunner(app)
     await runner.setup()
