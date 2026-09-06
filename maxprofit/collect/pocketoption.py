@@ -63,6 +63,9 @@ import os
 import time
 from typing import Iterator, List, Sequence
 
+import json
+from pathlib import Path
+
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import (
     MAX_PLAUSIBLE_MS,
@@ -75,6 +78,11 @@ from maxprofit.core.types import PairInfo, Tick
 log = logging.getLogger("collect.pocketoption")
 
 ENV_SSID = "POCKET_OPTION_SSID"
+ENV_FICHIER_SESSION = "POCKET_OPTION_SESSION_FILE"
+
+#: Fichier où le SSID est persisté après capture, pour ne pas avoir à le
+#: recopier. Il est dans `.gitignore` — c'est un jeton de session complet.
+NOM_FICHIER_SESSION = "session.json"
 
 #: Au-delà, on considère que le socket ne répondra pas.
 DELAI_CONNEXION_SEC = 30
@@ -87,6 +95,67 @@ DELAI_PAYOUTS_SEC = 25
 #: Au-delà de ce nombre de ticks accumulés pour une paire, on compacte le
 #: tampon de la bibliothèque : elle y empile sans jamais purger.
 SEUIL_COMPACTAGE = 5_000
+
+
+def chemin_session() -> Path:
+    """Où vit le SSID capturé.
+
+    Ordre : `POCKET_OPTION_SESSION_FILE`, sinon `session.json` à la racine du
+    projet. En hébergement, on passe plutôt par `POCKET_OPTION_SSID` : le
+    système de fichiers d'un conteneur est éphémère, un fichier écrit à
+    l'exécution disparaît au prochain déploiement.
+    """
+    brut = os.environ.get(ENV_FICHIER_SESSION, "").strip()
+    if brut:
+        return Path(brut)
+    return Path(__file__).resolve().parents[2] / NOM_FICHIER_SESSION
+
+
+def lire_session(demo: bool, chemin: Path | None = None) -> str | None:
+    """Relit un SSID capturé. `None` si absent, illisible ou pour l'autre type
+    de compte.
+
+    Le contrôle du type de compte n'est pas une politesse : un SSID de compte
+    réel utilisé en croyant être en démo ferait passer de vrais ordres. Le SSID
+    porte lui-même `isDemo`, donc l'erreur est détectable — autant la détecter.
+    """
+    chemin = chemin or chemin_session()
+    if not chemin.is_file():
+        return None
+    try:
+        donnees = json.loads(chemin.read_text(encoding="utf-8"))
+        ssid = donnees["ssid"]
+        enregistre_demo = bool(donnees["demo"])
+    except (OSError, ValueError, KeyError, TypeError) as erreur:
+        log.warning("Fichier de session illisible (%s) : %s", chemin, erreur)
+        return None
+    if enregistre_demo != demo:
+        log.warning(
+            "Session enregistrée pour un compte %s alors que %s est demandé : "
+            "ignorée. Relancez outils/capturer_ssid.py.",
+            "démo" if enregistre_demo else "RÉEL",
+            "démo" if demo else "RÉEL",
+        )
+        return None
+    return ssid
+
+
+def ecrire_session(ssid: str, demo: bool, uid: str | None = None,
+                   chemin: Path | None = None) -> Path:
+    """Persiste le SSID pour que plus personne n'ait à le recopier."""
+    chemin = chemin or chemin_session()
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    chemin.write_text(json.dumps({
+        "ssid": ssid,
+        "demo": demo,
+        "uid": uid,
+        "capture_ts_sec": int(time.time()),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        chemin.chmod(0o600)     # sans effet utile sur Windows, correct ailleurs
+    except OSError:
+        pass
+    return chemin
 
 
 class SourceIndisponible(BotError):
@@ -154,7 +223,15 @@ class PocketOptionSource:
             ) from None
 
         self._globals = global_value
-        ssid = self._ssid or os.environ.get(ENV_SSID, "").strip() or None
+        # Trois sources, par ordre de priorité : l'argument explicite,
+        # l'environnement (ce qu'utilise l'hébergeur), puis le fichier de
+        # session écrit par outils/capturer_ssid.py (ce qui évite tout
+        # copier-coller en local).
+        ssid = (
+            self._ssid
+            or os.environ.get(ENV_SSID, "").strip()
+            or lire_session(self.demo)
+        )
 
         if ssid is None:
             # Le SSID est OBLIGATOIRE, y compris en session interactive.
@@ -171,11 +248,12 @@ class PocketOptionSource:
             # donc d'emprunter ce chemin, et la capture du SSID est un geste
             # explicite, fait une fois, par un outil dédié.
             raise SourceIndisponible(
-                f"Aucun SSID. Capturez-le une fois avec "
-                f"outils/capturer_ssid.py, puis renseignez {ENV_SSID} dans "
-                f".env ou dans l'environnement. La connexion par fenêtre "
-                f"intégrée n'est pas utilisée : elle se bloque sans message "
-                f"quand un cookie de traceur manque."
+                f"Aucun SSID. Lancez outils/capturer_ssid.py une fois : il "
+                f"l'enregistre dans {chemin_session()} et tout le reste le "
+                f"relira de là, sans copier-coller. En hébergement, passez "
+                f"plutôt par {ENV_SSID}. La connexion par fenêtre intégrée de "
+                f"la bibliothèque n'est pas utilisée : elle se bloque sans "
+                f"message quand un cookie de traceur manque."
             )
 
         self._installer_boucle_asyncio()

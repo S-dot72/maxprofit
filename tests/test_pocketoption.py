@@ -505,3 +505,76 @@ def test_catalogue_vide_traite_comme_absent(broker):
     src = PocketOptionSource(demo=True, delai_payouts_sec=0.5)
     with pytest.raises(SourceIndisponible, match="Aucune donnée de payout"):
         src.connect()
+
+
+# --------------------------------------------------------------------------- #
+# Persistance du SSID — plus de copier-coller
+# --------------------------------------------------------------------------- #
+
+def test_le_ssid_est_relu_du_fichier_de_session(tmp_path):
+    from maxprofit.collect.pocketoption import ecrire_session, lire_session
+
+    fichier = tmp_path / "session.json"
+    ecrire_session("42[auth-demo]", demo=True, uid="123", chemin=fichier)
+
+    assert lire_session(demo=True, chemin=fichier) == "42[auth-demo]"
+
+
+def test_une_session_reelle_n_est_pas_servie_a_une_demande_demo(tmp_path, caplog):
+    """Le contrôle n'est pas une politesse : un SSID de compte RÉEL utilisé en
+    croyant être en démo ferait passer de vrais ordres. Le SSID porte lui-même
+    `isDemo`, donc l'erreur est détectable — autant la détecter."""
+    from maxprofit.collect.pocketoption import ecrire_session, lire_session
+
+    fichier = tmp_path / "session.json"
+    ecrire_session("42[auth-reel]", demo=False, uid="123", chemin=fichier)
+
+    with caplog.at_level("WARNING"):
+        assert lire_session(demo=True, chemin=fichier) is None
+    assert any("RÉEL" in m for m in caplog.messages)
+
+
+def test_fichier_de_session_absent_ou_corrompu(tmp_path, caplog):
+    from maxprofit.collect.pocketoption import lire_session
+
+    assert lire_session(demo=True, chemin=tmp_path / "absent.json") is None
+
+    corrompu = tmp_path / "session.json"
+    corrompu.write_text("{ pas du json", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        assert lire_session(demo=True, chemin=corrompu) is None
+    assert any("illisible" in m for m in caplog.messages)
+
+
+def test_connect_utilise_le_fichier_de_session(broker, monkeypatch, tmp_path):
+    """Le point de la demande : rien à recopier. La capture écrit le fichier,
+    tout le reste le relit."""
+    from maxprofit.collect.pocketoption import ENV_FICHIER_SESSION, ecrire_session
+
+    monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
+    fichier = tmp_path / "session.json"
+    ecrire_session("42[auth-du-fichier]", demo=True, uid="1", chemin=fichier)
+    monkeypatch.setenv(ENV_FICHIER_SESSION, str(fichier))
+
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+    src.connect()                      # ne doit pas lever
+
+
+def test_l_environnement_l_emporte_sur_le_fichier(broker, monkeypatch, tmp_path):
+    """En hébergement, la plateforme injecte le SSID ; un fichier resté dans
+    l'image ne doit pas le remplacer par un jeton périmé."""
+    from maxprofit.collect.pocketoption import (
+        ENV_FICHIER_SESSION,
+        ecrire_session,
+        lire_session,
+    )
+
+    fichier = tmp_path / "session.json"
+    ecrire_session("42[auth-du-fichier]", demo=True, chemin=fichier)
+    monkeypatch.setenv(ENV_FICHIER_SESSION, str(fichier))
+    monkeypatch.setenv("POCKET_OPTION_SSID", "42[auth-de-l-env]")
+
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+    src.connect()
+    # Le fichier existe bien, mais ce n'est pas lui qui a servi.
+    assert lire_session(demo=True, chemin=fichier) == "42[auth-du-fichier]"

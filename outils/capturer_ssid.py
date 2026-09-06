@@ -6,9 +6,17 @@ Capture du SSID Pocket Option — à faire UNE fois.
     .venv/bin/python outils/capturer_ssid.py          # Linux/mac
 
 Une fenêtre s'ouvre. Connectez-vous sur votre compte DÉMO. Dès que la session
-est détectée, la fenêtre se ferme et le SSID s'affiche : copiez-le dans `.env`
-sous `POCKET_OPTION_SSID`. Tout le reste du projet le lira de là, et plus
-aucune fenêtre ne s'ouvrira jamais.
+est lisible, la fenêtre se ferme et le SSID est ENREGISTRÉ dans `session.json`.
+Il n'y a rien à recopier : le collecteur et le diagnostic le reliront de là.
+
+Si la fenêtre se referme aussitôt, c'est qu'une session valide existait déjà
+dans les cookies enregistrés — c'est le cas normal après une première capture.
+Pour vous connecter sur un autre compte, utilisez `--nouvelle-session`, qui
+ouvre une fenêtre sans cookies.
+
+En hébergement, relancez avec `--afficher` : le disque d'un conteneur est
+éphémère, `session.json` n'y survivrait pas à un déploiement, et c'est
+`POCKET_OPTION_SSID` qu'il faut renseigner dans les variables de la plateforme.
 
 --- Pourquoi cet outil existe ---------------------------------------------
 
@@ -33,9 +41,10 @@ pendant qu'il attend, et s'arrête franchement au bout du délai.
 
     42["auth",{"session":"...","isDemo":1,"uid":123456,"platform":2,...}]
 
-C'est un jeton de session complet : quiconque l'a peut agir sur le compte. Ne
-le commitez pas (`.env` est dans `.gitignore`), ne le collez pas dans une
-conversation. Il expire — quand la collecte s'arrêtera sur une erreur
+C'est un jeton de session complet : quiconque l'a peut agir sur le compte.
+`session.json` et `.env` sont tous deux dans `.gitignore`. Ne le collez pas dans
+une conversation — l'outil ne l'affiche d'ailleurs que masqué, sauf demande
+explicite. Il expire : quand la collecte s'arrêtera sur une erreur
 d'authentification, relancez cet outil.
 """
 
@@ -44,7 +53,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -176,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="Délai maximal d'attente, en secondes (défaut : 300)")
     ap.add_argument("--reel", action="store_true",
                     help="Compte RÉEL au lieu du compte démo. Déconseillé.")
+    ap.add_argument("--nouvelle-session", action="store_true",
+                    help="Ouvre une fenêtre SANS cookies enregistrés. À "
+                         "utiliser si la fenêtre se referme aussitôt : cela "
+                         "signifie qu'une session valide existait déjà.")
+    ap.add_argument("--afficher", action="store_true",
+                    help="Affiche le SSID en clair. Utile seulement pour le "
+                         "copier dans les variables d'un hébergeur.")
     args = ap.parse_args(argv)
 
     try:
@@ -197,38 +212,65 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     resultat: dict = {}
-    fenetre = webview.create_window("Connexion Pocket Option", URL_CABINET)
+    debut = time.monotonic()
+    # `private_mode=True` n'enregistre aucun cookie : c'est ce qui garantit une
+    # page de connexion vierge quand une session valide traîne encore.
+    fenetre = webview.create_window(
+        "Connexion Pocket Option", URL_CABINET,
+        private_mode=args.nouvelle_session,
+    )
 
     # `webview.start` est BLOQUANT : il tient la boucle graphique jusqu'à la
     # fermeture de la fenêtre. Toute la surveillance se fait donc dans le
     # callback, que pywebview exécute dans un thread séparé.
     webview.start(
         lambda w: _surveiller(w, resultat, args.delai, not args.reel),
-        fenetre, private_mode=False,
+        fenetre, private_mode=args.nouvelle_session,
     )
+
+    immediat = (time.monotonic() - debut) < 10
 
     print()
     if "ssid" in resultat:
+        from maxprofit.collect.pocketoption import ecrire_session
+
+        fichier = ecrire_session(resultat["ssid"], demo=not args.reel,
+                                 uid=resultat.get("uid"))
         print("=" * 72)
-        print("SSID CAPTURÉ")
+        print("SSID CAPTURÉ ET ENREGISTRÉ")
         print("=" * 72)
         print()
-        print(resultat["ssid"])
+        print(f"Fichier : {fichier}")
+        print(f"Compte  : {'RÉEL' if args.reel else 'DÉMO'}   "
+              f"uid : {resultat.get('uid', '?')}")
+        print(f"SSID    : {_masquer(resultat['ssid'])}")
         print()
-        print(f"uid : {resultat.get('uid', '?')}")
+        print("Rien à recopier : le collecteur et le diagnostic le reliront de")
+        print("là. Ce fichier est dans .gitignore — c'est un jeton de session")
+        print("complet, ne le partagez pas.")
         print()
-        print("Ajoutez cette ligne à votre fichier .env (jamais commité) :")
-        print()
-        print(f"POCKET_OPTION_SSID={resultat['ssid']}")
-        print()
-        print("Puis lancez le diagnostic :")
-        commande = (".\\.venv\\Scripts\\python.exe" if os.name == "nt"
+        if immediat:
+            print("La fenêtre s'est fermée aussitôt : une session valide")
+            print("existait déjà dans les cookies enregistrés. C'est normal.")
+            print("Pour vous connecter sur un AUTRE compte, relancez avec")
+            print("--nouvelle-session.")
+            print()
+        commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
                     else ".venv/bin/python")
-        print(f"    {commande} outils/diagnostic_pocketoption.py --duree 90")
+        separateur = "\\" if os.name == "nt" else "/"
+        print("Étape suivante :")
+        print(f"    {commande} outils{separateur}diagnostic_pocketoption.py --duree 90")
         print()
-        print("C'est un jeton de session complet : ne le partagez pas, ne le "
-              "commitez pas. Il expire — relancez cet outil le jour où la "
-              "collecte s'arrête sur une erreur d'authentification.")
+        if args.afficher:
+            print("SSID en clair (pour la configuration d'un hébergeur) :")
+            print()
+            print(f"POCKET_OPTION_SSID={resultat['ssid']}")
+            print()
+        else:
+            print("Pour l'hébergement, relancez avec --afficher afin de le")
+            print("copier dans les variables d'environnement de la plateforme :")
+            print("le disque d'un conteneur est éphémère, le fichier n'y")
+            print("survivrait pas au déploiement.")
         return 0
 
     print("=" * 72)
@@ -240,12 +282,19 @@ def main(argv: list[str] | None = None) -> int:
     print("  - la connexion n'a pas abouti dans la fenêtre (vérifiez que vous")
     print("    voyez bien votre solde démo) ;")
     print("  - relancez avec --delai 600 si votre connexion est lente ;")
+    print("  - relancez avec --nouvelle-session pour repartir de cookies vierges ;")
     print("  - en dernier recours, récupérez le SSID à la main : connectez-vous")
     print("    sur pocketoption.com dans votre navigateur habituel, ouvrez les")
     print("    outils de développement, onglet Réseau, filtre WS, et cherchez")
-    print("    la trame émise qui commence par 42[\"auth\",{ — c'est le SSID,")
-    print("    à copier tel quel.")
+    print("    la trame émise qui commence par 42[\"auth\",{ — c'est le SSID.")
     return 1
+
+
+def _masquer(ssid: str) -> str:
+    """Assez pour reconnaître le jeton, pas assez pour s'en servir."""
+    if len(ssid) <= 24:
+        return "*" * len(ssid)
+    return f"{ssid[:18]}...{ssid[-6:]}  ({len(ssid)} caractères)"
 
 
 if __name__ == "__main__":

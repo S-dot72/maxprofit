@@ -122,8 +122,12 @@ trancher en lisant du code :
    qu'un symbole actif, il faut une rotation, qui divise la densité de ticks
    par le nombre de paires.
 
-Le SSID est OBLIGATOIRE : `capturer_ssid.py` l'obtient une fois, on le met
-dans `.env`, et plus aucune fenêtre ne s'ouvre. La connexion intégrée de la
+Le SSID est OBLIGATOIRE. `capturer_ssid.py` l'obtient une fois et
+l'ENREGISTRE dans `session.json` : il n'y a rien à recopier, le collecteur
+et le diagnostic le relisent de là. Si la fenêtre se referme aussitôt, c'est
+qu'une session valide existait déjà — `--nouvelle-session` en ouvre une sans
+cookies. En hébergement, `--afficher` donne le jeton à mettre dans
+`POCKET_OPTION_SSID`, le disque d'un conteneur étant éphémère. La connexion intégrée de la
 bibliothèque n'est pas utilisée — elle exige sept cookies simultanés dont six
 traceurs tiers, et quand l'un manque elle se bloque indéfiniment sans un
 message.
