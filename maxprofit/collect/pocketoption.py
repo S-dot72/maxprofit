@@ -79,6 +79,11 @@ ENV_SSID = "POCKET_OPTION_SSID"
 #: Au-delà, on considère que le socket ne répondra pas.
 DELAI_CONNEXION_SEC = 30
 
+#: Délai d'attente du catalogue des actifs, poussé par le serveur APRÈS
+#: l'ouverture du socket. Généreux à dessein : le confondre avec une panne
+#: ferait boucler le collecteur sur son propre démarrage.
+DELAI_PAYOUTS_SEC = 25
+
 #: Au-delà de ce nombre de ticks accumulés pour une paire, on compacte le
 #: tampon de la bibliothèque : elle y empile sans jamais purger.
 SEUIL_COMPACTAGE = 5_000
@@ -103,7 +108,8 @@ class PocketOptionSource:
     """
 
     def __init__(self, demo: bool = True, ssid: str | None = None,
-                 period_sec: int = 60, intervalle_lecture_sec: float = 0.25):
+                 period_sec: int = 60, intervalle_lecture_sec: float = 0.25,
+                 delai_payouts_sec: float = DELAI_PAYOUTS_SEC):
         if not demo:
             log.warning(
                 "Compte RÉEL demandé. Cette bibliothèque est non officielle et "
@@ -114,6 +120,7 @@ class PocketOptionSource:
         self._ssid = ssid
         self.period_sec = period_sec
         self.intervalle = intervalle_lecture_sec
+        self.delai_payouts_sec = delai_payouts_sec
         self._client = None
         self._globals = None
         self._souscrites: List[str] = []
@@ -150,18 +157,26 @@ class PocketOptionSource:
         ssid = self._ssid or os.environ.get(ENV_SSID, "").strip() or None
 
         if ssid is None:
-            # Sans SSID, la bibliothèque ouvre une fenêtre PyWebView pour un
-            # login manuel. Cela ne peut pas fonctionner dans un conteneur ni
-            # sous un service : autant le dire ici plutôt que de laisser le
-            # processus se bloquer sur une fenêtre que personne ne verra.
-            if not _session_interactive():
-                raise SourceIndisponible(
-                    f"Aucun SSID fourni et pas de session interactive. En "
-                    f"hébergement, récupérez le SSID une fois en local puis "
-                    f"passez-le par {ENV_SSID}. Voir "
-                    f"outils/diagnostic_pocketoption.py."
-                )
-            log.info("Aucun SSID : ouverture d'une fenêtre de connexion manuelle.")
+            # Le SSID est OBLIGATOIRE, y compris en session interactive.
+            #
+            # La bibliothèque sait ouvrir une fenêtre de connexion quand il
+            # manque, mais ce chemin se bloque indéfiniment : son `read_cookies`
+            # exige sept cookies simultanés, dont six traceurs tiers (Snapchat,
+            # TikTok, Twitter, AppsFlyer). S'il en manque un, la boucle renonce
+            # au bout de 250 s SANS fermer la fenêtre, et `webview.start()` ne
+            # rend jamais la main. Le processus reste figé, sans un message.
+            #
+            # Un blocage silencieux est le pire mode de défaillance possible
+            # pour un collecteur : on le croit en train de travailler. On refuse
+            # donc d'emprunter ce chemin, et la capture du SSID est un geste
+            # explicite, fait une fois, par un outil dédié.
+            raise SourceIndisponible(
+                f"Aucun SSID. Capturez-le une fois avec "
+                f"outils/capturer_ssid.py, puis renseignez {ENV_SSID} dans "
+                f".env ou dans l'environnement. La connexion par fenêtre "
+                f"intégrée n'est pas utilisée : elle se bloque sans message "
+                f"quand un cookie de traceur manque."
+            )
 
         self._installer_boucle_asyncio()
         self._client = PocketOption(demo=self.demo, ssid=ssid)
@@ -175,8 +190,15 @@ class PocketOptionSource:
                     f"{self._globals.websocket_error_reason}"
                 )
             if self._client.check_connect():
-                log.info("Connecté (démo=%s).", self.demo)
+                log.info("Socket ouvert (démo=%s). Attente du catalogue des "
+                         "actifs...", self.demo)
                 self._vus.clear()
+                # « Connecté » ne suffit pas : sans le catalogue des actifs, la
+                # source ne sait rien faire. On attend donc ici plutôt que de
+                # laisser le premier appel échouer.
+                paires = self._paires_brutes(self.delai_payouts_sec)
+                log.info("Connecté (démo=%s), %d actifs au catalogue.",
+                         self.demo, len(paires))
                 return
             time.sleep(0.5)
 
@@ -235,6 +257,37 @@ class PocketOptionSource:
 
     # --- paires -------------------------------------------------------------
 
+    def _paires_brutes(self, delai_sec: float) -> dict:
+        """Attend que le relevé de payouts soit disponible.
+
+        L'ouverture du socket et l'arrivée des données de payout sont deux
+        événements DISTINCTS : le serveur pousse le catalogue des actifs peu
+        après la poignée de main, de façon asynchrone. Entre les deux,
+        `GetPayoutData()` renvoie None, `json.loads(None)` lève, et le bare
+        `except` de `GetPairs()` transforme cela en None.
+
+        Sans cette attente, le collecteur interroge trop tôt à chaque démarrage
+        et conclut que le broker est en panne. Comme il redémarre avec backoff,
+        il ne dépasserait jamais cette étape : une course perdue au démarrage
+        deviendrait une panne permanente.
+        """
+        limite = time.monotonic() + delai_sec
+        while True:
+            self._verifier_connexion()
+            brut = self._client.GetPairs()
+            if brut:
+                return brut
+            if time.monotonic() >= limite:
+                raise SourceIndisponible(
+                    f"Aucune donnée de payout après {delai_sec:.0f} s. "
+                    f"GetPairs() renvoie {brut!r} : soit le catalogue des actifs "
+                    f"n'a pas été poussé par le serveur, soit le SSID est "
+                    f"accepté par le socket mais refusé pour les données "
+                    f"(session expirée). Recapturez-le avec "
+                    f"outils/capturer_ssid.py."
+                )
+            time.sleep(0.5)
+
     def list_pairs(self) -> List[PairInfo]:
         """TOUTES les paires, ouvertes ou non, avec leur payout brut.
 
@@ -243,16 +296,7 @@ class PocketOptionSource:
         qu'elle était à l'instant T (§2.3).
         """
         self._verifier_connexion()
-        brut = self._client.GetPairs()
-        if brut is None:
-            # GetPairs avale ses exceptions et renvoie None. Sans cette
-            # traduction, une panne ressemblerait à « aucune paire ouverte » et
-            # le collecteur se croirait simplement en week-end.
-            raise SourceIndisponible(
-                "GetPairs() a renvoyé None : la bibliothèque a rencontré une "
-                "erreur qu'elle n'a pas remontée (données de payout absentes "
-                "ou socket mort)."
-            )
+        brut = self._paires_brutes(self.delai_payouts_sec)
 
         paires: List[PairInfo] = []
         for nom, info in brut.items():
@@ -393,11 +437,3 @@ class PocketOptionSource:
             raise SourceIndisponible(f"Erreur WebSocket : {raison}")
         if not self._client.check_connect():
             raise SourceIndisponible("Socket fermé par le broker")
-
-
-def _session_interactive() -> bool:
-    import sys
-    try:
-        return sys.stdin is not None and sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False

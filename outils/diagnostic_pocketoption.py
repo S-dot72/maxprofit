@@ -112,8 +112,16 @@ def main(argv: list[str] | None = None) -> int:
     print("DIAGNOSTIC POCKET OPTION")
     print("=" * 72)
     if not (source._ssid or os.environ.get(ENV_SSID)):
-        print(f"Aucun {ENV_SSID} : une fenêtre de connexion va s'ouvrir.")
-        print("Connectez-vous sur votre compte DÉMO, puis laissez tourner.")
+        commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
+                    else ".venv/bin/python")
+        print(f"Aucun {ENV_SSID} défini.")
+        print()
+        print("Capturez-le d'abord, une seule fois :")
+        separateur = "\\" if os.name == "nt" else "/"
+        print(f"    {commande} outils{separateur}capturer_ssid.py")
+        print()
+        print("Puis mettez-le dans .env et relancez ce diagnostic.")
+        return 2
     print()
 
     try:

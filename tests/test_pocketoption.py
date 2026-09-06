@@ -20,6 +20,7 @@ et aucun test n'a besoin d'un compte, d'un SSID ni d'une connexion.
 from __future__ import annotations
 
 import sys
+import time
 import types
 
 import pytest
@@ -47,10 +48,19 @@ class FauxGlobals:
         self.websocket_error_reason = None
 
 
+#: Catalogue par défaut. Le vrai serveur le pousse APRÈS l'ouverture du socket,
+#: d'où les tests d'attente plus bas.
+CATALOGUE = {
+    "EURUSD_otc": {"id": 1, "payout": 92, "type": "otc", "active": True},
+    "GBPUSD_otc": {"id": 2, "payout": 85, "type": "otc", "active": True},
+}
+
+
 class FauxClient:
     def __init__(self, globals_, paires=None):
         self.g = globals_
-        self._paires = paires
+        self._paires = CATALOGUE if paires is None else paires
+        self.appels_getpairs = 0
         self.symboles_demandes: list[tuple[str, int]] = []
         self.ferme = False
 
@@ -61,6 +71,7 @@ class FauxClient:
         return bool(self.g.websocket_is_connected)
 
     def GetPairs(self):
+        self.appels_getpairs += 1
         return self._paires
 
     def GetTicks(self, pair):
@@ -117,7 +128,8 @@ def broker(monkeypatch):
 
 @pytest.fixture
 def source(broker):
-    src = PocketOptionSource(demo=True)
+    # Délai court : les tests n'ont pas à attendre les 25 s de production.
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
     src.connect()
     return src
 
@@ -190,7 +202,7 @@ def test_get_pairs_qui_renvoie_none_leve(source, broker):
     """
     client, _ = broker
     client._paires = None
-    with pytest.raises(SourceIndisponible, match="GetPairs"):
+    with pytest.raises(SourceIndisponible, match="Aucune donnée de payout"):
         source.list_pairs()
 
 
@@ -362,13 +374,19 @@ def test_le_flux_sert_toutes_les_paires_souscrites(source, broker):
 # Hébergement
 # --------------------------------------------------------------------------- #
 
-def test_sans_ssid_et_sans_terminal_le_demarrage_refuse(broker, monkeypatch):
-    """En conteneur, la bibliothèque ouvrirait une fenêtre de connexion que
-    personne ne verra jamais, et le processus se bloquerait sans message."""
+def test_sans_ssid_le_demarrage_refuse_toujours(broker, monkeypatch):
+    """Régression : le SSID est obligatoire, même en session interactive.
+
+    La bibliothèque sait ouvrir une fenêtre de connexion quand il manque, mais
+    ce chemin se bloque indéfiniment — son `read_cookies` attend sept cookies
+    simultanés dont six traceurs tiers, et quand l'un manque il renonce sans
+    fermer la fenêtre. `webview.start()` ne rend alors jamais la main : le
+    processus reste figé, sans un message. Pour un collecteur, un blocage
+    silencieux est le pire mode de défaillance : on le croit en train de
+    travailler.
+    """
     monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
-    monkeypatch.setattr("maxprofit.collect.pocketoption._session_interactive",
-                        lambda: False)
-    with pytest.raises(SourceIndisponible, match="SSID"):
+    with pytest.raises(SourceIndisponible, match="capturer_ssid"):
         PocketOptionSource(demo=True).connect()
 
 
@@ -432,3 +450,58 @@ def test_la_boucle_est_reutilisee_entre_deux_connexions(source):
     premiere = source._boucle
     source._installer_boucle_asyncio()
     assert source._boucle is premiere, "une boucle de plus à chaque reconnexion"
+
+
+# --------------------------------------------------------------------------- #
+# Le catalogue arrive APRÈS le socket
+# --------------------------------------------------------------------------- #
+
+def test_connect_attend_le_catalogue_des_actifs(broker):
+    """Régression.
+
+    L'ouverture du socket et l'arrivée du catalogue des actifs sont deux
+    événements distincts : le serveur pousse le second de façon asynchrone,
+    quelques instants après la poignée de main. Entre les deux,
+    `GetPayoutData()` renvoie None, `json.loads(None)` lève, et le bare `except`
+    de `GetPairs()` transforme cela en None.
+
+    Interroger dès que `check_connect()` est vrai concluait donc « broker en
+    panne » à chaque démarrage. Comme le collecteur redémarre avec backoff, il
+    n'aurait jamais dépassé cette étape : une course perdue au démarrage serait
+    devenue une panne permanente.
+    """
+    import threading
+
+    client, _ = broker
+    client._paires = None
+
+    def catalogue_tardif():
+        time.sleep(0.4)
+        client._paires = CATALOGUE
+
+    threading.Thread(target=catalogue_tardif, daemon=True).start()
+
+    src = PocketOptionSource(demo=True, delai_payouts_sec=5.0)
+    src.connect()                       # ne doit pas lever
+    assert len(src.list_pairs()) == 2
+    assert client.appels_getpairs > 1, "aucune nouvelle tentative"
+
+
+def test_catalogue_jamais_recu_leve_avec_une_piste(broker):
+    """Un SSID accepté par le socket mais refusé pour les données donne
+    exactement ce symptôme : connecté, mais aucun actif."""
+    client, _ = broker
+    client._paires = None
+    src = PocketOptionSource(demo=True, delai_payouts_sec=0.5)
+    with pytest.raises(SourceIndisponible, match="capturer_ssid"):
+        src.connect()
+
+
+def test_catalogue_vide_traite_comme_absent(broker):
+    """`{}` n'est pas « aucun actif ouvert » : c'est « rien reçu ». Les deux se
+    ressemblent, et les confondre ferait collecter dans le vide."""
+    client, _ = broker
+    client._paires = {}
+    src = PocketOptionSource(demo=True, delai_payouts_sec=0.5)
+    with pytest.raises(SourceIndisponible, match="Aucune donnée de payout"):
+        src.connect()
