@@ -193,3 +193,45 @@ def test_le_choix_du_chemin_depend_du_mode(monkeypatch, tmp_path):
     monkeypatch.setenv(turso.ENV_URL, "libsql://exemple.turso.io")
     monkeypatch.setenv(turso.ENV_JETON, "jeton")
     assert chemin_donnees() == tmp_path / "absent" / "market.db"
+
+
+# --------------------------------------------------------------------------- #
+# Erreurs de configuration depuis le tableau de bord
+# --------------------------------------------------------------------------- #
+
+def test_le_nom_de_la_base_n_est_pas_une_url(monkeypatch):
+    """Erreur probable quand on configure depuis l'interface web plutôt que la
+    ligne de commande : recopier le nom de la base au lieu de son URL."""
+    monkeypatch.setenv(turso.ENV_URL, "maxprofit-denis")
+    monkeypatch.setenv(turso.ENV_JETON, "jeton")
+    with pytest.raises(TursoIndisponible, match="schéma attendu"):
+        turso.configure()
+
+
+@pytest.mark.parametrize("url", [
+    "libsql://maxprofit-denis.turso.io",
+    "https://maxprofit-denis.turso.io",
+])
+def test_les_schemas_usuels_sont_acceptes(monkeypatch, url):
+    monkeypatch.setenv(turso.ENV_URL, url)
+    monkeypatch.setenv(turso.ENV_JETON, "jeton")
+    assert turso.configure() is True
+
+
+def test_l_echec_initial_designe_l_option_tursodb(monkeypatch, tmp_path):
+    """TursoDB — la réécriture Rust proposée par une case à cocher à la création
+    de la base — est un moteur différent, que le pilote `libsql` et le mode
+    réplique embarquée ne savent pas piloter. C'est la cause la plus probable
+    d'un échec de synchronisation initiale, et le message doit le dire : sans
+    cela, on soupçonne le jeton pendant une heure."""
+    monkeypatch.setenv(turso.ENV_URL, "libsql://exemple.turso.io")
+    monkeypatch.setenv(turso.ENV_JETON, "jeton")
+    _faux_libsql(monkeypatch, conn=FausseConnexion(echoue=True))
+
+    with pytest.raises(TursoIndisponible) as capture:
+        turso.ouvrir(tmp_path / "cache.db")
+
+    message = str(capture.value)
+    assert "TursoDB" in message
+    assert "ÉTEINT" in message
+    assert "jeton expiré" in message

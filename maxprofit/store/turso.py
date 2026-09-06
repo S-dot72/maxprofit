@@ -45,8 +45,25 @@ ENV_URL = "TURSO_DATABASE_URL"
 ENV_JETON = "TURSO_AUTH_TOKEN"
 
 
+#: Schémas d'URL acceptés. `libsql://` est la forme canonique ; `https://`
+#: désigne la même base et fonctionne aussi. Tout autre schéma trahit une URL
+#: copiée du mauvais endroit du tableau de bord.
+SCHEMAS_VALIDES = ("libsql://", "https://", "http://", "wss://", "ws://")
+
+
 class TursoIndisponible(BotError):
     """Turso est demandé mais inutilisable."""
+
+
+def _verifier_url(url: str) -> None:
+    if url.startswith(SCHEMAS_VALIDES):
+        return
+    raise TursoIndisponible(
+        f"{ENV_URL} = « {url[:40]} » n'a pas un schéma attendu "
+        f"({', '.join(SCHEMAS_VALIDES)}). Dans le tableau de bord Turso, c'est "
+        f"l'URL de la base qu'il faut copier, pas le nom ni le chemin de "
+        f"l'organisation."
+    )
 
 
 def configure() -> bool:
@@ -60,6 +77,7 @@ def configure() -> bool:
     url = os.environ.get(ENV_URL, "").strip()
     if not url:
         return False
+    _verifier_url(url)
     if not os.environ.get(ENV_JETON, "").strip():
         raise TursoIndisponible(
             f"{ENV_URL} est défini mais pas {ENV_JETON}. Les deux vont "
@@ -147,8 +165,18 @@ def synchroniser(conn, *, obligatoire: bool = False) -> bool:
     except Exception as erreur:                          # noqa: BLE001
         if obligatoire:
             raise TursoIndisponible(
-                f"Synchronisation initiale impossible : {erreur}. On ne démarre "
-                f"pas sur une réplique dont on ignore l'état."
+                f"Synchronisation initiale impossible : {erreur}\n"
+                f"\n"
+                f"Cause la plus probable : la base a été créée avec l'option "
+                f"« Run this database on TursoDB, the Rust rewrite of SQLite » "
+                f"ACTIVÉE. TursoDB est un moteur différent, que le pilote "
+                f"`libsql` et le mode réplique embarquée ne savent pas piloter. "
+                f"Recréez la base avec cet interrupteur ÉTEINT.\n"
+                f"\n"
+                f"Sinon : jeton expiré ou révoqué, ou URL d'une autre base.\n"
+                f"\n"
+                f"On ne démarre pas sur une réplique dont on ignore l'état : "
+                f"rejouer des migrations déjà appliquées détruirait des données."
             ) from None
         log.error(
             "Synchronisation Turso échouée : %s. Les données restent dans la "
