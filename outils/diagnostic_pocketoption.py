@@ -87,7 +87,12 @@ def _verifier_interpreteur() -> None:
 
 _verifier_interpreteur()
 
-from maxprofit.collect.pocketoption import ENV_SSID, PocketOptionSource  # noqa: E402
+from maxprofit.collect.pocketoption import (  # noqa: E402
+    ENV_SSID,
+    PocketOptionSource,
+    chemin_session,
+    resoudre_ssid,
+)
 from maxprofit.core.config import charger_env_local  # noqa: E402
 from maxprofit.core.errors import BotError  # noqa: E402
 from maxprofit.core.timebase import format_local_ms, format_ms  # noqa: E402
@@ -116,7 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 72)
     print("DIAGNOSTIC POCKET OPTION")
     print("=" * 72)
-    if not (source._ssid or os.environ.get(ENV_SSID)):
+    # Même règle que l'adaptateur, par le même code : environnement, puis
+    # fichier de session.
+    if resoudre_ssid(demo=not args.reel) is None:
         commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
                     else ".venv/bin/python")
         print(f"Aucun {ENV_SSID} défini.")

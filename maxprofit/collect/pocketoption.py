@@ -158,6 +158,30 @@ def ecrire_session(ssid: str, demo: bool, uid: str | None = None,
     return chemin
 
 
+def resoudre_ssid(demo: bool, explicite: str | None = None) -> str | None:
+    """D'où vient le SSID, une fois pour toutes.
+
+    Ordre : argument explicite, puis `POCKET_OPTION_SSID`, puis le fichier de
+    session écrit par `outils/capturer_ssid.py`.
+
+    Cette fonction existe pour qu'il n'y ait qu'UN endroit qui réponde à la
+    question. Le diagnostic avait sa propre version, qui ne regardait que
+    l'environnement : il annonçait « aucun SSID » alors que l'adaptateur, lui,
+    l'aurait trouvé dans le fichier. C'est l'invariant n°1 en miniature — deux
+    implémentations de la même règle divergent toujours.
+
+    L'environnement l'emporte sur le fichier : en hébergement, la plateforme
+    injecte le jeton et un `session.json` resté dans l'image ne doit pas le
+    remplacer par un périmé.
+    """
+    return (
+        (explicite or "").strip()
+        or os.environ.get(ENV_SSID, "").strip()
+        or lire_session(demo)
+        or None
+    )
+
+
 class SourceIndisponible(BotError):
     """Le broker ou la bibliothèque ne répond pas.
 
@@ -223,15 +247,7 @@ class PocketOptionSource:
             ) from None
 
         self._globals = global_value
-        # Trois sources, par ordre de priorité : l'argument explicite,
-        # l'environnement (ce qu'utilise l'hébergeur), puis le fichier de
-        # session écrit par outils/capturer_ssid.py (ce qui évite tout
-        # copier-coller en local).
-        ssid = (
-            self._ssid
-            or os.environ.get(ENV_SSID, "").strip()
-            or lire_session(self.demo)
-        )
+        ssid = resoudre_ssid(self.demo, self._ssid)
 
         if ssid is None:
             # Le SSID est OBLIGATOIRE, y compris en session interactive.

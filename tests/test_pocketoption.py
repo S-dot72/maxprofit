@@ -93,8 +93,16 @@ class FauxClient:
 
 
 @pytest.fixture
-def broker(monkeypatch):
-    """Injecte le double à la place de la vraie bibliothèque."""
+def broker(monkeypatch, tmp_path):
+    """Injecte le double à la place de la vraie bibliothèque.
+
+    Le fichier de session est redirigé vers un répertoire temporaire : sans
+    cela, les tests liraient le `session.json` réel du développeur et
+    passeraient ou échoueraient selon qu'il a capturé un SSID ou non. Un test
+    dont le résultat dépend de l'état de la machine ne teste rien.
+    """
+    monkeypatch.setenv("POCKET_OPTION_SESSION_FILE",
+                       str(tmp_path / "session-de-test.json"))
     globals_ = FauxGlobals()
     client = FauxClient(globals_)
 
@@ -578,3 +586,36 @@ def test_l_environnement_l_emporte_sur_le_fichier(broker, monkeypatch, tmp_path)
     src.connect()
     # Le fichier existe bien, mais ce n'est pas lui qui a servi.
     assert lire_session(demo=True, chemin=fichier) == "42[auth-du-fichier]"
+
+
+def test_resoudre_ssid_est_la_seule_regle(monkeypatch, tmp_path):
+    """Régression : le diagnostic avait sa propre version de cette règle, qui
+    ne regardait que l'environnement. Il annonçait « aucun SSID » alors que
+    l'adaptateur, lui, l'aurait trouvé dans le fichier de session — l'invariant
+    n°1 en miniature, deux implémentations d'une même règle qui divergent."""
+    from maxprofit.collect.pocketoption import (
+        ENV_FICHIER_SESSION,
+        ecrire_session,
+        resoudre_ssid,
+    )
+
+    fichier = tmp_path / "session.json"
+    monkeypatch.setenv(ENV_FICHIER_SESSION, str(fichier))
+    monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
+
+    # 1. rien nulle part
+    assert resoudre_ssid(demo=True) is None
+
+    # 2. le fichier seul suffit — c'est le cas après capturer_ssid.py
+    ecrire_session("42[du-fichier]", demo=True, chemin=fichier)
+    assert resoudre_ssid(demo=True) == "42[du-fichier]"
+
+    # 3. l'environnement l'emporte
+    monkeypatch.setenv("POCKET_OPTION_SSID", "42[de-l-env]")
+    assert resoudre_ssid(demo=True) == "42[de-l-env]"
+
+    # 4. l'argument explicite l'emporte sur tout
+    assert resoudre_ssid(demo=True, explicite="42[explicite]") == "42[explicite]"
+
+    # 5. une chaîne vide n'est pas une valeur
+    assert resoudre_ssid(demo=True, explicite="   ") == "42[de-l-env]"
