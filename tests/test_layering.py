@@ -38,13 +38,18 @@ ALLOWED: dict[str, set[str]] = {
     # les connaissait, ses données seraient façonnées par les règles du moment
     # et le backtest deviendrait circulaire.
     "collect": {"core", "store"},
+    # Indicateurs : fonctions pures d'une fenêtre de bougies. Ils ne
+    # connaissent ni la persistance ni les stratégies, ce qui garantit
+    # qu'ils ne peuvent pas aller chercher une bougie hors de la fenêtre
+    # qu'on leur passe.
+    "indicators": {"core"},
     # Le seul lieu de la logique de décision.
-    "strategies": {"core"},
+    "strategies": {"core", "indicators"},
     # Les deux moteurs importent LA MÊME stratégie. Ils ne se connaissent pas
     # l'un l'autre et ne passent pas par la couche Collecte : ils lisent les
     # données via `store`, sur un descripteur en lecture seule.
-    "backtest": {"core", "store", "strategies"},
-    "live": {"core", "store", "strategies"},
+    "backtest": {"core", "store", "strategies", "indicators"},
+    "live": {"core", "store", "strategies", "indicators"},
     # Couche d'exécution : démarre les processus et expose la sonde HTTP
     # attendue par l'hébergeur. Aucune logique métier — elle assemble.
     "hosting": {"core", "store", "collect"},
@@ -177,6 +182,31 @@ def test_les_strategies_n_ont_acces_ni_a_l_horloge_ni_a_l_aleatoire():
                     f"est une fonction pure de sa MarketView : l'heure vient de "
                     f"view.now_ms, jamais de l'horloge murale."
                 )
+
+
+def test_aucune_strategie_n_utilise_le_zigzag_repeignant():
+    """Spec §2.1 : la version repeignante est un instrument de MESURE.
+
+    Elle doit exister — c'est elle qui chiffre l'illusion en comparaison de la
+    version honnête — mais elle ne doit jamais alimenter une décision. Un
+    import depuis `strategies/` ou `live/` signifie que la stratégie lit
+    l'avenir, et rien dans les résultats ne le dirait : ils seraient
+    simplement excellents.
+    """
+    for path, sub, tree in modules():
+        if sub not in {"strategies", "live"}:
+            continue
+        for node in ast.walk(tree):
+            noms = set()
+            if isinstance(node, ast.ImportFrom):
+                noms = {a.name for a in node.names}
+            elif isinstance(node, ast.Attribute):
+                noms = {node.attr}
+            assert "zigzag_repeignant" not in noms, (
+                f"{path.relative_to(ROOT)} utilise zigzag_repeignant. Cette "
+                f"fonction connaît l'avenir : elle ne sert qu'à mesurer l'écart "
+                f"avec la version honnête, jamais à décider."
+            )
 
 
 DESTRUCTIF = re.compile(

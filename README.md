@@ -33,6 +33,11 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
         db.py           PRAGMA user_version, mode=ro pour le backtest
         market.py       MarketWriter (collecte) / MarketReader (backtest)
         backup.py       VACUUM INTO + rétention 7j/4sem (§1.4)
+      indicators/   fonctions pures d'une fenêtre de bougies, sans repeint
+        zigzag.py       automate causal, latence VARIABLE (§2.1)
+        fractals.py     latence constante de 2 bougies
+        oscillators.py  MA, Bollinger %B, stochastique, ATR à fenêtre finie
+        geometry.py     corps et mèches
       hosting/      processus hébergé : collecteur + sonde HTTP
       strategies/   le SEUL endroit où une Strategy peut être définie
       collect/      enregistre ; n'analyse ni ne décide
@@ -102,3 +107,10 @@ couvre aussi le rollback (code plus vieux que la base), la migration qui
 
 `tests/test_hosting.py` vérifie que la sonde ne ment pas : une collecte
 arrêtée doit produire un 503, jamais un `status: ok`.
+
+`tests/test_causalite.py` vérifie qu'aucun indicateur ne repeint : un pivot
+confirmé ne change plus jamais, aucun pivot n'est visible avant sa
+confirmation, et la valeur d'un indicateur ne dépend pas de la longueur de
+l'historique qu'on lui passe. Deux témoins négatifs prouvent que ces tests
+détectent réellement quelque chose : `zigzag_repeignant` doit y échouer, et
+un ATR de Wilder aussi.
