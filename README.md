@@ -9,7 +9,7 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
 |---|---|---|---|
 | 0 | Frontières et contrats (§0) | Les couches sont séparées et la séparation est testée | **fait** |
 | 1 | Persistance + migrations | Le test de survie au déploiement passe | **fait** |
-| 2 | Collecteur | 14 jours de données, < 5 % de bougies écartées | **prêt à héberger** |
+| 2 | Collecteur | 14 jours de données, < 5 % de bougies écartées | **branché, collecte à lancer** |
 | 3 | Indicateurs sans repeint | ZigZag et fractales à latence de confirmation | à faire |
 | 4 | Moteur de backtest | Les 5 tests-oracles passent | **fait** |
 | 5 | Stratégie + journalisation | 400+ évaluations avec features et contrefactuels | **fait** |
@@ -47,6 +47,7 @@ elle définit les invariants, ce fichier ne décrit que l'état d'avancement.
       hosting/      processus hébergé : collecteur + sonde HTTP
       strategies/   le SEUL endroit où une Strategy peut être définie
       collect/      enregistre ; n'analyse ni ne décide
+        pocketoption.py  adaptateur broker : retraduit le silence en erreurs
       backtest/     rejoue et mesure ; n'écrit pas dans les tables de marché
       live/         émet ; ne contient pas sa copie de la stratégie
     tests/
@@ -92,6 +93,38 @@ dérivée à l'analyse, via `TIMEZONE_AFFICHAGE` (défaut :
 UTC−4 de mars à novembre — donc un décalage fixe serait faux la moitié de
 l'année et décalerait d'une heure la segmentation horaire du §3.2. Un nom de
 fuseau IANA est exigé ; « UTC-5 » est refusé.
+
+## Source Pocket Option
+
+Il n'existe aucune API officielle. L'adaptateur s'appuie sur
+[PocketOptionAPI-v2](https://github.com/Mastaaa1987/PocketOptionAPI-v2), du
+reverse-engineering maintenu par un tiers, qui peut cesser de fonctionner sans
+préavis. **Compte démo dédié** : son usage viole probablement les conditions du
+broker.
+
+    pip install -e ".[pocketoption]"
+    python outils/diagnostic_pocketoption.py --duree 90
+
+Le diagnostic est à lancer UNE fois avant de collecter. Il répond aux deux
+questions qui décident si la collecte sera exploitable, et qu'on ne peut pas
+trancher en lisant du code :
+
+1. **La résolution des horodatages.** Si le broker envoie des secondes
+   entières, plusieurs ticks d'une même seconde s'écrasent sur la clé primaire
+   `(pair, ts_ms)` et le `tick_count` des bougies est sous-évalué — le critère
+   « au moins 5 ticks » du §2.4 écarterait alors des bougies valables.
+2. **Le nombre de paires diffusées simultanément.** Si `change_symbol` ne garde
+   qu'un symbole actif, il faut une rotation, qui divise la densité de ticks
+   par le nombre de paires.
+
+Le diagnostic affiche aussi le SSID à injecter par `POCKET_OPTION_SSID` en
+hébergement : la bibliothèque sait l'obtenir en ouvrant une fenêtre de
+connexion, ce qui n'a aucun sens dans un conteneur.
+
+L'essentiel de l'adaptateur consiste à **retraduire le silence en exceptions**.
+La bibliothèque avale toutes ses erreurs (`except: return None`) ; un collecteur
+bâti dessus tel quel tournerait des jours sans rien enregistrer et sans une
+seule erreur dans les logs.
 
 ## Hébergement
 

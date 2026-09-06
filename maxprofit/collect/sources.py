@@ -92,56 +92,27 @@ class SimulatedSource(MarketDataSource):
 # --------------------------------------------------------------------------- #
 # Pocket Option
 # --------------------------------------------------------------------------- #
+#
+# L'adaptateur réel vit dans son propre module : il est volumineux et sa
+# bibliothèque tierce (pandas, pywebview) n'a rien à faire dans le chemin
+# d'import du backtest. `pocketoption.py` n'importe rien d'ici, donc pas de
+# cycle ; `register` suffit à faire de la classe une MarketDataSource aux yeux
+# d'`isinstance` sans l'obliger à hériter.
 
-class PocketOptionSource(MarketDataSource):
-    """
-    Squelette. À compléter avec la bibliothèque non officielle que vous retenez.
+from maxprofit.collect.pocketoption import (  # noqa: E402
+    ENV_SSID,
+    PocketOptionSource,
+    SourceIndisponible,
+)
 
-    Je ne code pas les appels à votre place ici, pour une raison précise : les
-    signatures et le format des trames WebSocket de ces bibliothèques changent
-    régulièrement et diffèrent d'un fork à l'autre. Du code écrit de mémoire
-    aurait l'air correct et échouerait à l'exécution, ou pire, écrirait des
-    données mal horodatées que vous ne découvririez qu'au backtest.
+MarketDataSource.register(PocketOptionSource)
 
-    Marche à suivre :
-    1. Choisir une bibliothèque, ouvrir une session PyWebView, se connecter
-       manuellement sur un compte DÉMO dédié, récupérer le SSID.
-    2. Observer les trames WebSocket réelles pendant 2 minutes et noter :
-       - le nom du champ horodatage et son unité (secondes ? millisecondes ?
-         epoch ou offset ?). C'est le point à vérifier en priorité.
-       - le format des messages de prix et de la liste des actifs.
-    3. Remplir les quatre méthodes ci-dessous.
-
-    Contrat à respecter :
-    - stream() LÈVE une exception si le socket meurt. Ne jamais retourner
-      silencieusement : le collecteur ne saurait pas qu'il y a un trou.
-    - ts_ms provient du serveur. Si le broker n'envoie pas d'horodatage par tick,
-      mesurer une fois l'offset horloge locale / horloge serveur et l'appliquer.
-    """
-
-    SESSION_FILE = "session.json"
-
-    def __init__(self, demo: bool = True):
-        self.demo = demo
-        self._client = None
-
-    def connect(self) -> None:
-        # 1. charger SESSION_FILE si présent, sinon ouvrir PyWebView pour un login manuel
-        # 2. instancier le client, vérifier que le socket répond
-        # 3. persister le SSID
-        raise NotImplementedError("Brancher la bibliothèque Pocket Option ici")
-
-    def list_pairs(self) -> List[PairInfo]:
-        # Retourner TOUTES les paires, ouvertes ou non, avec leur payout brut.
-        # Le filtrage 92%+ se fait dans le collecteur, pas ici : on veut
-        # l'historique complet des payouts en base.
-        raise NotImplementedError
-
-    def subscribe(self, pairs: Sequence[str]) -> None:
-        raise NotImplementedError
-
-    def stream(self) -> Iterator[Tick]:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        pass
+__all__ = [
+    "ENV_SSID",
+    "MarketDataSource",
+    "PairInfo",
+    "PocketOptionSource",
+    "SimulatedSource",
+    "SourceIndisponible",
+    "Tick",
+]

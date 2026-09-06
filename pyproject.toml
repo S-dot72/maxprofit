@@ -15,6 +15,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Adaptateur broker. Volontairement OPTIONNEL : il tire pandas et pywebview,
+# dont ni le noyau, ni la persistance, ni le backtest n'ont besoin. Seul le
+# collecteur en production l'installe.
+pocketoption = [
+    "PocketOptionAPI-v2 @ git+https://github.com/Mastaaa1987/PocketOptionAPI-v2.git",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -29,6 +29,12 @@ USER bot
 # qu'une faute de frappe donne une erreur et non une base vide.
 ENV TRADING_DB_PATH=/data/market.db
 
+# Le SSID vient de l'environnement, JAMAIS de l'image : c'est un jeton de
+# session complet. La bibliothèque sait aussi l'obtenir en ouvrant une fenêtre
+# de connexion, ce qui n'a aucun sens dans un conteneur — récupérez-le une fois
+# en local avec outils/diagnostic_pocketoption.py, puis injectez-le ici.
+#   POCKET_OPTION_SSID  (secret, à définir dans le tableau de bord)
+
 EXPOSE 10000
 
 # --min-payout n'a pas de valeur par défaut : il vient de $MIN_PAYOUT_PCT.

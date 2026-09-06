@@ -1,0 +1,16 @@
+# Dépendances de l'adaptateur broker UNIQUEMENT. Séparées de requirements.txt
+# pour que le noyau, la persistance et le backtest restent installables sans
+# elles — c'est ce qui permet de faire tourner les tests et les analyses sur une
+# machine où rien de tout cela n'est disponible.
+#
+# ATTENTION à l'image de conteneur : `pocketoptionapi.stable_api` fait
+# `import webview` au niveau module. pywebview est une bibliothèque d'interface
+# graphique ; sur une image `slim` sans GTK ni Qt, cet import peut échouer alors
+# même que le SSID vient de l'environnement et qu'aucune fenêtre ne serait
+# ouverte. Si le build casse là-dessus, deux options : ajouter les paquets
+# système correspondants, ou installer la bibliothèque avec --no-deps et lister
+# ses dépendances à la main en omettant pywebview.
+#
+# Cette liste tire aussi pandas (~50 Mo), dont rien d'autre dans le projet n'a
+# besoin.
+PocketOptionAPI-v2 @ git+https://github.com/Mastaaa1987/PocketOptionAPI-v2.git
