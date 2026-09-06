@@ -1,0 +1,20 @@
+# Dépendances d'exécution du processus hébergé.
+#
+# Il n'y en a qu'une. Le noyau, la persistance et le collecteur n'utilisent que
+# la bibliothèque standard (sqlite3 incluse), et `tests/test_layering.py` refuse
+# qu'une dépendance tierce entre dans `maxprofit/core/`.
+#
+# Je n'ai volontairement PAS repris la liste du dépôt qui vous sert de modèle
+# (pandas, numpy, scipy, scikit-learn, ta, matplotlib, joblib,
+# python-telegram-bot, apscheduler, SQLAlchemy...). Aucun de ces paquets n'est
+# importé par une seule ligne de ce projet aujourd'hui. Les installer maintenant
+# rallonge chaque déploiement de plusieurs minutes, gonfle l'image de ~700 Mo,
+# et ajoute une surface de mise à jour pour du code qui n'existe pas encore.
+# Ils arriveront quand une étape les utilisera vraiment :
+#   étape 3/4  -> numpy éventuellement, si les indicateurs le justifient
+#   étape 7    -> scikit-learn (régression logistique, §3.3)
+#   étape 8    -> python-telegram-bot, et seulement si l'étape 7 est concluante
+#
+# aiohttp : sonde HTTP exigée par l'hébergeur. Pas de version épinglée basse
+# comme 3.9.1 — cette série traîne des CVE corrigées depuis.
+aiohttp>=3.10,<4

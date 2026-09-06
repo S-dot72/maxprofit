@@ -9,8 +9,11 @@ continu, sur des paires qui étaient réellement éligibles à ce moment-là.
 """
 
 import argparse
-import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
+
+from maxprofit.core.config import db_path
+from maxprofit.store.db import open_read_only
 
 
 def fmt(ts):
@@ -19,15 +22,18 @@ def fmt(ts):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="market_data.db")
-    ap.add_argument("--min-payout", type=int, default=92)
+    ap.add_argument("--db", default=None,
+                    help="Par défaut : $TRADING_DB_PATH.")
+    ap.add_argument("--min-payout", type=int, required=True)
     ap.add_argument("--gap-sec", type=int, default=60,
                     help="Trou de connexion signalé au-delà de N secondes")
     a = ap.parse_args()
 
-    c = sqlite3.connect(a.db)
+    # Lecture SEULE : un outil d'inspection ne doit pas pouvoir modifier
+    # le schéma ni les données sous les pieds du collecteur qui tourne.
+    c = open_read_only(Path(a.db) if a.db else db_path())
 
-    row = c.execute("SELECT MIN(ts), MAX(ts), COUNT(*) FROM candles").fetchone()
+    row = c.execute("SELECT MIN(ts_sec), MAX(ts_sec), COUNT(*) FROM candles").fetchone()
     if not row or row[0] is None:
         print("Base vide.")
         return
@@ -38,7 +44,7 @@ def main():
           f"{c.execute('SELECT COUNT(*) FROM ticks').fetchone()[0]:,}")
 
     # --- trous de connexion --------------------------------------------------
-    beats = [r[0] for r in c.execute("SELECT ts FROM uptime ORDER BY ts")]
+    beats = [r[0] for r in c.execute("SELECT ts_sec FROM uptime ORDER BY ts_sec")]
     gaps = [(beats[i], beats[i + 1]) for i in range(len(beats) - 1)
             if beats[i + 1] - beats[i] > a.gap_sec]
     lost = sum(b - x for x, b in gaps)
@@ -61,7 +67,7 @@ def main():
 
     for pair, total, complete, avg_ticks in rows:
         elig = c.execute(
-            "SELECT AVG(payout >= ? AND is_open) FROM payouts WHERE pair = ?",
+            "SELECT AVG(payout_pct >= ? AND is_open) FROM payouts WHERE pair = ?",
             (a.min_payout, pair),
         ).fetchone()[0] or 0
         print(f"{pair:<18}{total:>9,}{100*(complete or 0)/total:>10.0f}%"

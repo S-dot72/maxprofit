@@ -30,18 +30,24 @@ ALLOWED: dict[str, set[str]] = {
     # Le noyau ne connaît personne. C'est ce qui garantit qu'il n'existe
     # qu'UNE définition de Candle, Signal, MarketView et Strategy.
     "core": set(),
+    # La persistance ne connaît que les types du domaine. Elle ignore qui la
+    # lit, ce qui lui permet de servir une écriture au collecteur et une
+    # lecture seule au backtest sans les faire se rencontrer.
+    "store": {"core"},
     # La collecte enregistre. Elle ignore l'existence des stratégies : si elle
     # les connaissait, ses données seraient façonnées par les règles du moment
     # et le backtest deviendrait circulaire.
-    "collect": {"core"},
+    "collect": {"core", "store"},
     # Le seul lieu de la logique de décision.
     "strategies": {"core"},
     # Les deux moteurs importent LA MÊME stratégie. Ils ne se connaissent pas
-    # l'un l'autre et ne passent pas par la couche Collecte : l'accès aux
-    # données passera par un paquet `store` dédié (lecture seule côté backtest),
-    # introduit à l'étape 1.
-    "backtest": {"core", "strategies"},
-    "live": {"core", "strategies"},
+    # l'un l'autre et ne passent pas par la couche Collecte : ils lisent les
+    # données via `store`, sur un descripteur en lecture seule.
+    "backtest": {"core", "store", "strategies"},
+    "live": {"core", "store", "strategies"},
+    # Couche d'exécution : démarre les processus et expose la sonde HTTP
+    # attendue par l'hébergeur. Aucune logique métier — elle assemble.
+    "hosting": {"core", "store", "collect"},
 }
 
 
@@ -183,13 +189,20 @@ DESTRUCTIF = re.compile(
 
 
 def test_aucune_instruction_destructrice_dans_le_chemin_normal():
-    """Spec §1.2. Complété à l'étape 1 par le script `reset_db.py` isolé.
+    """Spec §1.2 : `reset_db.py` est le seul fichier autorisé à détruire.
 
     Ces instructions ne sont pas dangereuses parce qu'on les exécute par
     erreur ; elles le sont parce qu'elles s'exécutent au DÉMARRAGE, sur un
     chemin que plus personne ne relit.
+
+    Note pour plus tard : le §1.3 autorise la migration « copie table →
+    nouvelle table → renommage », qui a besoin d'un `DROP TABLE` sur la table
+    provisoire. Le jour où une telle migration devient nécessaire, ce test
+    devra être assoupli explicitement, pour ce fichier de migration seulement —
+    et cette exception se relira. C'est le but.
     """
-    for path in sorted(PKG.rglob("*.py")):
+    fichiers = sorted(PKG.rglob("*.py")) + sorted(ROOT.glob("*.py"))
+    for path in fichiers:
         if path.name == "reset_db.py":
             continue
         trouve = DESTRUCTIF.search(path.read_text(encoding="utf-8"))
@@ -198,3 +211,25 @@ def test_aucune_instruction_destructrice_dans_le_chemin_normal():
             f"({trouve.group(0)!r}). Elle n'a le droit d'exister que dans "
             f"reset_db.py, jamais importé par le reste du projet (spec §1.2)."
         )
+
+
+def test_le_backtest_ne_peut_pas_ecrire_dans_les_tables_de_marche():
+    """Spec §0 : « Backtest — ne fait jamais : écrire dans les tables de marché. »
+
+    La garantie de fond est le descripteur `mode=ro` de `store.open_read_only`.
+    Ce test ajoute la ceinture : ni `MarketWriter` ni `open_read_write` ne
+    doivent apparaître dans les imports du backtest. Sans cela, la violation
+    resterait possible et ne se verrait qu'à l'exécution, sur une base de
+    production.
+    """
+    interdits = {"MarketWriter", "open_read_write", "apply_migrations"}
+    for path, sub, tree in modules():
+        if sub != "backtest":
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                noms = {a.name for a in node.names} & interdits
+                assert not noms, (
+                    f"{path.relative_to(ROOT)} importe {sorted(noms)}. Le "
+                    f"backtest lit les tables de marché, il n'y écrit jamais."
+                )

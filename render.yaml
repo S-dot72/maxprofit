@@ -1,0 +1,37 @@
+# Render — déploiement du COLLECTEUR (étape 2 de la spec §4).
+#
+# Lisez ceci avant de déployer : sur le plan gratuit de Render, le disque est
+# ÉPHÉMÈRE. Il est effacé à chaque déploiement, à chaque redémarrage et après
+# chaque mise en veille. Une base SQLite posée dessus disparaît, et vous
+# repartez de zéro sans aucun message d'erreur — précisément le scénario contre
+# lequel toute la §1 est écrite.
+#
+# Un disque persistant est une option payante (plan Starter). Sans lui, ce
+# déploiement ne convient pas à une collecte de quatorze jours. Alternatives :
+# un volume Railway/Fly, ou une petite VPS où la base vit dans ~/trading_data.
+
+services:
+  - type: web
+    name: maxprofit-collector
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # gratuit = disque éphémère = collecte perdue
+    healthCheckPath: /ping # vivacité du processus. /health (503 si la collecte
+                           # est morte) est fait pour un moniteur externe, pas
+                           # pour l'auto-redémarrage : un redémarrage ne répare
+                           # pas une source de données coupée.
+    disk:
+      name: trading-data
+      mountPath: /data     # doit correspondre à TRADING_DB_PATH
+      sizeGB: 5
+    envVars:
+      - key: TRADING_DB_PATH
+        value: /data/market.db
+      - key: MIN_PAYOUT_PCT
+        value: "92"
+      # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
+      # tableau de bord Render, pour ne jamais entrer dans git.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

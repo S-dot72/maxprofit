@@ -3,11 +3,11 @@ Collecteur de données de marché.
 
 Un seul rôle : enregistrer ce qui passe, fidèlement, sans jamais analyser ni
 décider. Toute logique de stratégie ici serait une erreur d'architecture : elle
-figerait vos règles dans les données collectées et rendrait le backtest circulaire.
+figerait vos règles dans les données collectées et rendrait le backtest
+circulaire.
 
-Lancement :
-    python -m maxprofit.collect.collector --source sim --db market_data.db
-    python -m maxprofit.collect.collector --source po --min-payout 92
+    export TRADING_DB_PATH=/home/vous/trading_data/market.db
+    python -m maxprofit.collect.collector --source sim --min-payout 92
 
 Arrêt propre : Ctrl+C (les tampons sont vidés avant la sortie).
 """
@@ -17,18 +17,26 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import sqlite3
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List
 
+from maxprofit.core.config import backups_dir, db_path
+from maxprofit.core.errors import BotError
+from maxprofit.core.timebase import bucket_of_ms
+from maxprofit.core.types import Candle, Tick
 from maxprofit.collect.sources import (
     MarketDataSource,
     PocketOptionSource,
     SimulatedSource,
 )
-from maxprofit.collect.storage import Storage
-from maxprofit.core.types import Tick
+from maxprofit.store.backup import sauvegarder_et_purger
+from maxprofit.store.db import open_read_write
+from maxprofit.store.market import MarketWriter
 
 log = logging.getLogger("collector")
 
@@ -40,8 +48,8 @@ TF_SEC = 60  # bougies M1
 # --------------------------------------------------------------------------- #
 
 @dataclass
-class _Building:
-    ts: int
+class _EnCours:
+    ts_sec: int
     open: float
     high: float
     low: float
@@ -53,45 +61,51 @@ class CandleAggregator:
     """Construit les bougies M1 à partir des ticks, en mémoire.
 
     Une bougie n'est marquée `complete` que si on l'a observée du début à la fin
-    ET qu'on était connecté sans interruption pendant toute la minute. Une bougie
-    incomplète reste en base mais le backtest devra l'ignorer : mieux vaut une
-    donnée étiquetée douteuse qu'une donnée manquante silencieusement.
+    ET qu'on était connecté sans interruption pendant toute la minute. Une
+    bougie incomplète reste en base mais le backtest devra l'ignorer : mieux
+    vaut une donnée étiquetée douteuse qu'une donnée manquante silencieusement.
     """
 
-    def __init__(self):
-        self._cur: Dict[str, _Building] = {}
-        self._closed: List[tuple] = []
+    def __init__(self, tf_sec: int = TF_SEC):
+        self.tf_sec = tf_sec
+        self._cur: Dict[str, _EnCours] = {}
+        self._closed: List[Candle] = []
 
-    def add(self, t: Tick) -> None:
-        bucket = (t.ts_ms // 1000) // TF_SEC * TF_SEC
-        b = self._cur.get(t.pair)
+    def add(self, tick: Tick) -> None:
+        bucket = bucket_of_ms(tick.ts_ms, self.tf_sec)
+        b = self._cur.get(tick.pair)
         if b is None:
-            self._cur[t.pair] = _Building(bucket, t.price, t.price, t.price, t.price)
+            self._cur[tick.pair] = _EnCours(bucket, tick.price, tick.price,
+                                            tick.price, tick.price)
             return
-        if bucket > b.ts:
-            self._closed.append(self._row(t.pair, b, complete=True))
-            self._cur[t.pair] = _Building(bucket, t.price, t.price, t.price, t.price)
+        if bucket > b.ts_sec:
+            self._closed.append(self._candle(tick.pair, b, complete=True))
+            self._cur[tick.pair] = _EnCours(bucket, tick.price, tick.price,
+                                            tick.price, tick.price)
             return
-        if bucket < b.ts:
-            return  # tick en retard sur une bougie déjà fermée : on l'ignore
-        b.high = max(b.high, t.price)
-        b.low = min(b.low, t.price)
-        b.close = t.price
+        if bucket < b.ts_sec:
+            return  # tick en retard sur une bougie déjà fermée : ignoré
+        b.high = max(b.high, tick.price)
+        b.low = min(b.low, tick.price)
+        b.close = tick.price
         b.n += 1
 
-    def _row(self, pair: str, b: _Building, complete: bool) -> tuple:
-        return (pair, TF_SEC, b.ts, b.open, b.high, b.low, b.close, b.n,
-                1 if complete else 0)
+    def _candle(self, pair: str, b: _EnCours, *, complete: bool) -> Candle:
+        return Candle(
+            pair=pair, tf_sec=self.tf_sec, ts_sec=b.ts_sec,
+            open=b.open, high=b.high, low=b.low, close=b.close,
+            tick_count=b.n, complete=complete,
+        )
 
-    def drain_closed(self) -> List[tuple]:
+    def drain_closed(self) -> List[Candle]:
         rows, self._closed = self._closed, []
         return rows
 
-    def drain_all(self) -> List[tuple]:
+    def drain_all(self) -> List[Candle]:
         """Sur arrêt ou déconnexion : on écrit aussi les bougies en cours,
         marquées incomplètes."""
         rows = self.drain_closed()
-        rows += [self._row(p, b, complete=False) for p, b in self._cur.items()]
+        rows += [self._candle(p, b, complete=False) for p, b in self._cur.items()]
         self._cur.clear()
         return rows
 
@@ -100,26 +114,54 @@ class CandleAggregator:
 # Boucle principale
 # --------------------------------------------------------------------------- #
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
-    db: str = "market_data.db"
-    min_payout: int = 92
-    pairs_refresh_sec: int = 300     # relevé des payouts toutes les 5 min
-    flush_sec: float = 2.0           # écriture disque groupée
-    heartbeat_sec: int = 10          # trace de connexion, pour repérer les trous
+    """Aucune valeur par défaut sur `db` ni `min_payout` (spec §5) : ils
+    touchent aux données et à l'argent, donc ils sont fournis explicitement ou
+    le collecteur ne démarre pas. Les cadences ci-dessous sont opérationnelles
+    et n'influencent aucun résultat, elles peuvent avoir un défaut."""
+
+    db: Path
+    min_payout: int
+    pairs_refresh_sec: int = 300      # relevé des payouts toutes les 5 min
+    flush_sec: float = 2.0            # écriture disque groupée
+    heartbeat_sec: int = 10           # trace de connexion, pour repérer les trous
+    backup_sec: int = 6 * 3600        # sauvegarde toutes les 6 h (§1.4)
     max_backoff_sec: int = 60
+
+    def __post_init__(self) -> None:
+        if not (0 <= self.min_payout <= 100):
+            raise BotError(f"min_payout hors [0,100] : {self.min_payout}")
+
+
+#: Exceptions qui ne sont PAS des pertes de connexion et qu'il ne sert à rien
+#: de réessayer. Sans cette distinction, une erreur de programmation ou une base
+#: corrompue prend l'apparence d'un broker instable : le collecteur tourne en
+#: boucle avec backoff, le journal répète « connexion perdue », et l'on découvre
+#: au bout de quatorze jours que rien n'a été enregistré.
+FATALES = (sqlite3.ProgrammingError, sqlite3.IntegrityError, BotError,
+           TypeError, AttributeError, NameError, ImportError)
 
 
 class Collector:
     def __init__(self, source: MarketDataSource, cfg: Config):
         self.source = source
         self.cfg = cfg
-        self.store = Storage(cfg.db)
+        # La connexion N'EST PAS ouverte ici. Un objet sqlite3.Connection ne
+        # peut être utilisé que dans le thread qui l'a créé, et ce collecteur
+        # est démarré depuis un autre thread que celui qui l'instancie (voir
+        # maxprofit/hosting/service.py). Elle est donc ouverte par run().
+        self.conn: sqlite3.Connection | None = None
+        self.store: MarketWriter | None = None
         self.agg = CandleAggregator()
-        self.buf: List[tuple] = []
+        self.buf: List[Tick] = []
         self.subscribed: List[str] = []
         self.running = True
-        self._t_flush = self._t_pairs = self._t_beat = 0.0
+        # Les minuteurs partent à `now` et non à 0 : sinon le premier passage
+        # dans la boucle rejoue immédiatement toutes les tâches périodiques,
+        # dont un second relevé de payouts une seconde après le premier.
+        maintenant = time.time()
+        self._t_flush = self._t_beat = self._t_pairs = self._t_backup = maintenant
 
     def stop(self, *_):
         log.info("Arrêt demandé, vidage des tampons...")
@@ -129,18 +171,22 @@ class Collector:
 
     def refresh_pairs(self) -> None:
         pairs = self.source.list_pairs()
-        self.store.insert_payouts(int(time.time()), pairs)  # historique complet
+        # Historique COMPLET : toutes les paires, ouvertes ou non. Le filtre
+        # ci-dessous décide seulement à quoi s'abonner, il ne décide de rien
+        # pour le backtest, qui rejouera l'éligibilité depuis cette table.
+        self.store.insert_payouts(int(time.time()), pairs)
 
         eligible = sorted(
-            p.name for p in pairs if p.is_open and p.payout_pct >= self.cfg.min_payout
+            p.name for p in pairs
+            if p.is_open and p.payout_pct >= self.cfg.min_payout
         )
         if eligible != self.subscribed:
-            added = set(eligible) - set(self.subscribed)
-            removed = set(self.subscribed) - set(eligible)
+            ajoutees = set(eligible) - set(self.subscribed)
+            retirees = set(self.subscribed) - set(eligible)
             self.source.subscribe(eligible)
             self.subscribed = eligible
             log.info("Paires éligibles : %d (+%d / -%d)",
-                     len(eligible), len(added), len(removed))
+                     len(eligible), len(ajoutees), len(retirees))
 
     # --- écriture -----------------------------------------------------------
 
@@ -151,37 +197,77 @@ class Collector:
         if n_t or n_c:
             log.debug("flush: %d ticks, %d bougies", n_t, n_c)
 
+    def backup(self) -> None:
+        """§1.4. Une sauvegarde ratée ne doit pas tuer la collecte : perdre six
+        heures de sauvegarde est réparable, perdre le collecteur ne l'est pas.
+        L'échec est journalisé en ERROR pour rester visible."""
+        try:
+            sauvegarder_et_purger(self.conn, self.cfg.db, backups_dir(),
+                                  now=datetime.now(timezone.utc))
+        except Exception as erreur:
+            log.error("Sauvegarde échouée : %s", erreur)
+
     # --- boucle -------------------------------------------------------------
 
-    def run(self) -> None:
-        backoff = 1
-        while self.running:
-            try:
-                self.source.connect()
-                self.refresh_pairs()
-                backoff = 1
-                self._consume()
-            except KeyboardInterrupt:
-                self.stop()
-            except Exception as e:
-                # Déconnexion : les bougies en cours deviennent incomplètes.
-                log.warning("Connexion perdue (%s). Reconnexion dans %ds", e, backoff)
-                self.store.upsert_candles(self.agg.drain_all())
-                self.flush()
-                time.sleep(backoff)
-                backoff = min(backoff * 2, self.cfg.max_backoff_sec)
+    def _ouvrir(self) -> None:
+        """Ouvre la base DANS le thread qui va s'en servir."""
+        self.conn = open_read_write(self.cfg.db)
+        self.store = MarketWriter(self.conn)
 
-        self.store.upsert_candles(self.agg.drain_all())
-        self.flush()
-        log.info("Totaux en base : %s", self.store.counts())
-        self.store.close()
-        self.source.close()
+    def run(self) -> None:
+        self._ouvrir()
+        backoff = 1
+        try:
+            while self.running:
+                try:
+                    self.source.connect()
+                    self.refresh_pairs()
+                    self._t_pairs = time.time()
+                    backoff = 1
+                    self._consume()
+                except KeyboardInterrupt:
+                    self.stop()
+                except FATALES:
+                    # Réessayer ne peut rien réparer. On sauve ce qu'on a et on
+                    # laisse remonter : mieux vaut un processus mort et visible
+                    # qu'un processus vivant qui n'enregistre rien.
+                    log.exception("Erreur non récupérable, arrêt du collecteur")
+                    self._vider_tampons()
+                    raise
+                except Exception as erreur:
+                    # Déconnexion : les bougies en cours deviennent incomplètes.
+                    log.warning("Connexion perdue (%s). Reconnexion dans %ds",
+                                erreur, backoff)
+                    self._vider_tampons()
+                    if not self.running:
+                        break
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, self.cfg.max_backoff_sec)
+        finally:
+            self._vider_tampons()
+            if self.store is not None:
+                log.info("Totaux en base : %s", self.store.counts())
+                self.store.close()
+            self.source.close()
+
+    def _vider_tampons(self) -> None:
+        """Écrit tout ce qui est en mémoire. Appelée sur chaque sortie de la
+        boucle, y compris en erreur : les ticks déjà reçus sont des données
+        acquises, il n'y a aucune raison de les perdre parce que la suite s'est
+        mal passée."""
+        if self.store is None:
+            return
+        try:
+            self.store.upsert_candles(self.agg.drain_all())
+            self.flush()
+        except Exception:
+            log.exception("Impossible de vider les tampons")
 
     def _consume(self) -> None:
         for tick in self.source.stream():
             if not self.running:
                 return
-            self.buf.append((tick.pair, tick.ts_ms, tick.price))
+            self.buf.append(tick)
             self.agg.add(tick)
 
             now = time.time()
@@ -189,30 +275,52 @@ class Collector:
                 self.flush()
                 self._t_flush = now
             if now - self._t_beat >= self.cfg.heartbeat_sec:
-                self.store.heartbeat(len(self.subscribed))
+                self.store.heartbeat(int(now), len(self.subscribed))
                 self._t_beat = now
             if now - self._t_pairs >= self.cfg.pairs_refresh_sec:
                 self.refresh_pairs()
                 self._t_pairs = now
+            if now - self._t_backup >= self.cfg.backup_sec:
+                self.backup()
+                self._t_backup = now
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Collecteur de données Pocket Option")
+def build_config(args) -> Config:
+    """Assemble la configuration. `--db` l'emporte sur `TRADING_DB_PATH` pour
+    les tests et l'inspection ; en production, on ne passe pas `--db`."""
+    return Config(
+        db=Path(args.db) if args.db else db_path(),
+        min_payout=args.min_payout,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Collecteur de données de marché")
     ap.add_argument("--source", choices=["sim", "po"], default="sim")
-    ap.add_argument("--db", default="market_data.db")
-    ap.add_argument("--min-payout", type=int, default=92)
+    ap.add_argument("--db", default=None,
+                    help="Chemin de la base. Par défaut : $TRADING_DB_PATH.")
+    ap.add_argument("--min-payout", type=int, required=True,
+                    help="Payout minimal pour s'abonner à une paire. "
+                         "Obligatoire : aucune valeur par défaut sur ce qui "
+                         "touche à l'argent (spec §5).")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if a.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
     )
 
+    try:
+        cfg = build_config(a)
+    except BotError as erreur:
+        log.error("%s", erreur)
+        return 2
+
     src = SimulatedSource() if a.source == "sim" else PocketOptionSource(demo=True)
-    c = Collector(src, Config(db=a.db, min_payout=a.min_payout))
+    c = Collector(src, cfg)
 
     signal.signal(signal.SIGINT, c.stop)
     signal.signal(signal.SIGTERM, c.stop)

@@ -3,7 +3,10 @@ name = "maxprofit"
 version = "0.0.0"
 description = "Bot de signaux évolutif — voir SPEC_bot_evolutif.md"
 requires-python = ">=3.11"
-dependencies = []
+# Le noyau, la persistance et le collecteur n'utilisent que la
+# bibliothèque standard. aiohttp ne sert qu'à la sonde HTTP exigée par
+# l'hébergeur (voir requirements.txt pour le détail du raisonnement).
+dependencies = ["aiohttp>=3.10,<4"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
