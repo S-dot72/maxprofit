@@ -102,8 +102,12 @@ reverse-engineering maintenu par un tiers, qui peut cesser de fonctionner sans
 préavis. **Compte démo dédié** : son usage viole probablement les conditions du
 broker.
 
-    pip install -e ".[pocketoption]"
-    python outils/diagnostic_pocketoption.py --duree 90
+    .venv\Scripts\python -m pip install -e ".[pocketoption]"
+    .venv\Scripts\python outils\diagnostic_pocketoption.py --duree 90
+
+Utilisez le Python du venv, pas celui du système : c'est là que la
+bibliothèque est installée. Le diagnostic refuse de tourner autrement et
+affiche la commande exacte.
 
 Le diagnostic est à lancer UNE fois avant de collecter. Il répond aux deux
 questions qui décident si la collecte sera exploitable, et qu'on ne peut pas

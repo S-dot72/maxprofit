@@ -2,7 +2,12 @@
 """
 Diagnostic de la source Pocket Option — à lancer UNE fois, avant de collecter.
 
-    python outils/diagnostic_pocketoption.py --duree 90
+    .venv\Scripts\python.exe outils\diagnostic_pocketoption.py --duree 90
+    .venv/bin/python outils/diagnostic_pocketoption.py --duree 90   # Linux/mac
+
+Lancez-le avec le Python du VENV du projet, pas celui du système : c'est
+là que la bibliothèque broker est installée. Le script refuse de tourner
+autrement, et affiche la commande exacte.
 
 Deux questions ne se tranchent pas en lisant le code de la bibliothèque, et
 elles décident toutes les deux si la collecte sera exploitable. Ce script y
@@ -34,13 +39,53 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import statistics
 import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+RACINE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RACINE))
+
+
+def _verifier_interpreteur() -> None:
+    """Refuse de tourner sous le mauvais Python, avec la commande exacte.
+
+    Le piège est facile : `python outils/diagnostic_pocketoption.py` lance
+    l'interpréteur du système, où rien n'est installé. L'erreur qui en résulte
+    (« No module named 'pocketoptionapi' ») ressemble à un problème
+    d'installation de la bibliothèque, alors que le paquet est bien là — dans
+    l'autre interpréteur.
+    """
+    if os.name == "nt":
+        attendu = RACINE / ".venv" / "Scripts" / "python.exe"
+        commande = ".\\.venv\\Scripts\\python.exe outils\\diagnostic_pocketoption.py"
+    else:
+        attendu = RACINE / ".venv" / "bin" / "python"
+        commande = ".venv/bin/python outils/diagnostic_pocketoption.py"
+
+    if not attendu.exists():
+        return  # pas de venv de projet : l'utilisateur gère son environnement
+
+    try:
+        meme = Path(sys.executable).resolve() == attendu.resolve()
+    except OSError:
+        return
+    if meme:
+        return
+
+    print(f"Mauvais interpréteur Python.\n"
+          f"  utilisé  : {sys.executable}\n"
+          f"  attendu  : {attendu}\n\n"
+          f"La bibliothèque broker est installée dans le venv du projet, pas "
+          f"dans le Python du système. Relancez depuis {RACINE} :\n\n"
+          f"    {commande} --duree 90\n", file=sys.stderr)
+    raise SystemExit(2)
+
+
+_verifier_interpreteur()
 
 from maxprofit.collect.pocketoption import ENV_SSID, PocketOptionSource  # noqa: E402
 from maxprofit.core.errors import BotError  # noqa: E402
@@ -66,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 72)
     print("DIAGNOSTIC POCKET OPTION")
     print("=" * 72)
-    if not (source._ssid or __import__("os").environ.get(ENV_SSID)):
+    if not (source._ssid or os.environ.get(ENV_SSID)):
         print(f"Aucun {ENV_SSID} : une fenêtre de connexion va s'ouvrir.")
         print("Connectez-vous sur votre compte DÉMO, puis laissez tourner.")
     print()
