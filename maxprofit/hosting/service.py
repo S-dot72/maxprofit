@@ -45,6 +45,7 @@ from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import EtatCollecte, start_http_server
 from maxprofit.hosting.operateurs import Annuaire, chemin_annuaire
+from maxprofit.hosting import version as version_deployee
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
@@ -81,7 +82,11 @@ def _fabriquer_source(nom: str):
 async def _servir(args) -> int:
     cfg = build_config(args)
     _verifier_emplacement_base(cfg.db)
+    # En premier, avant tout le reste : c'est la ligne qui dit si le journal
+    # qu'on est en train de lire correspond au code qu'on vient de corriger.
+    log.info("%s", version_deployee.resume())
     log.info("Base : %s", cfg.db)
+    log.info("Paires souscrites au maximum : %d", cfg.max_paires)
 
     etat_collecte = EtatCollecte(cfg.db)
 
@@ -195,6 +200,8 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
             f"bougies : {compteurs.get('candles', 0):,}"
         )
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
+    lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
+    lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
 
 

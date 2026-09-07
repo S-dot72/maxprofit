@@ -258,6 +258,15 @@ class Superviseur:
         return ("🟢 Collecte en cours." if vivant
                 else "🔴 Collecteur arrêté.")
 
+    def paires_souscrites(self) -> int:
+        """Combien de paires sont réellement souscrites, en ce moment.
+
+        Distingue les deux silences qui se ressemblent dans `/etat` : abonné et
+        muet — le broker n'envoie rien — ou abonné à rien, ce qui est notre
+        faute et se répare.
+        """
+        return len(getattr(self.collecteur, "subscribed", ()) or ())
+
     def _pause_restante_sec(self) -> float:
         jusqu_a = getattr(self.collecteur, "pause_jusqu_a_sec", 0.0) or 0.0
         return max(0.0, jusqu_a - time.time())
