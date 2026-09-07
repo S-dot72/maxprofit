@@ -865,3 +865,81 @@ def test_une_indisponibilite_passagere_est_reessayee_pas_fatale():
     # BotError est dans FATALES : c'est bien l'ORDRE des `except` qui protège,
     # et c'est pourquoi ce test existe.
     assert any(issubclass(SourceIndisponible, f) for f in FATALES)
+
+
+# --------------------------------------------------------------------------- #
+# Le tampon de la bibliotheque peut etre REMPLACE, pas seulement rallonge
+# --------------------------------------------------------------------------- #
+#
+# `global_value.pairs[actif] = {'ticks': ...}` : la bibliotheque refait la liste
+# quand elle recharge l'historique d'un actif. Notre position de lecture pointe
+# alors au-dela de la fin, et la comparaison `fin <= vus` nous faisait ignorer ce
+# tampon POUR TOUJOURS -- muets, sans une seule erreur.
+
+class _ClientATampon:
+    def __init__(self):
+        self.tampons: dict[str, list] = {}
+
+    def GetTicks(self, nom):
+        return self.tampons.get(nom)
+
+    def check_connect(self):
+        return True
+
+
+def _source_branchee(client, souscrites):
+    source = PocketOptionSource(demo=True)
+    source._client = client
+    source._souscrites = list(souscrites)
+    source._decalage_sec = 0
+    source._unite = "sec"
+    return source
+
+
+def test_un_tampon_remplace_est_relu_depuis_le_debut():
+    client = _ClientATampon()
+    source = _source_branchee(client, ["EURUSD_otc"])
+    base = int(time.time())      # l'horloge du broker est verifiee contre la notre
+
+    client.tampons["EURUSD_otc"] = [
+        {"time": base + i, "price": 1.1} for i in range(5)
+    ]
+    premiers = list(source._drainer("EURUSD_otc"))
+    assert len(premiers) == 5
+    assert source._vus["EURUSD_otc"] == 5
+
+    # La bibliotheque remplace la liste par une neuve, plus courte.
+    client.tampons["EURUSD_otc"] = [
+        {"time": base + 100 + i, "price": 1.2} for i in range(2)
+    ]
+    suivants = list(source._drainer("EURUSD_otc"))
+    assert len(suivants) == 2, (
+        "le tampon remplace a ete ignore : la collecte serait muette pour de bon"
+    )
+    assert [t.price for t in suivants] == [1.2, 1.2]
+
+
+def test_le_diagnostic_dit_ce_que_la_bibliotheque_a_recu(monkeypatch):
+    """La mesure qui tranche : panne chez nous, ou broker silencieux."""
+    from pocketoptionapi import global_value
+
+    client = _ClientATampon()
+    source = _source_branchee(client, ["EURUSD_otc", "GBPUSD_otc"])
+    monkeypatch.setattr(
+        global_value, "pairs",
+        {"EURUSD_otc": {"ticks": [1, 2, 3], "history": []}}, raising=False)
+
+    etat = source.diagnostic()
+    assert etat["connecte"] is True
+    assert etat["cles_bibliotheque"] == 1
+    assert etat["tampons"]["EURUSD_otc"]["ticks"] == 3
+    # Une paire souscrite dont la bibliotheque ne sait rien doit apparaitre a
+    # zero, pas disparaitre : c'est justement le cas qu'on cherche a voir.
+    assert etat["tampons"]["GBPUSD_otc"]["ticks"] == 0
+
+
+def test_le_diagnostic_survit_a_un_client_absent():
+    source = PocketOptionSource(demo=True)
+    etat = source.diagnostic()
+    assert etat["connecte"] is None
+    assert etat["tampons"] == {}

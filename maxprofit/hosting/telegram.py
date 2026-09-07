@@ -154,6 +154,7 @@ CLAVIER = [["📊 État", "📈 Paires"], ["🔑 Renouveler le jeton", "❓ Aide
 COMMANDES = [
     ("etat", "État de la collecte"),
     ("paires", "Paires actuellement suivies"),
+    ("diag", "Ce que la bibliotheque recoit vraiment (admin)"),
     ("ssid", "Installer un nouveau jeton de session (admin)"),
     ("operateurs", "Qui a accès au bot (admin)"),
     ("revoquer", "Retirer un accès (admin)"),
@@ -225,12 +226,14 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
     def __init__(self, client: ClientTelegram, annuaire, *,
                  etat: Callable[[], Awaitable[str]],
                  installer_jeton: Callable[[str], Awaitable[str]],
-                 paires: Callable[[], Awaitable[str]] | None = None):
+                 paires: Callable[[], Awaitable[str]] | None = None,
+                 diagnostic: Callable[[], Awaitable[str]] | None = None):
         self.client = client
         self.annuaire = annuaire
         self._etat = etat
         self._installer_jeton = installer_jeton
         self._paires = paires
+        self._diagnostic = diagnostic
         self._offset = 0
         self.actif = True
 
@@ -331,7 +334,18 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             await self.client.envoyer(chat, INSCRIPTION)
             return
 
-        if texte.startswith("/ssid"):
+        if texte.startswith("/diag"):
+            # Reserve aux administrateurs : il expose l'interieur du client du
+            # broker, pas l'etat de la collecte.
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, REFUS_ADMIN, CLAVIER)
+            elif self._diagnostic is None:
+                await self.client.envoyer(chat, "Diagnostic indisponible.",
+                                          CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._diagnostic(),
+                                          CLAVIER)
+        elif texte.startswith("/ssid"):
             await self._commande_ssid(chat, texte, message.get("message_id"),
                                       role)
         elif texte.startswith("/operateurs") or texte.startswith("👥"):

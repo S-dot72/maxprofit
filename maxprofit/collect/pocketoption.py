@@ -643,6 +643,17 @@ class PocketOptionSource:
         # décaler ni faire disparaître ce qu'on lit.
         vus = self._vus.get(nom, 0)
         fin = len(tampon)
+        if fin < vus:
+            # La bibliotheque ne se contente pas d'empiler : elle REMPLACE la
+            # liste par une neuve quand elle recharge l'historique d'un actif
+            # (`global_value.pairs[actif] = {'ticks': ...}`). Notre position de
+            # lecture pointe alors au-dela de la fin, et `fin <= vus` nous
+            # ferait ignorer ce tampon POUR TOUJOURS -- muets sans une erreur.
+            # Les ecritures etant idempotentes sur (pair, ts_ms), tout relire
+            # depuis le debut ne coute qu'une insertion ignoree.
+            log.info("Tampon de %s remplace (%d -> %d) : relecture complete.",
+                     nom, vus, fin)
+            vus = 0
         if fin <= vus:
             return
 
@@ -659,6 +670,46 @@ class PocketOptionSource:
             # ajouté entre-temps n'est perdu — on ne supprime que ce qu'on a lu.
             del tampon[:fin]
             self._vus[nom] = 0
+
+    def diagnostic(self) -> dict:
+        """Ce que la BIBLIOTHEQUE a reellement recu, sans interpretation.
+
+        Quand la collecte est connectee, abonnee et muette, une seule question
+        compte : le tampon de la bibliotheque se remplit-il ? S'il se remplit,
+        la panne est chez nous, dans le drainage. S'il reste vide, le broker
+        n'envoie rien et aucune correction de notre cote n'y changera quoi que
+        ce soit.
+
+        Sans cette mesure on ne peut que supposer, et l'on a deja perdu
+        plusieurs jours a supposer.
+        """
+        etat: dict = {
+            "souscrites": list(self._souscrites),
+            "connecte": None,
+            "actifs_au_catalogue": None,
+            "tampons": {},
+            "cles_bibliotheque": None,
+        }
+        if self._client is None:
+            return etat
+        try:
+            etat["connecte"] = bool(self._client.check_connect())
+        except Exception as erreur:                      # noqa: BLE001
+            etat["connecte"] = f"illisible : {erreur}"
+
+        from pocketoptionapi import global_value
+
+        paires = getattr(global_value, "pairs", None)
+        if isinstance(paires, dict):
+            etat["cles_bibliotheque"] = len(paires)
+            for nom in self._souscrites:
+                entree = paires.get(nom) or {}
+                etat["tampons"][nom] = {
+                    "ticks": len(entree.get("ticks") or ()),
+                    "history": len(entree.get("history") or ()),
+                    "lus": self._vus.get(nom, 0),
+                }
+        return etat
 
     def _vers_tick(self, nom: str, brut) -> Tick | None:
         try:

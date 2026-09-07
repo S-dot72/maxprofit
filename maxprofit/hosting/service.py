@@ -100,6 +100,7 @@ async def _servir(args) -> int:
             bot._etat = lambda: _resume(superviseur, etat_collecte)
             bot._installer_jeton = superviseur.installer_jeton
             bot._paires = lambda: _paires(superviseur)
+            bot._diagnostic = lambda: _diagnostic(superviseur)
 
         # Le serveur est démarré APRÈS le superviseur, pour lui passer
         # l'installateur à la construction : aiohttp déprécie la modification
@@ -202,6 +203,61 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
     lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
+    return "\n".join(lignes)
+
+
+async def _diagnostic(superviseur: Superviseur) -> str:
+    """Ce que la bibliothèque du broker a reçu, sans interprétation.
+
+    Quand la collecte est connectée, abonnée et muette, une seule question
+    tranche : le tampon de la bibliothèque se remplit-il ? S'il se remplit, la
+    panne est chez nous, dans le drainage — et ça se répare. S'il reste vide, le
+    broker n'envoie rien à cette adresse, et aucune correction de notre côté n'y
+    changera quoi que ce soit.
+
+    Cette commande existe parce qu'on a passé plusieurs jours à supposer, faute
+    de pouvoir regarder à l'intérieur d'un processus qui tourne ailleurs.
+    """
+    source = getattr(superviseur.collecteur, "source", None)
+    mesurer = getattr(source, "diagnostic", None)
+    if mesurer is None:
+        return ("<b>Diagnostic indisponible</b>\n\n"
+                "La source active ne sait pas se mesurer (source simulée ?).")
+
+    etat = mesurer()
+    lignes = [
+        "<b>Intérieur du client du broker</b>",
+        "",
+        f"Socket connecté : {etat.get('connecte')}",
+        f"Actifs connus de la bibliothèque : {etat.get('cles_bibliotheque')}",
+        f"Paires souscrites : {len(etat.get('souscrites') or ())}",
+        "",
+    ]
+    tampons = etat.get("tampons") or {}
+    if not tampons:
+        lignes.append("Aucun tampon : rien n'est souscrit.")
+        return "\n".join(lignes)
+
+    total = 0
+    for nom, mesure in tampons.items():
+        recus, lus = mesure["ticks"], mesure["lus"]
+        total += recus
+        lignes.append(f"<code>{nom}</code> — reçus {recus}, lus {lus}, "
+                      f"historique {mesure['history']}")
+
+    lignes.append("")
+    if total == 0:
+        lignes.append(
+            "⚠️ <b>Zéro tick reçu par la bibliothèque elle-même.</b>\n"
+            "Le problème est en amont de notre code : le broker accepte la "
+            "connexion et l'abonnement, mais ne diffuse rien vers cette "
+            "adresse."
+        )
+    else:
+        lignes.append(
+            "✅ La bibliothèque reçoit des ticks. S'ils n'arrivent pas en base, "
+            "la panne est dans notre drainage — donc réparable."
+        )
     return "\n".join(lignes)
 
 
