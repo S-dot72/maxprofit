@@ -427,3 +427,90 @@ def test_la_lecture_seule_n_ecrit_rien(tmp_path):
         assert schema_version(ro) == SCHEMA_VERSION
     finally:
         ro.close()
+
+
+# --------------------------------------------------------------------------- #
+# Ecriture groupee : une instruction par lot, pas une par ligne
+# --------------------------------------------------------------------------- #
+#
+# `executemany` de `libsql` boucle en Python : chaque ligne est un aller-retour
+# vers Turso. Mesure en production le 7 septembre : 183 payouts en 29 secondes,
+# soit 158 ms par ligne. Pendant ces 29 secondes le collecteur ne drainait aucun
+# tick, et l'operation se repete toutes les cinq minutes.
+
+class ConnexionQuiCompte:
+    """Enveloppe une vraie connexion et compte les `execute`."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.executions = 0
+
+    def execute(self, sql, params=()):
+        self.executions += 1
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql, rows):        # pragma: no cover
+        raise AssertionError(
+            "executemany fait un aller-retour reseau par ligne : interdit ici"
+        )
+
+
+def test_les_ecritures_groupees_ne_font_pas_une_requete_par_ligne(db):
+    conn = open_read_write(db)
+    espionne = ConnexionQuiCompte(conn)
+    writer = MarketWriter(espionne)
+
+    writer.insert_ticks(
+        [Tick("EURUSD_otc", T0_MS + i * 250, 1.1 + i / 100_000) for i in range(300)]
+    )
+    assert espionne.executions <= 2, (
+        f"{espionne.executions} requetes pour 300 ticks : sur une base "
+        f"distante, c'est autant d'allers-retours reseau"
+    )
+
+    espionne.executions = 0
+    writer.insert_payouts(
+        T0_SEC, [PairInfo(f"P{i}_otc", True, 90) for i in range(183)])
+    assert espionne.executions == 1, "183 payouts doivent tenir en une requete"
+
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 300
+    assert conn.execute("SELECT COUNT(*) FROM payouts").fetchone()[0] == 183
+    conn.close()
+
+
+def test_le_lot_reste_sous_la_limite_de_parametres(db):
+    """Au-dela de 999 parametres lies, SQLite refuse l'instruction."""
+    from maxprofit.store.market import MAX_PARAMS
+
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    n = 5_000
+    writer.insert_ticks(
+        [Tick("EURUSD_otc", T0_MS + i * 250, 1.1) for i in range(n)])
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == n
+    assert MAX_PARAMS <= 999
+    conn.close()
+
+
+def test_une_bougie_groupee_se_fusionne_toujours_correctement(db):
+    """La clause ON CONFLICT doit survivre au passage en insertion multiple.
+
+    C'est elle qui garantit qu'une bougie complete ne redevient jamais
+    incomplete a cause d'un tick tardif.
+    """
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    base = dict(pair="EURUSD_otc", tf_sec=60, ts_sec=T0_SEC, open=1.0, low=0.9)
+    writer.upsert_candles([
+        Candle(**base, high=1.2, close=1.1, tick_count=30, complete=True),
+        Candle(**base, high=1.05, close=1.0, tick_count=2, complete=False),
+    ])
+    conn.commit()
+    ligne = conn.execute(
+        "SELECT high, low, close, tick_count, complete FROM candles").fetchone()
+    assert ligne[0] == 1.2, "le plus haut a ete perdu dans la fusion"
+    assert ligne[3] == 30
+    assert ligne[4] == 1, "une bougie complete est redevenue incomplete"
+    conn.close()

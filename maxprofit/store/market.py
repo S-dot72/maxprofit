@@ -17,6 +17,47 @@ from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle, PairInfo, Tick
 
 
+#: Nombre maximal de parametres lies par instruction. SQLite en accepte
+#: bien plus depuis la 3.32, mais rester sous l'ancienne limite de 999 evite
+#: d'avoir a interroger le moteur, et decouper en deux requetes au lieu d'une
+#: ne coute rien face a ce qu'on economise.
+MAX_PARAMS = 900
+
+
+def _en_lots(rows: Sequence[tuple], par_ligne: int) -> Iterable[Sequence[tuple]]:
+    taille = max(1, MAX_PARAMS // par_ligne)
+    for debut in range(0, len(rows), taille):
+        yield rows[debut:debut + taille]
+
+
+def _inserer_en_lot(conn, avant: str, apres: str, rows: Sequence[tuple]) -> int:
+    """Une seule instruction par lot, au lieu d'une par ligne.
+
+    `executemany` de `libsql` boucle en Python : chaque ligne est un
+    aller-retour reseau vers Turso. Mesure en production, le 7 septembre : 183
+    payouts ecrits en 29 secondes, soit 158 ms par ligne -- exactement une
+    latence reseau. Pendant ces 29 secondes le collecteur ne drainait aucun
+    tick, et l'operation se repete toutes les cinq minutes.
+
+    Sur un fichier SQLite local la difference est negligeable ; sur une base
+    distante elle decide si la collecte est possible ou non.
+    """
+    if not rows:
+        return 0
+    par_ligne = len(rows[0])
+    marque = "(" + ",".join("?" * par_ligne) + ")"
+    total = 0
+    for lot in _en_lots(rows, par_ligne):
+        sql = f"{avant} VALUES {','.join([marque] * len(lot))} {apres}".strip()
+        params = [valeur for ligne in lot for valeur in ligne]
+        cur = conn.execute(sql, params)
+        # `rowcount` vaut -1 sur certains pilotes pour une insertion multiple.
+        # Le nombre de lignes soumises est alors la meilleure reponse : il sert
+        # a journaliser, jamais a decider.
+        total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(lot)
+    return total
+
+
 class MarketWriter:
     """Écriture des tables de marché. Couche Collecte uniquement.
 
@@ -34,10 +75,8 @@ class MarketWriter:
         if not ticks:
             return 0
         rows = [(t.pair, t.ts_ms, t.price) for t in ticks]
-        cur = self.conn.executemany(
-            "INSERT OR IGNORE INTO ticks (pair, ts_ms, price) VALUES (?,?,?)", rows
-        )
-        return cur.rowcount
+        return _inserer_en_lot(
+            self.conn, "INSERT OR IGNORE INTO ticks (pair, ts_ms, price)", "", rows)
 
     def upsert_candles(self, candles: Sequence[Candle]) -> int:
         """Une bougie en cours est réécrite à chaque flush jusqu'à sa clôture.
@@ -54,11 +93,12 @@ class MarketWriter:
              c.tick_count, 1 if c.complete else 0)
             for c in candles
         ]
-        cur = self.conn.executemany(
+        return _inserer_en_lot(
+            self.conn,
             """INSERT INTO candles
-                   (pair, tf_sec, ts_sec, open, high, low, close, tick_count, complete)
-               VALUES (?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(pair, tf_sec, ts_sec) DO UPDATE SET
+                   (pair, tf_sec, ts_sec, open, high, low, close, tick_count,
+                    complete)""",
+            """ON CONFLICT(pair, tf_sec, ts_sec) DO UPDATE SET
                    high       = MAX(candles.high, excluded.high),
                    low        = MIN(candles.low,  excluded.low),
                    close      = excluded.close,
@@ -66,19 +106,16 @@ class MarketWriter:
                    complete   = MAX(candles.complete,   excluded.complete)""",
             rows,
         )
-        return cur.rowcount
 
     def insert_payouts(self, ts_sec: int, pairs: Iterable[PairInfo]) -> int:
         """Relevé horodaté de TOUTES les paires, ouvertes ou non (§2.3)."""
         rows = [(ts_sec, p.name, p.payout_pct, 1 if p.is_open else 0) for p in pairs]
         if not rows:
             return 0
-        cur = self.conn.executemany(
-            "INSERT OR REPLACE INTO payouts (ts_sec, pair, payout_pct, is_open) "
-            "VALUES (?,?,?,?)",
-            rows,
-        )
-        return cur.rowcount
+        return _inserer_en_lot(
+            self.conn,
+            "INSERT OR REPLACE INTO payouts (ts_sec, pair, payout_pct, is_open)",
+            "", rows)
 
     def heartbeat(self, ts_sec: int, n_pairs: int) -> None:
         self.conn.execute(

@@ -156,7 +156,14 @@ class Config:
     #: Ne limite QUE l'abonnement. L'historique complet des payouts continue
     #: d'être enregistré pour toutes les paires (§2.3), donc le backtest peut
     #: toujours rejouer l'éligibilité telle qu'elle était.
-    max_paires: int = 8
+    #:
+    #: Le défaut est 4 parce que c'est le SEUL nombre qu'on ait observé en
+    #: train de livrer des ticks : le diagnostic du 5 septembre, quatre paires,
+    #: ~2 ticks/s chacune. À 8, le broker a fermé le socket deux secondes après
+    #: l'abonnement ; à 32, vingt secondes. On remontera quand des ticks seront
+    #: confirmés, pas avant — mieux vaut quatre paires collectées que huit
+    #: paires silencieuses.
+    max_paires: int = 4
 
     def __post_init__(self) -> None:
         if not (0 <= self.min_payout <= 100):
@@ -539,10 +546,11 @@ def main(argv: list[str] | None = None) -> int:
                          "Obligatoire : aucune valeur par défaut sur ce qui "
                          "touche à l'argent (spec §5).")
     ap.add_argument("--max-paires", type=int,
-                    default=int(os.environ.get("MAX_PAIRES", "8") or 8),
-                    help="Nombre maximal de paires souscrites (défaut : 8, ou "
-                         "$MAX_PAIRES). Au-delà d'une dizaine, le broker ferme "
-                         "le socket sans envoyer de ticks.")
+                    default=int(os.environ.get("MAX_PAIRES", "4") or 4),
+                    help="Nombre maximal de paires souscrites (défaut : 4, ou "
+                         "$MAX_PAIRES). 4 est le seul nombre observé en train "
+                         "de livrer des ticks ; au-delà, le broker ferme le "
+                         "socket sans rien envoyer.")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")

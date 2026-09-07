@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                          "$MIN_PAYOUT_PCT : aucune valeur par défaut sur ce qui "
                          "touche à l'argent (spec §5).")
     ap.add_argument("--max-paires", type=int,
-                    default=int(os.environ.get("MAX_PAIRES", "8") or 8),
+                    default=int(os.environ.get("MAX_PAIRES", "4") or 4),
                     help="Nombre maximal de paires souscrites (défaut : 8, ou "
                          "$MAX_PAIRES).")
     ap.add_argument("--duration", type=int, default=0,

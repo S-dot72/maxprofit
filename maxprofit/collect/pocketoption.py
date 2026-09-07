@@ -142,6 +142,13 @@ DECALAGE_MAX_HEURES = 14
 #: yeux de la sonde, et sans une ligne en base.
 REJETS_AVANT_ALERTE = 100
 
+#: Pause entre deux messages `changeSymbol`. Le navigateur n'en envoie qu'un à
+#: la fois, quand l'utilisateur change de graphique ; huit en une milliseconde
+#: n'arrive jamais dans l'usage normal, et le serveur ferme le socket dans les
+#: deux secondes qui suivent. Mesuré le 7 septembre : abonnement à 10:17:18.158
+#: pour les huit paires, socket fermé à 10:17:20.
+DELAI_ENTRE_ABONNEMENTS_SEC = 0.4
+
 #: Croissance du nombre de threads au-delà de laquelle on signale une fuite.
 #: `PocketOption.connect()` démarre un thread WebSocket à chaque appel sans en
 #: garder la référence, et son `disconnect()` échoue à le rejoindre. Le
@@ -577,10 +584,24 @@ class PocketOptionSource:
         return paires
 
     def subscribe(self, pairs: Sequence[str]) -> None:
+        """Un `changeSymbol` par paire, espacés.
+
+        Les envoyer en rafale ressemble à tout sauf à un navigateur : dans
+        l'interface web, ce message signifie « l'utilisateur vient de changer de
+        graphique ». Huit en une milliseconde, et le serveur ferme le socket
+        deux secondes plus tard — c'est ce qu'on a mesuré en production, et ça
+        laissait la collecte connectée, abonnée à rien, et muette.
+        """
         self._verifier_connexion()
         self._souscrites = list(pairs)
-        for nom in self._souscrites:
+        for rang, nom in enumerate(self._souscrites):
+            if rang:
+                time.sleep(DELAI_ENTRE_ABONNEMENTS_SEC)
             self._client.change_symbol(nom, self.period_sec)
+        # Contrôler APRÈS : si le socket est tombé pendant l'abonnement, mieux
+        # vaut lever ici que se croire abonné et attendre des ticks qui ne
+        # viendront jamais.
+        self._verifier_connexion()
         log.info("Abonné à %d paire(s).", len(self._souscrites))
 
     # --- flux ---------------------------------------------------------------
