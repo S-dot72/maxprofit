@@ -355,6 +355,13 @@ class Collector:
                     # et c'est la seule chose que l'attente cherchait à obtenir.
                     etat_broker.noter_succes(self.conn)
                     self.echecs_broker = 0
+                    # La liste des abonnements vit sur le SERVEUR, et un socket
+                    # neuf n'en a aucun. Garder `subscribed` ferait croire a
+                    # refresh_pairs() qu'il n'y a rien a faire : on resterait
+                    # connecte, souscrit a rien, et muet -- sans une seule
+                    # erreur pour le dire. C'est exactement ce qui donnait
+                    # « sonde verte, battement frais, 0 tick » en production.
+                    self.subscribed = []
                     self.refresh_pairs()
                     self._t_pairs = time.time()
                     backoff = 1
@@ -498,11 +505,18 @@ class Collector:
         if silence < self.cfg.silence_alerte_sec:
             return
         log.warning(
-            "Abonne a %d paire(s) mais aucun tick depuis %d s. La connexion "
-            "tient : c'est le broker qui n'envoie rien.",
+            "Abonne a %d paire(s) mais aucun tick depuis %d s : on se "
+            "reabonne.",
             len(self.subscribed), int(silence),
         )
-        self._t_dernier_tick = now      # une alerte par periode, pas par tour
+        self._t_dernier_tick = now      # une reaction par periode, pas par tour
+        # Se plaindre ne suffit pas. La bibliotheque peut rouvrir son socket
+        # toute seule, sans que rien ne leve ici : le serveur a alors oublie
+        # nos abonnements et personne ne s'en apercoit. Repartir de zero force
+        # refresh_pairs() a les renvoyer.
+        self.subscribed = []
+        self.refresh_pairs()
+        self._t_pairs = now
 
 
 def build_config(args) -> Config:

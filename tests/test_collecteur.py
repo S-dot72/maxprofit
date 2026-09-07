@@ -51,6 +51,7 @@ class SourceScriptee(MarketDataSource):
         self.echecs_connexion = echecs_connexion
         self.connexions = 0
         self.passages_stream = 0
+        self.abonnements: List[List[str]] = []
         self.collecteur: Collector | None = None
 
     def connect(self) -> None:
@@ -64,7 +65,9 @@ class SourceScriptee(MarketDataSource):
         return [PairInfo("EURUSD_otc", True, 92), PairInfo("GBPUSD_otc", True, 70)]
 
     def subscribe(self, pairs) -> None:
-        pass
+        # Chaque appel est retenu : un abonnement vit sur le SERVEUR, donc le
+        # nombre d'appels est ce qui compte, pas la liste finale.
+        self.abonnements.append(list(pairs))
 
     def stream(self) -> Iterator[Tick]:
         self.passages_stream += 1
@@ -458,3 +461,56 @@ def test_une_panne_de_la_base_n_est_pas_imputee_au_broker(tmp_path):
         assert echecs == 0, "une panne de stockage a ete comptee contre le broker"
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Regression : connecte, souscrit a rien, et muet
+# --------------------------------------------------------------------------- #
+#
+# Un abonnement vit sur le SERVEUR. Quand le broker ferme le socket et que la
+# bibliotheque en rouvre un, il ne reste rien de l'autre cote -- mais
+# `subscribed` contenait toujours les memes noms, et `refresh_pairs()` ne
+# renvoyait `subscribe()` que si la liste avait change. On restait donc
+# connecte, abonne a rien, sans une seule erreur pour le dire : sonde verte,
+# battement frais, zero tick, pendant des heures.
+
+class SourceQuiCoupeUneFois(SourceScriptee):
+    def __init__(self):
+        super().__init__([])
+        self.coupe = False
+
+    def stream(self):
+        self.passages_stream += 1
+        if not self.coupe:
+            self.coupe = True
+            raise ConnectionError("socket ferme par le broker")
+        if self.collecteur is not None:
+            self.collecteur.stop()
+        return
+        yield                                    # pragma: no cover
+
+
+def test_on_se_reabonne_apres_chaque_reconnexion(tmp_path):
+    src = SourceQuiCoupeUneFois()
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+
+    assert src.connexions == 2, "le test doit bien avoir provoque une reconnexion"
+    assert len(src.abonnements) == 2, (
+        "le second socket n'a recu aucun abonnement : on ecoute dans le vide"
+    )
+    assert src.abonnements[0] == src.abonnements[1]
+
+
+def test_un_silence_prolonge_declenche_un_reabonnement(tmp_path):
+    """La bibliotheque peut rouvrir son socket sans que rien ne leve ici.
+
+    Le serveur a alors oublie nos abonnements et personne ne s'en apercoit.
+    Se plaindre dans le journal ne suffit pas : il faut renvoyer l'abonnement.
+    """
+    src = SourceMuette(tours=4)
+    src.collecteur = collecteur = Collector(
+        src, _config(tmp_path, silence_alerte_sec=0))
+    collecteur.run()
+
+    assert len(src.abonnements) > 1, "aucun reabonnement malgre le silence"
