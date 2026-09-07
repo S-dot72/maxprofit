@@ -229,6 +229,8 @@ async def _diagnostic(superviseur: Superviseur) -> str:
         "<b>Intérieur du client du broker</b>",
         "",
         f"Socket connecté : {etat.get('connecte')}",
+        f"Point d'accès : {etat.get('region')}",
+        f"<code>{etat.get('url') or 'url inconnue'}</code>",
         f"Actifs connus de la bibliothèque : {etat.get('cles_bibliotheque')}",
         f"Paires souscrites : {len(etat.get('souscrites') or ())}",
         "",

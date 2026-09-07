@@ -25,6 +25,7 @@ import types
 
 import pytest
 
+import maxprofit.collect.pocketoption as po
 from maxprofit.collect.pocketoption import (
     SEUIL_COMPACTAGE,
     PocketOptionSource,
@@ -943,3 +944,42 @@ def test_le_diagnostic_survit_a_un_client_absent():
     etat = source.diagnostic()
     assert etat["connecte"] is None
     assert etat["tampons"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# Le point d'acces : un seul essaye, deux publies
+# --------------------------------------------------------------------------- #
+
+def test_sans_variable_on_ne_touche_a_rien(monkeypatch):
+    from pocketoptionapi.constants import REGION
+
+    monkeypatch.delenv(po.ENV_REGION, raising=False)
+    avant = dict(REGION.REGIONS)
+    assert po._forcer_region() is None
+    assert REGION.REGIONS == avant
+
+
+def test_un_point_d_acces_inconnu_est_refuse_avec_la_liste(monkeypatch):
+    """Pas de repli silencieux : une faute de frappe dans une variable
+    d'environnement doit se voir au demarrage, pas se traduire par des heures
+    de collecte muette sur le point d'acces par defaut."""
+    monkeypatch.setenv(po.ENV_REGION, "EUROPPA")
+    with pytest.raises(BotError) as capture:
+        po._forcer_region()
+    assert "DEMO_2" in str(capture.value)
+
+
+def test_le_point_d_acces_demande_ecrase_celui_que_la_bibliotheque_lira(
+        monkeypatch):
+    from pocketoptionapi import global_value
+    from pocketoptionapi.constants import REGION
+
+    monkeypatch.setattr(global_value, "DEMO", True, raising=False)
+    monkeypatch.setattr(REGION, "REGIONS", dict(REGION.REGIONS))
+    monkeypatch.setenv(po.ENV_REGION, "demo_2")
+
+    assert po._forcer_region() == "DEMO_2"
+    # La bibliotheque ne lit que REGIONS["DEMO"] pour un compte demo : c'est
+    # cette entree, et pas une autre, qui doit avoir change.
+    assert REGION.REGIONS["DEMO"] == REGION.REGIONS["DEMO_2"]
+    assert "try-demo-eu" in REGION.REGIONS["DEMO"]

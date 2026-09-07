@@ -94,6 +94,17 @@ from maxprofit.core.types import PairInfo, Tick
 log = logging.getLogger("collect.pocketoption")
 
 ENV_SSID = "POCKET_OPTION_SSID"
+
+#: Point d'accès à utiliser, par son nom dans `pocketoptionapi.constants.REGION`
+#: (« DEMO », « DEMO_2 », « EUROPA », « UNITED_STATES »...). Vide = celui que la
+#: bibliothèque choisit seule, c'est-à-dire « DEMO » pour un compte démo.
+#:
+#: La bibliothèque n'en essaie qu'UN : `get_regions()` renvoie une liste d'un
+#: seul élément. Or le broker publie deux points d'accès démo. Quand la
+#: connexion aboutit, l'abonnement est accepté et rien n'arrive, savoir si le
+#: silence tient au point d'accès ou à l'adresse d'origine se règle en changeant
+#: une variable — pas en réécrivant du code.
+ENV_REGION = "POCKET_OPTION_REGION"
 ENV_FICHIER_SESSION = "POCKET_OPTION_SESSION_FILE"
 
 #: Fichier où le SSID est persisté après capture, pour ne pas avoir à le
@@ -156,6 +167,40 @@ DELAI_ENTRE_ABONNEMENTS_SEC = 0.4
 #: s'accumuleraient sur quatorze jours — chacun conservant un socket et écrivant
 #: dans les mêmes tampons globaux.
 CROISSANCE_THREADS_SUSPECTE = 3
+
+
+def _forcer_region() -> str | None:
+    """Impose le point d'accès demandé, s'il y en a un. Retourne son nom.
+
+    On modifie la table de la bibliothèque plutôt que de lui passer un
+    paramètre : elle n'en accepte aucun. `get_regions()` renvoie une liste
+    figée d'un seul élément, et c'est le seul point où l'on puisse intervenir
+    sans réécrire sa boucle de connexion.
+    """
+    nom = os.environ.get(ENV_REGION, "").strip().upper()
+    if not nom:
+        return None
+
+    from pocketoptionapi.constants import REGION
+
+    connues = REGION.REGIONS
+    if nom not in connues:
+        raise BotError(
+            f"{ENV_REGION}={nom} inconnu. Points d'accès disponibles : "
+            f"{', '.join(sorted(connues))}."
+        )
+    # La bibliothèque lit REGIONS["DEMO"] pour un compte démo et
+    # REGIONS["EUROPA"] sinon : on écrase l'entrée qu'elle consultera.
+    cible = "DEMO" if _est_demo() else "EUROPA"
+    connues[cible] = connues[nom]
+    log.info("Point d'accès forcé : %s (%s)", nom, connues[nom])
+    return nom
+
+
+def _est_demo() -> bool:
+    from pocketoptionapi import global_value
+
+    return bool(getattr(global_value, "DEMO", True))
 
 
 def chemin_session() -> Path:
@@ -424,6 +469,7 @@ class PocketOptionSource:
             self._threads_au_repos = threading.active_count()
 
         self._installer_boucle_asyncio()
+        _forcer_region()
         self._client = PocketOption(demo=self.demo, ssid=ssid)
         self._client.connect()
 
@@ -685,6 +731,8 @@ class PocketOptionSource:
         """
         etat: dict = {
             "souscrites": list(self._souscrites),
+            "region": os.environ.get(ENV_REGION, "").strip().upper() or "défaut",
+            "url": None,
             "connecte": None,
             "actifs_au_catalogue": None,
             "tampons": {},
@@ -696,6 +744,13 @@ class PocketOptionSource:
             etat["connecte"] = bool(self._client.check_connect())
         except Exception as erreur:                      # noqa: BLE001
             etat["connecte"] = f"illisible : {erreur}"
+        try:
+            # L'URL réellement retenue par la boucle de connexion : la seule
+            # preuve de l'endroit auquel on parle, plutôt que de celui qu'on
+            # croit avoir demandé.
+            etat["url"] = self._client.api.websocket_client.url
+        except Exception:                                # noqa: BLE001
+            pass
 
         from pocketoptionapi import global_value
 
