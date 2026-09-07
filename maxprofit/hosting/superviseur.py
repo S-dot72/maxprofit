@@ -255,8 +255,17 @@ class Superviseur:
                     f"<code>{self.derniere_erreur or ''}</code>")
 
         vivant = self._thread is not None and self._thread.is_alive()
-        return ("🟢 Collecte en cours." if vivant
-                else "🔴 Collecteur arrêté.")
+        if not vivant:
+            return "🔴 Collecteur arrêté."
+        if self.paires_souscrites() == 0:
+            # Un thread vivant ne prouve rien. Il peut tourner des heures dans
+            # sa boucle de reconnexion sans qu'une seule paire soit souscrite —
+            # et `/etat` annonçait « 🟢 Collecte en cours » juste au-dessus
+            # d'une sonde rouge. Deux affirmations contradictoires sur le même
+            # écran valent moins que pas d'affirmation du tout.
+            return ("🟠 Connexion ou abonnement en cours — <b>rien n'est "
+                    "collecté</b> pour l'instant.")
+        return "🟢 Collecte en cours."
 
     def paires_souscrites(self) -> int:
         """Combien de paires sont réellement souscrites, en ce moment.

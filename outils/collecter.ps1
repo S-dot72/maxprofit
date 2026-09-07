@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Lance la collecte en continu sur ce poste, et l'y maintient.
 
@@ -41,6 +41,18 @@
 param(
     [ValidateSet('po', 'sim')]
     [string]$Source = 'po',
+
+    # Faire tourner AUSSI le bot Telegram sur ce poste.
+    #
+    # Par defaut NON, et c'est important : Telegram n'autorise qu'un seul
+    # consommateur de `getUpdates` a la fois. Si le bot tourne deja sur
+    # l'hebergeur, en lancer un second ici les fait se voler les messages a tour
+    # de role -- une commande sur deux disparait, sans erreur nulle part.
+    #
+    # Le partage naturel est donc : le collecteur ici, ou le broker accepte de
+    # diffuser ; le bot et la sonde sur l'hebergeur, joignables en permanence.
+    # Les deux ecrivent et lisent la meme base Turso.
+    [switch]$AvecBot,
 
     # Délai maximal entre deux tentatives, en secondes. Le délai double après
     # chaque échec sans jamais dépasser cette valeur : un broker en maintenance
@@ -117,11 +129,33 @@ chemin inattendu part vide et se perd (spec 1.1). Définissez-la, par exemple :
 $dossier = Split-Path -Parent $cheminBase
 $journal = Join-Path $dossier 'collecte.log'
 
+# --- Turso : la question qui decide de tout --------------------------------
+# Sans ces variables, la collecte ecrit dans un fichier local que personne
+# d'autre ne voit. On collecterait quatorze jours pour decouvrir que le bot
+# heberge lit une base vide. Mieux vaut le dire avant de commencer qu'apres.
+$tursoUrl = $env:TURSO_DATABASE_URL
+if (-not $tursoUrl) {
+    $dotenv = Join-Path $racine '.env'
+    if (Test-Path $dotenv) {
+        $ligne = Select-String -Path $dotenv -Pattern '^\s*TURSO_DATABASE_URL\s*=' |
+                 Select-Object -First 1
+        if ($ligne) {
+            $tursoUrl = ($ligne.Line -split '=', 2)[1].Trim().Trim('"').Trim("'")
+        }
+    }
+}
+$destination = if ($tursoUrl) {
+    "Turso ($tursoUrl), base partagee avec l'hebergeur"
+} else {
+    'FICHIER LOCAL SEUL — le bot heberge ne verra rien'
+}
+
 Write-Host ('=' * 72)
 Write-Host 'COLLECTE CONTINUE'
 Write-Host ('=' * 72)
 Write-Host "Source        : $Source"
 Write-Host "Base          : $cheminBase"
+Write-Host "Destination   : $destination"
 Write-Host "Journal       : $journal"
 Write-Host ("Mise en veille: " + $(if ($veilleBloquee) { 'bloquée' } else { 'NON bloquée — la collecte s''arrêtera à la veille' }))
 Write-Host ''
@@ -145,7 +179,10 @@ try {
         # et un journal de quatorze jours illisible par les outils habituels ne
         # sert à rien. Add-Content -Encoding UTF8 fait le même travail
         # correctement.
-        & $python -m maxprofit.hosting.service --source $Source |
+        # Le collecteur seul par defaut : voir -AvecBot ci-dessus.
+        $module = if ($AvecBot) { 'maxprofit.hosting.service' }
+                  else { 'maxprofit.collect.collector' }
+        & $python -m $module --source $Source |
             ForEach-Object {
                 Write-Host $_
                 Add-Content -Path $journal -Value $_ -Encoding UTF8

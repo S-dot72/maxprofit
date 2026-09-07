@@ -191,3 +191,52 @@ def test_un_redemarrage_requis_fait_sortir_avec_un_message_calme(cfg, monkeypatc
     assert "Redémarrage" in message
     assert "rien n'est perdu" in message.lower()
     assert "❌" not in message, "un redémarrage attendu ne doit pas alarmer"
+
+
+# --------------------------------------------------------------------------- #
+# Deux affirmations contradictoires sur le meme ecran
+# --------------------------------------------------------------------------- #
+#
+# /etat annoncait « Collecte en cours » juste au-dessus d'une sonde rouge et de
+# « Paires souscrites : 0 ». Un thread vivant ne prouve rien : il peut tourner
+# des heures dans sa boucle de reconnexion sans qu'une seule paire soit souscrite.
+
+class _FauxThread:
+    def __init__(self, vivant: bool):
+        self._vivant = vivant
+
+    def is_alive(self) -> bool:
+        return self._vivant
+
+
+class _FauxCollecteur:
+    def __init__(self, souscrites):
+        self.subscribed = list(souscrites)
+        self.pause_jusqu_a_sec = 0.0
+        self.echecs_broker = 0
+
+
+def _superviseur_pret(souscrites, *, vivant=True):
+    sup = Superviseur(lambda: None,
+                      Config(db=Path("market.db"), min_payout=92))
+    sup._thread = _FauxThread(vivant)
+    sup.collecteur = _FauxCollecteur(souscrites)
+    return sup
+
+
+def test_sans_paire_souscrite_on_ne_dit_pas_que_ca_collecte():
+    sup = _superviseur_pret([])
+    resume = sup.resume()
+    assert "rien n'est collect" in resume
+    assert "🟢" not in resume
+
+
+def test_avec_des_paires_souscrites_on_le_dit_franchement():
+    sup = _superviseur_pret(["EURUSD_otc", "GBPUSD_otc"])
+    assert "🟢" in sup.resume()
+    assert sup.paires_souscrites() == 2
+
+
+def test_un_thread_mort_reste_un_collecteur_arrete():
+    sup = _superviseur_pret(["EURUSD_otc"], vivant=False)
+    assert "arrêté" in sup.resume()
