@@ -142,6 +142,10 @@ class Config:
     #: par le backtest (§2.4) plutôt que raisonnée dessus.
     sync_sec: int = 60
     max_backoff_sec: int = 60
+    #: Au-dela de combien de secondes sans un seul tick on le dit dans le
+    #: journal. Deux minutes : assez pour ne pas crier sur une paire calme,
+    #: assez peu pour ne pas decouvrir le silence deux heures plus tard.
+    silence_alerte_sec: int = 120
     #: Nombre maximal de paires SOUSCRITES simultanément.
     #:
     #: Mesuré, pas supposé. Le diagnostic a tourné 90 s sans faute sur 4 paires.
@@ -194,6 +198,7 @@ class Collector:
         #: légèrement en retard ne trompe personne.
         self.echecs_broker = 0
         self.pause_jusqu_a_sec = 0.0
+        self._t_dernier_tick = maintenant
 
     def stop(self, *_):
         log.info("Arrêt demandé, vidage des tampons...")
@@ -282,6 +287,20 @@ class Collector:
             log.warning("La connexion à la base ne répond plus : %s", erreur)
             return False
 
+    def _imputer_au_broker(self, erreur: Exception, base_vivante: bool) -> None:
+        """N'inscrire un refus que s'il est imputable au broker.
+
+        Une écriture qui échoue parce que le flux vers Turso a expiré remonte
+        ici sous la même forme qu'un socket fermé par le courtier. Les compter
+        pareil mettrait la collecte en pénitence pendant des heures pour une
+        panne de stockage — en cessant d'appeler le seul acteur qui n'y est
+        pour rien.
+        """
+        if not base_vivante:
+            log.info("Panne imputée à la base, pas au broker : %s", erreur)
+            return
+        etat_broker.noter_echec(self.conn, str(erreur))
+
     def _rouvrir_base(self) -> None:
         """Referme et rouvre. Les ticks en tampon survivent : ils sont en
         mémoire, et seront écrits au premier vidage réussi."""
@@ -345,13 +364,14 @@ class Collector:
                 except SourceIndisponible as erreur:
                     if isinstance(erreur, SessionExpiree):
                         raise
-                    if not self._base_repond():
+                    base_vivante = self._base_repond()
+                    if not base_vivante:
                         self._rouvrir_base()
                     # Indisponibilité passagère du broker : exactement ce que
                     # le backoff sert à absorber. Sans ce cas explicite, elle
                     # tomberait dans FATALES — qui contient BotError, dont elle
                     # hérite — et tuerait la collecte à la première alerte.
-                    etat_broker.noter_echec(self.conn, str(erreur))
+                    self._imputer_au_broker(erreur, base_vivante)
                     log.warning("Source indisponible (%s). Reconnexion dans %ds",
                                 erreur, backoff)
                     self._vider_tampons()
@@ -391,12 +411,10 @@ class Collector:
                     # un stockage distant, une écriture échoue comme un socket.
                     # Vérifier AVANT de vider les tampons : les vider sur une
                     # connexion morte perdrait les ticks au lieu de les écrire.
-                    if not self._base_repond():
+                    base_vivante = self._base_repond()
+                    if not base_vivante:
                         self._rouvrir_base()
-                    # Après la réouverture : sur une connexion morte, l'échec ne
-                    # s'inscrirait nulle part et le processus suivant repartirait
-                    # sans savoir qu'il doit se taire.
-                    etat_broker.noter_echec(self.conn, str(erreur))
+                    self._imputer_au_broker(erreur, base_vivante)
                     self._vider_tampons()
                     if not self.running:
                         break
@@ -427,28 +445,64 @@ class Collector:
             log.exception("Impossible de vider les tampons")
 
     def _consume(self) -> None:
+        """Draine le flux. `None` signifie « rien pour l'instant », pas la fin.
+
+        Sans ce cas, tout le travail periodique etait suspendu a l'arrivee d'un
+        tick : un marche calme, ou un abonnement que le broker n'alimente pas,
+        et plus rien ne tournait. Pas de battement de coeur, donc une sonde
+        stale ; pas de `sync`, donc rien ne partait vers Turso ; et surtout
+        aucune requete sur la connexion libSQL, dont le flux Hrana finissait par
+        etre jete par le serveur (« stream not found ») au bout d'une vingtaine
+        de secondes d'inactivite.
+        """
         for tick in self.source.stream():
             if not self.running:
                 return
-            self.buf.append(tick)
-            self.agg.add(tick)
+            if tick is not None:
+                self.buf.append(tick)
+                self.agg.add(tick)
+                self._t_dernier_tick = time.time()
+            self._taches_periodiques()
 
-            now = time.time()
-            if now - self._t_flush >= self.cfg.flush_sec:
-                self.flush()
-                self._t_flush = now
-            if now - self._t_beat >= self.cfg.heartbeat_sec:
-                self.store.heartbeat(int(now), len(self.subscribed))
-                self._t_beat = now
-            if now - self._t_pairs >= self.cfg.pairs_refresh_sec:
-                self.refresh_pairs()
-                self._t_pairs = now
-            if now - self._t_backup >= self.cfg.backup_sec:
-                self.backup()
-                self._t_backup = now
-            if now - self._t_sync >= self.cfg.sync_sec:
-                turso.synchroniser(self.conn)
-                self._t_sync = now
+    def _taches_periodiques(self) -> None:
+        """Ce qui doit tourner a l'heure, tick ou pas."""
+        now = time.time()
+        if now - self._t_flush >= self.cfg.flush_sec:
+            self.flush()
+            self._t_flush = now
+        if now - self._t_beat >= self.cfg.heartbeat_sec:
+            self.store.heartbeat(int(now), len(self.subscribed))
+            self._t_beat = now
+            self._signaler_silence(now)
+        if now - self._t_pairs >= self.cfg.pairs_refresh_sec:
+            self.refresh_pairs()
+            self._t_pairs = now
+        if now - self._t_backup >= self.cfg.backup_sec:
+            self.backup()
+            self._t_backup = now
+        if now - self._t_sync >= self.cfg.sync_sec:
+            turso.synchroniser(self.conn)
+            self._t_sync = now
+
+    def _signaler_silence(self, now: float) -> None:
+        """Dire qu'on est abonne et muet.
+
+        C'est l'etat le plus couteux du systeme : tout a l'air normal — le
+        processus vit, la connexion tient, le journal est calme — et l'on
+        decouvre au bout de deux heures que rien n'a ete enregistre. Il faut
+        que ca se voie dans le journal, pas seulement dans un compteur.
+        """
+        if not self.subscribed:
+            return
+        silence = now - self._t_dernier_tick
+        if silence < self.cfg.silence_alerte_sec:
+            return
+        log.warning(
+            "Abonne a %d paire(s) mais aucun tick depuis %d s. La connexion "
+            "tient : c'est le broker qui n'envoie rien.",
+            len(self.subscribed), int(silence),
+        )
+        self._t_dernier_tick = now      # une alerte par periode, pas par tour
 
 
 def build_config(args) -> Config:

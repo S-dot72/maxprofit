@@ -383,3 +383,78 @@ def test_un_refus_du_broker_est_inscrit_pour_le_processus_suivant(tmp_path):
         assert "poignee" in raison
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Regression : un marche muet suspendait TOUT
+# --------------------------------------------------------------------------- #
+#
+# `stream()` dort quand aucun tick n'arrive. Les taches periodiques etant
+# ecrites dans la boucle `for tick in ...`, elles ne tournaient plus du tout :
+# ni battement de coeur, ni synchronisation, ni la moindre requete sur la base.
+# Le flux Hrana vers Turso, laisse inactif, etait jete par le serveur au bout
+# d'une vingtaine de secondes -- « stream not found » -- alors que le processus
+# avait l'air parfaitement sain.
+
+class SourceMuette(SourceScriptee):
+    """Connectee, abonnee, et qui ne recoit rien. L'etat le plus couteux."""
+
+    def __init__(self, tours: int):
+        super().__init__([])
+        self.tours = tours
+
+    def stream(self):
+        self.passages_stream += 1
+        for _ in range(self.tours):
+            yield None
+        if self.collecteur is not None:
+            self.collecteur.stop()
+
+
+def test_les_taches_periodiques_tournent_meme_sans_un_seul_tick(tmp_path):
+    src = SourceMuette(tours=5)
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+
+    compteurs = _lire(tmp_path)
+    assert compteurs["ticks"] == 0
+    # Le battement de coeur est la preuve de vie ET la requete qui garde le
+    # flux distant ouvert. Sans lui, la sonde passe au rouge et la connexion
+    # a la base meurt en silence.
+    assert compteurs["uptime"] > 0, "aucun battement de coeur sans tick"
+
+
+def test_un_none_n_est_pas_pris_pour_un_tick(tmp_path):
+    """`None` veut dire « rien pour l'instant », pas « voici une donnee »."""
+    src = SourceMuette(tours=3)
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+
+    assert collecteur.buf == []
+    assert _lire(tmp_path)["ticks"] == 0
+
+
+def test_une_panne_de_la_base_n_est_pas_imputee_au_broker(tmp_path):
+    """Le flux vers Turso expire ; le broker n'y est pour rien.
+
+    Les compter pareil mettrait la collecte en pause pendant des heures en
+    cessant d'appeler le seul acteur qui fonctionne.
+    """
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_only
+
+    src = SourceScriptee(_ticks(0), lever=RuntimeError("stream not found"))
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+
+    # La base ne repond plus, tour apres tour : c'est elle qui est en panne,
+    # et le broker ne doit pas payer pour elle.
+    collecteur._base_repond = lambda: False
+    threading.Timer(1.5, collecteur.stop).start()
+    collecteur.run()
+
+    conn = open_read_only(tmp_path / "market.db")
+    try:
+        echecs, _, _ = etat_broker.lire(conn)
+        assert echecs == 0, "une panne de stockage a ete comptee contre le broker"
+    finally:
+        conn.close()

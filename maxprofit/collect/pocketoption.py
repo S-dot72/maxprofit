@@ -585,8 +585,11 @@ class PocketOptionSource:
 
     # --- flux ---------------------------------------------------------------
 
-    def stream(self) -> Iterator[Tick]:
+    def stream(self) -> Iterator[Tick | None]:
         """Générateur bloquant. LÈVE en cas de perte de connexion.
+
+        Cède `None` quand aucun tick n'est disponible, pour rendre la main au
+        collecteur sans lui faire croire que le flux est terminé.
 
         La bibliothèque n'offre aucun callback : elle empile les ticks dans
         `global_value.pairs[nom]['ticks']` depuis son propre thread. On draine
@@ -601,6 +604,12 @@ class PocketOptionSource:
                     yield tick
             if not produit:
                 time.sleep(self.intervalle)
+                # `None` = « rien pour l'instant ». Sans ce signal, le
+                # collecteur reste bloque ici et ses taches periodiques ne
+                # tournent plus : ni battement de coeur, ni synchronisation,
+                # ni la moindre requete sur la base -- dont le flux distant
+                # finit par etre jete pour inactivite.
+                yield None
 
     def _drainer(self, nom: str) -> Iterator[Tick]:
         tampon = self._client.GetTicks(nom)

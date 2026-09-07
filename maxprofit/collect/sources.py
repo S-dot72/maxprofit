@@ -38,9 +38,15 @@ class MarketDataSource(abc.ABC):
     def subscribe(self, pairs: Sequence[str]) -> None: ...
 
     @abc.abstractmethod
-    def stream(self) -> Iterator[Tick]:
+    def stream(self) -> Iterator[Tick | None]:
         """Générateur bloquant. Doit lever une exception en cas de perte de
-        connexion : la boucle du collecteur gère le backoff et la reconnexion."""
+        connexion : la boucle du collecteur gère le backoff et la reconnexion.
+
+        Céder `None` signifie « rien pour l'instant » et rend la main au
+        collecteur, qui en profite pour ses tâches à l'heure : battement de
+        cœur, écriture, synchronisation. Une source qui bloque sans jamais
+        rien céder les suspend toutes — et sur un marché calme, tout s'arrête
+        sans qu'aucune erreur ne le dise."""
 
     def close(self) -> None:
         pass
@@ -77,10 +83,11 @@ class SimulatedSource(MarketDataSource):
     def subscribe(self, pairs: Sequence[str]) -> None:
         self._subscribed = list(pairs)
 
-    def stream(self) -> Iterator[Tick]:
+    def stream(self) -> Iterator[Tick | None]:
         while True:
             if not self._subscribed:
                 time.sleep(0.2)
+                yield None       # « rien pour l'instant », pas la fin du flux
                 continue
             pair = self.rng.choice(self._subscribed)
             drift = self.rng.gauss(0, 1) * 0.00015
