@@ -32,6 +32,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from maxprofit.collect.collector import Collector, Config
@@ -51,6 +52,16 @@ log = logging.getLogger("hosting.superviseur")
 #: contrôle ne prouve pas qu'il sera accepté — seul le broker le dira — mais il
 #: attrape la faute la plus probable : un copier-coller tronqué ou décoré.
 PREFIXE_JETON = '42["auth"'
+
+
+def _duree(secondes: float) -> str:
+    """« 40 min » plutôt que « 2400 s » : une attente se lit en minutes."""
+    secondes = int(secondes)
+    if secondes < 90:
+        return f"{secondes} s"
+    if secondes < 5400:
+        return f"{secondes // 60} min"
+    return f"{secondes / 3600:.1f} h"
 
 
 class Superviseur:
@@ -111,14 +122,20 @@ class Superviseur:
                 log.error("Broker injoignable depuis cet hébergeur : %s", erreur)
                 self.derniere_erreur = str(erreur)
                 await self._alerte(
-                    "🚫 <b>Broker injoignable depuis l'hébergeur</b>\n\n"
+                    "🚫 <b>Broker injoignable</b>\n\n"
                     "Aucune poignée de main n'aboutit, dès la première "
-                    "tentative. Ce n'est probablement pas le jeton : les "
-                    "courtiers bloquent les plages d'adresses des hébergeurs.\n\n"
-                    "Pour trancher, lancez le diagnostic depuis chez vous. S'il "
-                    "fonctionne là et pas ici, aucun changement de code n'y "
-                    "fera rien — il faudra collecter depuis une connexion "
-                    "résidentielle."
+                    "tentative. Ce n'est pas le jeton : un jeton refusé donne "
+                    "une autre erreur.\n\n"
+                    "Le refus est inscrit en base. Au redémarrage, la collecte "
+                    "<b>attendra avant de rappeler</b>, de plus en plus "
+                    "longtemps tant que le refus dure. C'est voulu : rappeler "
+                    "toutes les minutes empêche une limitation de débit "
+                    "d'expirer.\n\n"
+                    "<b>Ne redéployez pas pour « relancer ».</b> Laissez la "
+                    "pause se dérouler ; <code>/etat</code> dit ce qu'il reste "
+                    "à attendre. Si après plusieurs heures rien ne passe alors "
+                    "que le diagnostic fonctionne depuis chez vous, alors "
+                    "seulement l'adresse de l'hébergeur est en cause."
                 )
                 raise erreur
 
@@ -227,9 +244,23 @@ class Superviseur:
         if self.attente_de_jeton:
             return ("🔑 En attente d'un jeton de session.\n"
                     f"<code>{self.derniere_erreur}</code>")
+        # Une pause délibérée n'est pas une panne, et le dire évite de croire
+        # que le bot est mort — puis de le redéployer, ce qui relancerait le
+        # cycle que cette pause sert précisément à interrompre.
+        pause = self._pause_restante_sec()
+        if pause > 0:
+            echecs = getattr(self.collecteur, "echecs_broker", 0)
+            return (f"⏸ Pause volontaire : {echecs} refus consécutif(s) du "
+                    f"broker.\nNouvelle tentative dans {_duree(pause)}.\n"
+                    f"<code>{self.derniere_erreur or ''}</code>")
+
         vivant = self._thread is not None and self._thread.is_alive()
         return ("🟢 Collecte en cours." if vivant
                 else "🔴 Collecteur arrêté.")
+
+    def _pause_restante_sec(self) -> float:
+        jusqu_a = getattr(self.collecteur, "pause_jusqu_a_sec", 0.0) or 0.0
+        return max(0.0, jusqu_a - time.time())
 
     async def _alerte(self, texte: str) -> None:
         if self._alerter is None:

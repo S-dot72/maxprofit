@@ -107,10 +107,42 @@ def _v1_tables_de_marche(conn) -> None:
         conn.execute(instruction)
 
 
+def _v2_etat_broker(conn) -> None:
+    """Mémoire des tentatives de connexion au broker, à travers les
+    redémarrages.
+
+    Le processus meurt quand le broker est injoignable — c'est la seule façon
+    d'arrêter le thread de la bibliothèque, qui compose toutes les dix secondes.
+    Mais l'hébergeur relance aussitôt, et l'on rappelle le broker quarante
+    secondes plus tard. Ce cycle EMPÊCHE une limitation de débit d'expirer :
+    on se maintient soi-même en pénitence.
+
+    Un compteur en mémoire ne servirait à rien, puisqu'il meurt avec le
+    processus. Il faut donc une trace durable, et ce n'est pas de la donnée de
+    marché — mais c'est la seule base qui survive à un redéploiement.
+    """
+    for instruction in _decouper(
+        """
+        CREATE TABLE IF NOT EXISTS etat_broker (
+            id                    INTEGER PRIMARY KEY CHECK (id = 1),
+            echecs_consecutifs    INTEGER NOT NULL DEFAULT 0,
+            dernier_echec_ts_sec  INTEGER,
+            dernier_succes_ts_sec INTEGER,
+            derniere_raison       TEXT
+        );
+
+        INSERT OR IGNORE INTO etat_broker (id, echecs_consecutifs)
+        VALUES (1, 0);
+        """
+    ):
+        conn.execute(instruction)
+
+
 #: Liste ordonnée et immuable. Ajouter une migration = ajouter une ligne à la
 #: fin, jamais modifier une ligne existante.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
+    Migration(2, "état des connexions au broker", _v2_etat_broker),
 )
 
 #: Version de schéma que ce code sait produire.

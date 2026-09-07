@@ -31,13 +31,18 @@ from maxprofit.store.db import chemin_donnees, valider
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import bucket_of_ms
 from maxprofit.core.types import Candle, Tick
-from maxprofit.collect.pocketoption import SessionExpiree, SourceIndisponible
+from maxprofit.collect.pocketoption import (
+    BrokerInjoignable,
+    RedemarrageRequis,
+    SessionExpiree,
+    SourceIndisponible,
+)
 from maxprofit.collect.sources import (
     MarketDataSource,
     PocketOptionSource,
     SimulatedSource,
 )
-from maxprofit.store import turso
+from maxprofit.store import etat_broker, turso
 from maxprofit.store.backup import sauvegarder_et_purger
 from maxprofit.store.db import open_read_write
 from maxprofit.store.market import MarketWriter
@@ -183,6 +188,12 @@ class Collector:
         maintenant = time.time()
         self._t_flush = self._t_beat = self._t_pairs = self._t_backup = maintenant
         self._t_sync = maintenant
+        #: Lisibles depuis un autre thread (le bot Telegram), pour dire pourquoi
+        #: rien ne se passe. Deux entiers publiés par le thread qui les calcule
+        #: et seulement lus ailleurs : pas de verrou nécessaire, et une lecture
+        #: légèrement en retard ne trompe personne.
+        self.echecs_broker = 0
+        self.pause_jusqu_a_sec = 0.0
 
     def stop(self, *_):
         log.info("Arrêt demandé, vidage des tampons...")
@@ -282,13 +293,49 @@ class Collector:
         log.info("Réouverture de la base.")
         self._ouvrir()
 
+    def _patienter_avant_broker(self) -> None:
+        """Purger la dette d'attente accumulée par les échecs précédents.
+
+        AVANT `source.connect()`, donc avant que le client du broker n'existe :
+        une fois construit, son thread compose toutes les dix secondes et rien
+        ne l'arrête. Attendre après coup n'empêcherait aucun appel.
+
+        L'attente survit aux redémarrages parce qu'elle est calculée depuis la
+        base. C'est le seul moyen : le processus meurt à chaque échec, et un
+        compteur en mémoire repartirait toujours de zéro.
+        """
+        attente = etat_broker.attente_requise(self.conn)
+        echecs, _, raison = etat_broker.lire(self.conn)
+        self.echecs_broker = echecs
+        if attente <= 0:
+            self.pause_jusqu_a_sec = 0.0
+            return
+        self.pause_jusqu_a_sec = time.time() + attente
+        log.warning(
+            "%d échec(s) de connexion consécutif(s) : silence de %d s avant de "
+            "rappeler le broker. Dernière raison : %s",
+            echecs, int(attente), raison,
+        )
+        fin = self.pause_jusqu_a_sec
+        while self.running and time.time() < fin:
+            time.sleep(min(1.0, fin - time.time()))
+        self.pause_jusqu_a_sec = 0.0
+
     def run(self) -> None:
         self._ouvrir()
         backoff = 1
         try:
             while self.running:
                 try:
+                    self._patienter_avant_broker()
+                    if not self.running:
+                        break
                     self.source.connect()
+                    # Le crédit est rendu ici, pas à la fin de la session : une
+                    # poignée de main réussie prouve que le broker nous accepte,
+                    # et c'est la seule chose que l'attente cherchait à obtenir.
+                    etat_broker.noter_succes(self.conn)
+                    self.echecs_broker = 0
                     self.refresh_pairs()
                     self._t_pairs = time.time()
                     backoff = 1
@@ -304,6 +351,7 @@ class Collector:
                     # le backoff sert à absorber. Sans ce cas explicite, elle
                     # tomberait dans FATALES — qui contient BotError, dont elle
                     # hérite — et tuerait la collecte à la première alerte.
+                    etat_broker.noter_echec(self.conn, str(erreur))
                     log.warning("Source indisponible (%s). Reconnexion dans %ds",
                                 erreur, backoff)
                     self._vider_tampons()
@@ -318,6 +366,14 @@ class Collector:
                     # en journalisant « connexion perdue » toutes les minutes.
                     log.error("Session expirée : arrêt en attente d'un nouveau "
                               "jeton.")
+                    self._vider_tampons()
+                    raise
+                except (BrokerInjoignable, RedemarrageRequis) as erreur:
+                    # Ces deux-là tuent le processus, et l'hébergeur le relance
+                    # dans la minute. C'est précisément le cycle qui empêchait
+                    # une limitation de débit d'expirer : on inscrit l'échec en
+                    # base pour que le processus SUIVANT sache se taire.
+                    etat_broker.noter_echec(self.conn, str(erreur))
                     self._vider_tampons()
                     raise
                 except FATALES:
@@ -337,6 +393,10 @@ class Collector:
                     # connexion morte perdrait les ticks au lieu de les écrire.
                     if not self._base_repond():
                         self._rouvrir_base()
+                    # Après la réouverture : sur une connexion morte, l'échec ne
+                    # s'inscrirait nulle part et le processus suivant repartirait
+                    # sans savoir qu'il doit se taire.
+                    etat_broker.noter_echec(self.conn, str(erreur))
                     self._vider_tampons()
                     if not self.running:
                         break

@@ -32,6 +32,12 @@ from maxprofit.store.db import (
 from maxprofit.store.market import MarketReader, MarketWriter
 from maxprofit.store.migrations import MIGRATIONS, SCHEMA_VERSION, Migration
 
+#: Le numero de la prochaine migration, quel que soit l'etat du schema.
+#: Ecrire 2 en dur obligeait a reprendre ces tests a chaque migration
+#: ajoutee -- et un test qu'on retouche a chaque deploiement finit par
+#: etre ajuste au resultat au lieu de le verifier.
+V_SUIVANTE = SCHEMA_VERSION + 1
+
 T0_SEC = 1_704_067_200
 T0_MS = T0_SEC * 1000
 
@@ -65,12 +71,12 @@ def test_survie_au_deploiement(db):
         # ADD COLUMN : autorisé, non destructeur, instantané sur SQLite.
         c.execute("ALTER TABLE ticks ADD COLUMN source TEXT")
 
-    migrations_v2 = MIGRATIONS + (Migration(2, "colonne source", _v2_ajoute_une_colonne),)
+    migrations_v2 = MIGRATIONS + (Migration(V_SUIVANTE, "colonne source", _v2_ajoute_une_colonne),)
 
     # --- redémarrage ----------------------------------------------------------
     conn = open_read_write(db, migrations=migrations_v2)
 
-    assert schema_version(conn) == 2, "la version de schéma n'a pas été avancée"
+    assert schema_version(conn) == V_SUIVANTE, "la version de schéma n'a pas été avancée"
 
     lignes = conn.execute("SELECT COUNT(*) FROM ticks").fetchone()[0]
     assert lignes == 100, f"{100 - lignes} lignes perdues lors du déploiement"
@@ -103,7 +109,7 @@ def test_code_plus_vieux_que_la_base_refuse_de_demarrer(db):
     def _v2(c):
         c.execute("ALTER TABLE ticks ADD COLUMN source TEXT")
 
-    conn = open_read_write(db, migrations=MIGRATIONS + (Migration(2, "v2", _v2),))
+    conn = open_read_write(db, migrations=MIGRATIONS + (Migration(V_SUIVANTE, "v2", _v2),))
     _cent_ticks(MarketWriter(conn))
     conn.close()
 
@@ -128,11 +134,11 @@ def test_migration_qui_echoue_laisse_la_base_dans_son_etat_anterieur(db):
         raise RuntimeError("panne au milieu de la migration")
 
     with pytest.raises(RuntimeError):
-        open_read_write(db, migrations=MIGRATIONS + (Migration(2, "v2", _v2_casse),))
+        open_read_write(db, migrations=MIGRATIONS + (Migration(V_SUIVANTE, "v2", _v2_casse),))
 
     conn = sqlite3.connect(db)
     assert conn.execute(
-        "SELECT version FROM _schema_version WHERE id = 1").fetchone()[0] == 1, (
+        "SELECT version FROM _schema_version WHERE id = 1").fetchone()[0] == SCHEMA_VERSION, (
         "la version a été avancée alors que la migration a échoué"
     )
     colonnes = {r[1] for r in conn.execute("PRAGMA table_info(ticks)")}
@@ -143,6 +149,7 @@ def test_migration_qui_echoue_laisse_la_base_dans_son_etat_anterieur(db):
 
 def test_migrations_appliquees_une_par_une_dans_l_ordre(db):
     trace = []
+    _TROIS = (V_SUIVANTE, V_SUIVANTE + 1, V_SUIVANTE + 2)
 
     def faire(n):
         def _appliquer(c):
@@ -151,11 +158,11 @@ def test_migrations_appliquees_une_par_une_dans_l_ordre(db):
         return _appliquer
 
     migrations = MIGRATIONS + tuple(
-        Migration(n, f"v{n}", faire(n)) for n in (2, 3, 4)
+        Migration(n, f"v{n}", faire(n)) for n in _TROIS
     )
     conn = open_read_write(db, migrations=migrations)
-    assert trace == [2, 3, 4]
-    assert schema_version(conn) == 4
+    assert trace == list(_TROIS)
+    assert schema_version(conn) == _TROIS[-1]
     conn.close()
 
     # Deuxième démarrage : plus rien à appliquer.
@@ -168,8 +175,8 @@ def test_migrations_appliquees_une_par_une_dans_l_ordre(db):
 def test_numerotation_incoherente_refusee(db):
     conn = open_read_write(db)
     for mauvaises in (
-        MIGRATIONS + (Migration(3, "trou", lambda c: None),),
-        MIGRATIONS + (Migration(1, "doublon", lambda c: None),),
+        MIGRATIONS + (Migration(V_SUIVANTE + 1, "trou", lambda c: None),),
+        MIGRATIONS + (Migration(SCHEMA_VERSION, "doublon", lambda c: None),),
     ):
         with pytest.raises(SchemaError, match="mal numérotées"):
             apply_migrations(conn, mauvaises)
@@ -395,8 +402,15 @@ def test_une_base_versionnee_par_pragma_est_reprise_sans_rejouer(tmp_path):
 
     ouverte = open_read_write(db)
     try:
-        assert schema_version(ouverte) == 1, "la version héritée a été perdue"
+        # La version heritee n'est pas perdue : les migrations deja
+        # appliquees ne sont PAS rejouees. Seules celles d'apres le numero
+        # herite tournent, et le schema arrive a jour.
+        assert schema_version(ouverte) == SCHEMA_VERSION
         assert ouverte.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1
+        # La table heritee n'a pas ete refaite au passage : elle garde ses trois
+        # colonnes d'origine, sans celles que la migration 1 aurait creees.
+        colonnes = {r[1] for r in ouverte.execute("PRAGMA table_info(ticks)")}
+        assert colonnes == {"pair", "ts_ms", "price"}
     finally:
         ouverte.close()
 

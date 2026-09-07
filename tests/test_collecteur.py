@@ -307,3 +307,79 @@ def test_les_meilleurs_payouts_sont_prioritaires(tmp_path):
     collecteur.run()
 
     assert set(collecteur.subscribed) == {"FORT_otc", "MOYEN_otc"}
+
+
+# --------------------------------------------------------------------------- #
+# La pause qui survit au processus
+# --------------------------------------------------------------------------- #
+#
+# Quand le broker refuse, le collecteur meurt : c'est la seule facon d'arreter
+# le thread de la bibliotheque tierce. L'hebergeur le relance aussitot, et l'on
+# rappelle le broker quarante secondes plus tard. Ce cycle EMPECHE une
+# limitation de debit d'expirer -- on se maintient soi-meme en penitence.
+#
+# La dette d'attente est donc ecrite en base, la seule chose qui survive a un
+# redemarrage, et purgee AVANT que le client du broker n'existe.
+
+def test_la_dette_d_attente_est_purgee_avant_d_appeler_le_broker(tmp_path):
+    """Aucun appel au broker tant que le silence du au refus n'est pas fini."""
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_write
+
+    base = tmp_path / "market.db"
+    conn = open_read_write(base)
+    while etat_broker.attente_requise(conn) <= 0:
+        etat_broker.noter_echec(conn, "poignee de main expiree")
+    conn.close()
+
+    src = SourceScriptee(_ticks(3))
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+
+    # Le collecteur est arrete pendant l'attente : il doit en sortir sans avoir
+    # touche au broker. Sans la pause, `connect()` serait deja appele.
+    threading.Timer(0.3, collecteur.stop).start()
+    collecteur.run()
+
+    assert src.connexions == 0, "le broker a ete rappele malgre la pause"
+
+
+def test_une_connexion_reussie_efface_la_dette(tmp_path):
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_only
+
+    src = SourceScriptee(_ticks(3))
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+
+    assert src.connexions == 1
+    conn = open_read_only(tmp_path / "market.db")
+    try:
+        echecs, _, _ = etat_broker.lire(conn)
+        assert echecs == 0
+        assert etat_broker.attente_requise(conn) == 0.0
+    finally:
+        conn.close()
+
+
+def test_un_refus_du_broker_est_inscrit_pour_le_processus_suivant(tmp_path):
+    """Sans cette trace, le processus relance repartirait l'ardoise vierge.
+
+    C'est exactement ce qui faisait rappeler le broker toutes les quarante
+    secondes pendant des heures.
+    """
+    from maxprofit.collect.pocketoption import BrokerInjoignable
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_only
+
+    src = SourceScriptee(_ticks(0), lever=BrokerInjoignable("aucune poignee"))
+    collecteur = Collector(src, _config(tmp_path))
+    with pytest.raises(BrokerInjoignable):
+        collecteur.run()
+
+    conn = open_read_only(tmp_path / "market.db")
+    try:
+        echecs, _, raison = etat_broker.lire(conn)
+        assert echecs == 1
+        assert "poignee" in raison
+    finally:
+        conn.close()

@@ -306,7 +306,11 @@ def test_une_migration_qui_echoue_est_annulee_sur_replique(tmp_path):
     """L'annulation doit passer par `rollback()`, pas par un ROLLBACK textuel
     que le moteur refuserait."""
     from maxprofit.store.db import apply_migrations
-    from maxprofit.store.migrations import MIGRATIONS, Migration
+    from maxprofit.store.migrations import (
+        MIGRATIONS,
+        SCHEMA_VERSION,
+        Migration,
+    )
 
     def _v2_casse(c):
         c.execute("CREATE TABLE provisoire (x INTEGER)")
@@ -315,7 +319,7 @@ def test_une_migration_qui_echoue_est_annulee_sur_replique(tmp_path):
     conn = ConnexionRepliquee(str(tmp_path / "replique.db"))
     try:
         with pytest.raises(RuntimeError, match="panne au milieu"):
-            apply_migrations(conn, MIGRATIONS + (Migration(2, "v2", _v2_casse),))
+            apply_migrations(conn, MIGRATIONS + (Migration(SCHEMA_VERSION + 1, "v2", _v2_casse),))
     finally:
         conn.close()
 
