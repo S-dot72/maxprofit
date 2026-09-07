@@ -169,8 +169,15 @@ DELAI_ENTRE_ABONNEMENTS_SEC = 0.4
 CROISSANCE_THREADS_SUSPECTE = 3
 
 
-def _forcer_region() -> str | None:
-    """Impose le point d'accès demandé, s'il y en a un. Retourne son nom.
+def _forcer_region(demo: bool) -> str | None:
+    """Impose le point d'accès demandé, s'il y en a un. Retourne son URL.
+
+    `demo` est passé par l'appelant et non lu dans la bibliothèque. Première
+    version : elle consultait `global_value.DEMO`, qui vaut `None` tant que le
+    client n'est pas construit — donc `bool(None)` est faux, et l'on écrasait
+    l'entrée « EUROPA » pendant que le client démo lisait « DEMO », intacte. Le
+    journal disait « point d'accès forcé », `/diag` affichait le nom demandé, et
+    la connexion partait quand même à l'ancienne adresse.
 
     On modifie la table de la bibliothèque plutôt que de lui passer un
     paramètre : elle n'en accepte aucun. `get_regions()` renvoie une liste
@@ -191,16 +198,11 @@ def _forcer_region() -> str | None:
         )
     # La bibliothèque lit REGIONS["DEMO"] pour un compte démo et
     # REGIONS["EUROPA"] sinon : on écrase l'entrée qu'elle consultera.
-    cible = "DEMO" if _est_demo() else "EUROPA"
-    connues[cible] = connues[nom]
-    log.info("Point d'accès forcé : %s (%s)", nom, connues[nom])
-    return nom
-
-
-def _est_demo() -> bool:
-    from pocketoptionapi import global_value
-
-    return bool(getattr(global_value, "DEMO", True))
+    cible = "DEMO" if demo else "EUROPA"
+    url = connues[nom]
+    connues[cible] = url
+    log.info("Point d'accès forcé : %s -> %s", nom, url)
+    return url
 
 
 def chemin_session() -> Path:
@@ -391,6 +393,7 @@ class PocketOptionSource:
         self.intervalle = intervalle_lecture_sec
         self.delai_payouts_sec = delai_payouts_sec
         self._client = None
+        self._url_demandee: str | None = None
         self._globals = None
         self._souscrites: List[str] = []
         self._vus: dict[str, int] = {}
@@ -469,9 +472,10 @@ class PocketOptionSource:
             self._threads_au_repos = threading.active_count()
 
         self._installer_boucle_asyncio()
-        _forcer_region()
+        self._url_demandee = _forcer_region(self.demo)
         self._client = PocketOption(demo=self.demo, ssid=ssid)
         self._client.connect()
+        self._verifier_point_d_acces()
 
         limite = time.monotonic() + DELAI_CONNEXION_SEC
         while time.monotonic() < limite:
@@ -717,6 +721,27 @@ class PocketOptionSource:
             del tampon[:fin]
             self._vus[nom] = 0
 
+    def _verifier_point_d_acces(self) -> None:
+        """Vérifier qu'on parle bien là où on a demandé.
+
+        Sans ce contrôle, une substitution ratée est indiscernable d'une
+        substitution réussie : le journal dit « point d'accès forcé », `/diag`
+        affiche le nom demandé, et la connexion part quand même à l'ancienne
+        adresse. C'est exactement ce qui est arrivé, et ça a coûté un aller-
+        retour de plus.
+        """
+        if self._url_demandee is None:
+            return
+        try:
+            reelle = self._client.api.websocket_client.url
+        except Exception:                                # noqa: BLE001
+            return
+        if reelle and reelle != self._url_demandee:
+            log.warning(
+                "Point d'accès demandé NON appliqué : connecté à %s au lieu de "
+                "%s. La substitution n'a pas pris.", reelle, self._url_demandee,
+            )
+
     def diagnostic(self) -> dict:
         """Ce que la BIBLIOTHEQUE a reellement recu, sans interpretation.
 
@@ -733,6 +758,7 @@ class PocketOptionSource:
             "souscrites": list(self._souscrites),
             "region": os.environ.get(ENV_REGION, "").strip().upper() or "défaut",
             "url": None,
+            "url_demandee": self._url_demandee,
             "connecte": None,
             "actifs_au_catalogue": None,
             "tampons": {},

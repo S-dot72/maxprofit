@@ -243,3 +243,38 @@ def test_un_jeton_refuse_donne_400_et_la_raison(db, monkeypatch):
     statut, corps, _ = _poster(db, {"ssid": "pas un jeton"}, secret="le-bon")
     assert statut == 400
     assert "invalide" in corps["erreur"]
+
+
+# --------------------------------------------------------------------------- #
+# Le verdict sur le point d'acces
+# --------------------------------------------------------------------------- #
+#
+# Une substitution ratee se lisait exactement comme une substitution reussie :
+# /diag affichait le nom demande et l'URL reelle, et il fallait connaitre la
+# table des adresses par coeur pour voir qu'elles ne concordaient pas.
+
+def test_le_verdict_dit_quand_la_substitution_n_a_pas_pris():
+    from maxprofit.hosting.service import _verdict_point_d_acces
+
+    verdict = _verdict_point_d_acces({
+        "url_demandee": "wss://try-demo-eu.po.market/",
+        "url": "wss://demo-api-eu.po.market/",
+    })
+    assert "NON appliquée" in verdict
+    assert "try-demo-eu" in verdict
+
+
+def test_le_verdict_confirme_une_substitution_appliquee():
+    from maxprofit.hosting.service import _verdict_point_d_acces
+
+    url = "wss://try-demo-eu.po.market/"
+    verdict = _verdict_point_d_acces({"url_demandee": url, "url": url})
+    assert "appliquée" in verdict and "NON" not in verdict
+
+
+def test_sans_demande_le_verdict_ne_reproche_rien():
+    from maxprofit.hosting.service import _verdict_point_d_acces
+
+    verdict = _verdict_point_d_acces(
+        {"url_demandee": None, "url": "wss://demo-api-eu.po.market/"})
+    assert "défaut" in verdict

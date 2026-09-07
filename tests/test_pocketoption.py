@@ -955,7 +955,7 @@ def test_sans_variable_on_ne_touche_a_rien(monkeypatch):
 
     monkeypatch.delenv(po.ENV_REGION, raising=False)
     avant = dict(REGION.REGIONS)
-    assert po._forcer_region() is None
+    assert po._forcer_region(demo=True) is None
     assert REGION.REGIONS == avant
 
 
@@ -965,7 +965,7 @@ def test_un_point_d_acces_inconnu_est_refuse_avec_la_liste(monkeypatch):
     de collecte muette sur le point d'acces par defaut."""
     monkeypatch.setenv(po.ENV_REGION, "EUROPPA")
     with pytest.raises(BotError) as capture:
-        po._forcer_region()
+        po._forcer_region(demo=True)
     assert "DEMO_2" in str(capture.value)
 
 
@@ -978,8 +978,34 @@ def test_le_point_d_acces_demande_ecrase_celui_que_la_bibliotheque_lira(
     monkeypatch.setattr(REGION, "REGIONS", dict(REGION.REGIONS))
     monkeypatch.setenv(po.ENV_REGION, "demo_2")
 
-    assert po._forcer_region() == "DEMO_2"
+    assert "try-demo-eu" in po._forcer_region(demo=True)
     # La bibliotheque ne lit que REGIONS["DEMO"] pour un compte demo : c'est
     # cette entree, et pas une autre, qui doit avoir change.
     assert REGION.REGIONS["DEMO"] == REGION.REGIONS["DEMO_2"]
     assert "try-demo-eu" in REGION.REGIONS["DEMO"]
+
+
+def test_un_compte_demo_ne_touche_jamais_l_entree_reelle(monkeypatch):
+    """La regression qui a coute un aller-retour.
+
+    `_forcer_region` lisait `global_value.DEMO`, qui vaut None tant que le
+    client n'est pas construit : bool(None) est faux, on ecrasait EUROPA, et le
+    client demo lisait DEMO restee intacte. Le journal annoncait pourtant
+    « point d'acces force ».
+    """
+    from pocketoptionapi import global_value
+    from pocketoptionapi.constants import REGION
+
+    monkeypatch.setattr(REGION, "REGIONS", dict(REGION.REGIONS))
+    monkeypatch.setattr(global_value, "DEMO", None, raising=False)
+    monkeypatch.setenv(po.ENV_REGION, "DEMO_2")
+    europa_avant = REGION.REGIONS["EUROPA"]
+
+    po._forcer_region(demo=True)
+
+    assert "try-demo-eu" in REGION.REGIONS["DEMO"], (
+        "l'entree que la bibliotheque lira n'a pas ete changee"
+    )
+    assert REGION.REGIONS["EUROPA"] == europa_avant, (
+        "l'entree du compte reel a ete ecrasee a la place"
+    )

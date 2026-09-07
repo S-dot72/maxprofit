@@ -206,6 +206,25 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
     return "\n".join(lignes)
 
 
+def _verdict_point_d_acces(etat: dict) -> str:
+    """Dire si la substitution a pris, plutôt que de laisser deviner.
+
+    Un point d'accès demandé mais non appliqué se lisait exactement comme un
+    point d'accès appliqué : `/diag` affichait le nom demandé et l'URL réelle,
+    et il fallait connaître la table des adresses par cœur pour voir qu'elles
+    ne concordaient pas.
+    """
+    demandee, reelle = etat.get("url_demandee"), etat.get("url")
+    if not demandee:
+        return "(point d'accès par défaut)"
+    if not reelle:
+        return "⏳ Connexion pas encore établie."
+    if reelle == demandee:
+        return "✅ Substitution appliquée."
+    return (f"❌ <b>Substitution NON appliquée</b> — demandé "
+            f"<code>{demandee}</code>. L'expérience n'a pas eu lieu.")
+
+
 async def _diagnostic(superviseur: Superviseur) -> str:
     """Ce que la bibliothèque du broker a reçu, sans interprétation.
 
@@ -229,8 +248,9 @@ async def _diagnostic(superviseur: Superviseur) -> str:
         "<b>Intérieur du client du broker</b>",
         "",
         f"Socket connecté : {etat.get('connecte')}",
-        f"Point d'accès : {etat.get('region')}",
-        f"<code>{etat.get('url') or 'url inconnue'}</code>",
+        f"Point d'accès demandé : {etat.get('region')}",
+        f"Réellement connecté à :\n<code>{etat.get('url') or 'url inconnue'}</code>",
+        _verdict_point_d_acces(etat),
         f"Actifs connus de la bibliothèque : {etat.get('cles_bibliotheque')}",
         f"Paires souscrites : {len(etat.get('souscrites') or ())}",
         "",
