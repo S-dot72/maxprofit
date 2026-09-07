@@ -526,6 +526,24 @@ class Collector:
         self._t_pairs = now
 
 
+def _min_payout_env() -> int | None:
+    """`MIN_PAYOUT_PCT`, ou rien. Jamais de valeur inventee.
+
+    Exister evite d'avoir a repeter le reglage sur la ligne de commande d'un
+    script de relance, alors qu'il est deja dans le `.env` que lit le service.
+    Une valeur illisible vaut absence : on refusera de demarrer avec un message,
+    plutot que de collecter des paires choisies au hasard.
+    """
+    brut = os.environ.get("MIN_PAYOUT_PCT", "").strip()
+    if not brut:
+        return None
+    try:
+        return int(brut)
+    except ValueError:
+        log.warning("MIN_PAYOUT_PCT illisible (%r) : ignore.", brut)
+        return None
+
+
 def build_config(args) -> Config:
     """Assemble la configuration. `--db` l'emporte sur `TRADING_DB_PATH` pour
     les tests et l'inspection ; en production, on ne passe pas `--db`."""
@@ -541,7 +559,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", choices=["sim", "po"], default="sim")
     ap.add_argument("--db", default=None,
                     help="Chemin de la base. Par défaut : $TRADING_DB_PATH.")
-    ap.add_argument("--min-payout", type=int, required=True,
+    ap.add_argument("--min-payout", type=int,
+                    default=_min_payout_env(),
                     help="Payout minimal pour s'abonner à une paire. "
                          "Obligatoire : aucune valeur par défaut sur ce qui "
                          "touche à l'argent (spec §5).")
@@ -562,6 +581,15 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if a.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
     )
+
+    if a.min_payout is None:
+        # Refuser, pas choisir a sa place. La meme regle que dans le service,
+        # et le meme message : ce reglage decide sur quoi on mise, il est
+        # fourni explicitement ou le collecteur ne demarre pas (spec 5).
+        log.error("Payout minimal non fourni : passez --min-payout ou "
+                  "definissez MIN_PAYOUT_PCT. Aucune valeur par defaut n'est "
+                  "appliquee (spec 5).")
+        return 2
 
     try:
         cfg = build_config(a)

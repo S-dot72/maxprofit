@@ -514,3 +514,25 @@ def test_un_silence_prolonge_declenche_un_reabonnement(tmp_path):
     collecteur.run()
 
     assert len(src.abonnements) > 1, "aucun reabonnement malgre le silence"
+
+
+def test_sans_payout_minimal_le_collecteur_refuse_de_demarrer(monkeypatch, capsys):
+    """Pas de valeur par defaut sur ce qui touche a l'argent (spec 5)."""
+    from maxprofit.collect import collector as mod
+
+    monkeypatch.delenv("MIN_PAYOUT_PCT", raising=False)
+    assert mod.main(["--source", "sim"]) == 2
+
+
+def test_le_payout_minimal_peut_venir_de_l_environnement(monkeypatch):
+    from maxprofit.collect import collector as mod
+
+    monkeypatch.setenv("MIN_PAYOUT_PCT", "88")
+    assert mod._min_payout_env() == 88
+
+
+def test_un_payout_illisible_vaut_absence(monkeypatch):
+    from maxprofit.collect import collector as mod
+
+    monkeypatch.setenv("MIN_PAYOUT_PCT", "quatre-vingt-douze")
+    assert mod._min_payout_env() is None
