@@ -54,6 +54,14 @@ param(
     # Les deux ecrivent et lisent la meme base Turso.
     [switch]$AvecBot,
 
+    # Interpreteur a utiliser. Par defaut celui du .venv du projet.
+    #
+    # Il en faut un autre quand le venv principal tourne sur un Python trop
+    # recent : libsql ne publie de binaire Windows que jusqu'a 3.13, et au-dela
+    # pip tente de compiler du Rust. Un second environnement en 3.13 dedie a la
+    # collecte coute moins cher que de retrograder tout le projet.
+    [string]$Python,
+
     # Délai maximal entre deux tentatives, en secondes. Le délai double après
     # chaque échec sans jamais dépasser cette valeur : un broker en maintenance
     # ne doit pas être martelé, mais la collecte doit reprendre vite quand il
@@ -63,12 +71,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $racine = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $racine '.venv\Scripts\python.exe'
+$python = if ($Python) { $Python } else { Join-Path $racine '.venv\Scripts\python.exe' }
 
 if (-not (Test-Path $python)) {
-    Write-Error "Environnement virtuel introuvable : $python`nCréez-le : python -m venv .venv"
+    Write-Error "Interpréteur introuvable : $python`nCréez le venv : python -m venv .venv"
     exit 2
 }
+
+# La version de Python decide si libsql est installable : il n'existe pas de
+# binaire Windows au-dela de 3.13. Le dire ICI, avant de lancer quoi que ce
+# soit, evite de le decouvrir dans une trace d'erreur de lieur Rust.
+$versionPython = (& $python -c "import sys; print('%d.%d' % sys.version_info[:2])")
+$mineur = [int]($versionPython -split '\.')[1]
 
 # --- Empêcher la mise en veille -------------------------------------------
 # SetThreadExecutionState signale au système que ce processus doit rester
@@ -156,8 +170,21 @@ Write-Host ('=' * 72)
 Write-Host "Source        : $Source"
 Write-Host "Base          : $cheminBase"
 Write-Host "Destination   : $destination"
+Write-Host "Python        : $versionPython ($python)"
 Write-Host "Journal       : $journal"
 Write-Host ("Mise en veille: " + $(if ($veilleBloquee) { 'bloquée' } else { 'NON bloquée — la collecte s''arrêtera à la veille' }))
+if ($tursoUrl -and $mineur -gt 13) {
+    Write-Host ''
+    Write-Warning @"
+Python $versionPython avec Turso : libsql ne publie pas de binaire Windows
+au-dela de 3.13, et la collecte echouera au demarrage.
+
+Deux issues :
+  - un venv en 3.13 dedie a la collecte, puis -Python vers son python.exe ;
+  - ou retirer TURSO_DATABASE_URL du .env pour collecter en local seulement.
+"@
+}
+
 Write-Host ''
 Write-Host 'Ctrl+C pour arrêter. Les tampons sont vidés avant la sortie.'
 Write-Host ''
