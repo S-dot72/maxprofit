@@ -74,6 +74,15 @@ from _interpreteur import exiger  # noqa: E402
 # revenait a refuser le seul environnement capable de faire tourner ceci.
 exiger('webview', 'outils\\capturer_ssid.py')
 
+from maxprofit.core.config import charger_env_local  # noqa: E402
+
+# `.env` AVANT de résoudre le chemin du fichier de session. Sans cela, la
+# capture écrivait à la racine du projet pendant que le collecteur, lui, lisait
+# POCKET_OPTION_SESSION_FILE et cherchait ailleurs : deux points d'entrée, deux
+# réponses à la même question, et un jeton parfaitement valide invisible pour
+# celui qui en avait besoin.
+charger_env_local()
+
 
 def _cookies_de(window) -> dict[str, str]:
     """Extrait les cookies de la fenêtre, sans supposer du format exact.
