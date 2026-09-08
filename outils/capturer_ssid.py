@@ -66,23 +66,13 @@ COOKIE_REQUIS = "ci_session"
 URL_CABINET = "https://pocketoption.com/en/cabinet/demo-quick-high-low"
 
 
-def _verifier_interpreteur() -> None:
-    attendu = (RACINE / ".venv" / "Scripts" / "python.exe" if os.name == "nt"
-               else RACINE / ".venv" / "bin" / "python")
-    if not attendu.exists():
-        return
-    try:
-        if Path(sys.executable).resolve() == attendu.resolve():
-            return
-    except OSError:
-        return
-    print(f"Mauvais interpréteur Python.\n"
-          f"  utilisé : {sys.executable}\n"
-          f"  attendu : {attendu}\n", file=sys.stderr)
-    raise SystemExit(2)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _interpreteur import exiger  # noqa: E402
 
-
-_verifier_interpreteur()
+# On verifie ce que l'interpreteur SAIT FAIRE, pas son chemin : depuis
+# qu'il existe un second venv en 3.13 pour libsql, exiger `.venv` en dur
+# revenait a refuser le seul environnement capable de faire tourner ceci.
+exiger('webview', 'outils\\capturer_ssid.py')
 
 
 def _cookies_de(window) -> dict[str, str]:
@@ -258,8 +248,11 @@ def main(argv: list[str] | None = None) -> int:
             print("Pour vous connecter sur un AUTRE compte, relancez avec")
             print("--nouvelle-session.")
             print()
-        commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
-                    else ".venv/bin/python")
+        # L'interpreteur COURANT, pas un chemin en dur : c'est celui avec
+        # lequel l'utilisateur vient de lancer l'outil, donc celui qui marche.
+        # Nommer `.venv` alors que la collecte tourne sous `.venv313` envoie
+        # droit dans le mur.
+        commande = sys.executable
         separateur = "\\" if os.name == "nt" else "/"
         if args.envoyer:
             code = _envoyer_au_serveur(args.envoyer, resultat["ssid"])

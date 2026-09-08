@@ -50,42 +50,13 @@ RACINE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RACINE))
 
 
-def _verifier_interpreteur() -> None:
-    """Refuse de tourner sous le mauvais Python, avec la commande exacte.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _interpreteur import exiger  # noqa: E402
 
-    Le piège est facile : `python outils/diagnostic_pocketoption.py` lance
-    l'interpréteur du système, où rien n'est installé. L'erreur qui en résulte
-    (« No module named 'pocketoptionapi' ») ressemble à un problème
-    d'installation de la bibliothèque, alors que le paquet est bien là — dans
-    l'autre interpréteur.
-    """
-    if os.name == "nt":
-        attendu = RACINE / ".venv" / "Scripts" / "python.exe"
-        commande = ".\\.venv\\Scripts\\python.exe outils\\diagnostic_pocketoption.py"
-    else:
-        attendu = RACINE / ".venv" / "bin" / "python"
-        commande = ".venv/bin/python outils/diagnostic_pocketoption.py"
-
-    if not attendu.exists():
-        return  # pas de venv de projet : l'utilisateur gère son environnement
-
-    try:
-        meme = Path(sys.executable).resolve() == attendu.resolve()
-    except OSError:
-        return
-    if meme:
-        return
-
-    print(f"Mauvais interpréteur Python.\n"
-          f"  utilisé  : {sys.executable}\n"
-          f"  attendu  : {attendu}\n\n"
-          f"La bibliothèque broker est installée dans le venv du projet, pas "
-          f"dans le Python du système. Relancez depuis {RACINE} :\n\n"
-          f"    {commande} --duree 90\n", file=sys.stderr)
-    raise SystemExit(2)
-
-
-_verifier_interpreteur()
+# On verifie ce que l'interpreteur SAIT FAIRE, pas son chemin : depuis
+# qu'il existe un second venv en 3.13 pour libsql, exiger `.venv` en dur
+# revenait a refuser le seul environnement capable de faire tourner ceci.
+exiger('pocketoptionapi', 'outils\\diagnostic_pocketoption.py --duree 90')
 
 from maxprofit.collect.pocketoption import (  # noqa: E402
     ENV_SSID,
@@ -124,8 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     # Même règle que l'adaptateur, par le même code : environnement, puis
     # fichier de session.
     if resoudre_ssid(demo=not args.reel) is None:
-        commande = (r".\.venv\Scripts\python.exe" if os.name == "nt"
-                    else ".venv/bin/python")
+        # L'interpreteur COURANT, pas un chemin en dur : c'est celui avec
+        # lequel l'utilisateur vient de lancer l'outil, donc celui qui marche.
+        # Nommer `.venv` alors que la collecte tourne sous `.venv313` envoie
+        # droit dans le mur.
+        commande = sys.executable
         print(f"Aucun {ENV_SSID} défini.")
         print()
         print("Capturez-le d'abord, une seule fois :")
