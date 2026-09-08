@@ -504,7 +504,13 @@ class PocketOptionSource:
             # pour un collecteur : on le croit en train de travailler. On refuse
             # donc d'emprunter ce chemin, et la capture du SSID est un geste
             # explicite, fait une fois, par un outil dédié.
-            raise SourceIndisponible(
+            # `SessionExpiree`, pas `SourceIndisponible` : l'absence de jeton
+            # est une erreur de CONFIGURATION, pas une panne passagère du
+            # broker. Traitée comme passagère, elle faisait boucler le
+            # collecteur avec un backoff croissant — et pire, elle inscrivait
+            # des « échecs de connexion » au compte du broker, qui se retrouvait
+            # mis en pénitence pour un fichier manquant chez nous.
+            raise SessionExpiree(
                 f"Aucun SSID. Lancez outils/capturer_ssid.py une fois : il "
                 f"l'enregistre dans {chemin_session()} et tout le reste le "
                 f"relira de là, sans copier-coller. En hébergement, passez "

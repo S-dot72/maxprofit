@@ -1100,3 +1100,20 @@ def test_le_diagnostic_dit_si_le_compte_est_authentifie(broker, monkeypatch):
     globaux.balance_updated = True
     assert src.authentifie() is True
     assert src.diagnostic()["authentifie"] is True
+
+
+def test_l_absence_de_jeton_n_est_pas_une_panne_du_broker(broker, monkeypatch,
+                                                          tmp_path):
+    """Une configuration manquante ne doit pas etre reessayee en boucle.
+
+    Traitee comme une indisponibilite passagere, elle faisait boucler le
+    collecteur avec un backoff croissant -- et inscrivait des « echecs de
+    connexion » au compte du broker, mis en penitence pour un fichier manquant
+    chez nous. `SessionExpiree` remonte au lieu d'etre reessayee.
+    """
+    monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
+    monkeypatch.setenv(po.ENV_FICHIER_SESSION, str(tmp_path / "absent.json"))
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+
+    with pytest.raises(po.SessionExpiree, match="capturer_ssid"):
+        src.connect()
