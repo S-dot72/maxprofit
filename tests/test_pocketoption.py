@@ -33,6 +33,30 @@ from maxprofit.collect.pocketoption import (
 )
 from maxprofit.core.errors import BotError
 
+#: Jeton bien forme : prefixe correct, session de longueur credible, uid
+#: non nul. Aucune valeur reelle -- seule la FORME compte ici.
+@pytest.fixture(autouse=True)
+def _sans_attente_d_authentification(monkeypatch):
+    """Aucun test n'a a attendre les vingt secondes de production.
+
+    Le delai est resolu a l'appel, donc patcher la constante suffit : le figer
+    dans la signature l'aurait rendu impatchable.
+    """
+    monkeypatch.setattr(po, "DELAI_AUTHENTIFICATION_SEC", 0.0)
+
+
+SSID_PLAUSIBLE = (
+    '42["auth",{"session":"' + "a" * 40
+    + '","isDemo":1,"uid":123456,"platform":2}]'
+)
+
+#: Un second jeton bien forme, DISTINCT du premier : sert a montrer lequel des
+#: deux a servi quand l'environnement et le fichier en proposent chacun un.
+SSID_PLAUSIBLE_ENV = (
+    '42["auth",{"session":"' + "b" * 40
+    + '","isDemo":1,"uid":654321,"platform":2}]'
+)
+
 #: Les faux ticks sont datés de MAINTENANT, pas d'une date figée : l'adaptateur
 #: mesure désormais le décalage d'horloge du broker contre l'UTC réel, et un
 #: horodatage figé vieillit — au bout de quelques mois il serait rejeté, et les
@@ -141,7 +165,10 @@ def broker(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "pocketoptionapi", module_racine)
     monkeypatch.setitem(sys.modules, "pocketoptionapi.global_value", module_globals)
     monkeypatch.setitem(sys.modules, "pocketoptionapi.stable_api", module_stable)
-    monkeypatch.setenv("POCKET_OPTION_SSID", "faux-ssid")
+    # Un jeton de la MEME FORME qu'un vrai : depuis qu'un gabarit installe
+    # en production a coute trois jours de collecte muette, `connect()`
+    # refuse ce qui ne peut pas authentifier.
+    monkeypatch.setenv("POCKET_OPTION_SSID", SSID_PLAUSIBLE)
     return client, globals_
 
 
@@ -580,7 +607,7 @@ def test_connect_utilise_le_fichier_de_session(broker, monkeypatch, tmp_path):
 
     monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
     fichier = tmp_path / "session.json"
-    ecrire_session("42[auth-du-fichier]", demo=True, uid="1", chemin=fichier)
+    ecrire_session(SSID_PLAUSIBLE, demo=True, uid="1", chemin=fichier)
     monkeypatch.setenv(ENV_FICHIER_SESSION, str(fichier))
 
     src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
@@ -594,17 +621,19 @@ def test_l_environnement_l_emporte_sur_le_fichier(broker, monkeypatch, tmp_path)
         ENV_FICHIER_SESSION,
         ecrire_session,
         lire_session,
+        resoudre_ssid,
     )
 
     fichier = tmp_path / "session.json"
-    ecrire_session("42[auth-du-fichier]", demo=True, chemin=fichier)
+    ecrire_session(SSID_PLAUSIBLE, demo=True, chemin=fichier)
     monkeypatch.setenv(ENV_FICHIER_SESSION, str(fichier))
-    monkeypatch.setenv("POCKET_OPTION_SSID", "42[auth-de-l-env]")
+    monkeypatch.setenv("POCKET_OPTION_SSID", SSID_PLAUSIBLE_ENV)
 
     src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
     src.connect()
     # Le fichier existe bien, mais ce n'est pas lui qui a servi.
-    assert lire_session(demo=True, chemin=fichier) == "42[auth-du-fichier]"
+    assert lire_session(demo=True, chemin=fichier) == SSID_PLAUSIBLE
+    assert resoudre_ssid(demo=True) == SSID_PLAUSIBLE_ENV
 
 
 def test_resoudre_ssid_est_la_seule_regle(monkeypatch, tmp_path):
@@ -1009,3 +1038,65 @@ def test_un_compte_demo_ne_touche_jamais_l_entree_reelle(monkeypatch):
     assert REGION.REGIONS["EUROPA"] == europa_avant, (
         "l'entree du compte reel a ete ecrasee a la place"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Le jeton factice : trois jours de collecte muette
+# --------------------------------------------------------------------------- #
+#
+# Le jeton installe en production contenait un champ `session` de TROIS
+# caracteres et `uid: 0`. Le broker acceptait la trame, diffusait son catalogue
+# public -- 183 actifs, tout avait l'air normal -- et n'authentifiait rien. Zero
+# tick, sans une seule erreur, depuis l'hebergeur comme depuis le poste.
+
+GABARIT = '42["auth",{"session":"...","isDemo":1,"uid":0,"platform":2}]'
+
+
+def test_un_gabarit_de_jeton_est_refuse():
+    with pytest.raises(po.SessionExpiree, match="gabarit"):
+        po.verifier_ssid(GABARIT)
+
+
+def test_un_uid_nul_est_refuse():
+    """« uid: 0 » veut dire : rattache a aucun compte."""
+    jeton = '42["auth",{"session":"' + "a" * 40 + '","isDemo":1,"uid":0}]'
+    with pytest.raises(po.SessionExpiree, match="uid"):
+        po.verifier_ssid(jeton)
+
+
+def test_un_jeton_sans_champ_session_est_refuse():
+    with pytest.raises(po.SessionExpiree, match="tronqué"):
+        po.verifier_ssid('42["auth",{"isDemo":1,"uid":7}]')
+
+
+def test_un_jeton_bien_forme_passe():
+    po.verifier_ssid(SSID_PLAUSIBLE)          # ne leve pas
+
+
+def test_connect_refuse_un_gabarit_avant_d_ouvrir_le_socket(broker, monkeypatch):
+    """Refuser AVANT d'ouvrir : une connexion qui a l'air de marcher est pire
+    qu'un refus, parce qu'on la laisse tourner des jours."""
+    client, _ = broker
+    monkeypatch.setenv("POCKET_OPTION_SSID", GABARIT)
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+
+    with pytest.raises(po.SessionExpiree):
+        src.connect()
+    assert src._client is None, "le socket a ete ouvert malgre un jeton invalide"
+
+
+def test_le_diagnostic_dit_si_le_compte_est_authentifie(broker, monkeypatch):
+    """Le catalogue est public ; le solde ne l'est pas.
+
+    C'est le seul signal qui distingue « connecte » de « connecte ET reconnu ».
+    """
+    client, globaux = broker
+    monkeypatch.setenv("POCKET_OPTION_SSID", SSID_PLAUSIBLE)
+    src = PocketOptionSource(demo=True, delai_payouts_sec=1.0)
+    src.connect()
+
+    assert src.diagnostic()["authentifie"] is False
+
+    globaux.balance_updated = True
+    assert src.authentifie() is True
+    assert src.diagnostic()["authentifie"] is True

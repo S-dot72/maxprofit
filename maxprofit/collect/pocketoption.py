@@ -123,6 +123,11 @@ DELAI_PAYOUTS_SEC = 25
 #: tampon de la bibliothèque : elle y empile sans jamais purger.
 SEUIL_COMPACTAGE = 5_000
 
+#: Délai laissé au broker pour envoyer le solde du compte, qui est le seul
+#: signe observable d'une authentification réussie. Généreux : il vaut mieux
+#: attendre que crier à tort.
+DELAI_AUTHENTIFICATION_SEC = 20
+
 #: Écart résiduel toléré après retrait des heures entières, lors de la mesure
 #: du décalage d'horloge du broker. Couvre la latence réseau et une dérive
 #: normale du poste ; au-delà, on ne comprend plus l'horloge et on refuse.
@@ -290,6 +295,54 @@ def resoudre_ssid(demo: bool, explicite: str | None = None) -> str | None:
     )
 
 
+#: Longueur minimale du champ `session` d'un jeton. Un vrai identifiant de
+#: session Pocket Option fait plusieurs dizaines de caractères. En dessous,
+#: c'est un gabarit laissé en place, un copier-coller tronqué, ou une valeur
+#: d'exemple — jamais quelque chose que le broker authentifiera.
+LONGUEUR_MIN_SESSION = 10
+
+
+def verifier_ssid(jeton: str) -> None:
+    """Refuser un jeton qui ne peut pas authentifier. Lève `SessionExpiree`.
+
+    Ce contrôle existe parce que son absence a coûté trois jours. Le jeton
+    installé contenait un champ `session` de TROIS caractères et `uid: 0` : un
+    gabarit, pas un jeton. Le broker acceptait la trame, diffusait son catalogue
+    public — 183 actifs, tout avait l'air normal — et n'authentifiait rien. Zéro
+    tick, sans une seule erreur, depuis l'hébergeur comme depuis le poste.
+
+    Aucune de ces vérifications ne prouve que le broker acceptera le jeton :
+    seul le broker le dira. Elles écartent ce qui ne peut PAS marcher.
+    """
+    import re
+
+    if not jeton or not jeton.startswith('42["auth"'):
+        raise SessionExpiree(
+            f"Jeton mal formé : il doit commencer par 42[\"auth\". "
+            f"Recapturez-le avec outils/capturer_ssid.py."
+        )
+
+    session = re.search(r'"session"\s*:\s*"([^"]*)"', jeton)
+    if session is None:
+        raise SessionExpiree("Jeton sans champ « session » : il est tronqué.")
+    if len(session.group(1)) < LONGUEUR_MIN_SESSION:
+        raise SessionExpiree(
+            f"Le champ « session » du jeton fait {len(session.group(1))} "
+            f"caractère(s) : c'est un gabarit, pas une session. Le broker "
+            f"acceptera la connexion et n'authentifiera rien — vous verrez le "
+            f"catalogue des actifs et zéro tick. Recapturez le jeton avec "
+            f"outils/capturer_ssid.py."
+        )
+
+    uid = re.search(r'"uid"\s*:\s*(\d+)', jeton)
+    if uid is not None and uid.group(1) == "0":
+        raise SessionExpiree(
+            "Le jeton porte « uid: 0 » : il n'est rattaché à aucun compte. "
+            "Recapturez-le après vous être connecté avec "
+            "outils/capturer_ssid.py."
+        )
+
+
 class HorlogeIncoherente(BotError):
     """L'horloge du broker ne peut pas être rapportée à l'UTC.
 
@@ -380,7 +433,8 @@ class PocketOptionSource:
 
     def __init__(self, demo: bool = True, ssid: str | None = None,
                  period_sec: int = 60, intervalle_lecture_sec: float = 0.25,
-                 delai_payouts_sec: float = DELAI_PAYOUTS_SEC):
+                 delai_payouts_sec: float = DELAI_PAYOUTS_SEC,
+                 delai_authentification_sec: float | None = None):
         if not demo:
             log.warning(
                 "Compte RÉEL demandé. Cette bibliothèque est non officielle et "
@@ -392,6 +446,10 @@ class PocketOptionSource:
         self.period_sec = period_sec
         self.intervalle = intervalle_lecture_sec
         self.delai_payouts_sec = delai_payouts_sec
+        #: `None` = le defaut du module, resolu a l'APPEL. Le figer dans la
+        #: signature le rendrait impatchable, et les tests attendraient
+        #: vingt secondes par connexion.
+        self.delai_authentification_sec = delai_authentification_sec
         self._client = None
         self._url_demandee: str | None = None
         self._globals = None
@@ -471,6 +529,11 @@ class PocketOptionSource:
         if self._threads_au_repos is None:
             self._threads_au_repos = threading.active_count()
 
+        # AVANT d'ouvrir quoi que ce soit : un jeton qui ne peut pas
+        # authentifier ne doit pas donner lieu à une connexion qui aura l'air
+        # de marcher.
+        verifier_ssid(ssid)
+
         self._installer_boucle_asyncio()
         self._url_demandee = _forcer_region(self.demo)
         self._client = PocketOption(demo=self.demo, ssid=ssid)
@@ -498,6 +561,10 @@ class PocketOptionSource:
                 paires = self._paires_brutes(self.delai_payouts_sec)
                 log.info("Connecté (démo=%s), %d actifs au catalogue.",
                          self.demo, len(paires))
+                # Le catalogue ne prouve rien : il est public. C'est le solde
+                # qui distingue une session authentifiée d'une session qui ne
+                # recevra jamais un tick.
+                self._signaler_si_non_authentifie()
                 self._verifier_fuite_de_threads()
                 return
             time.sleep(0.5)
@@ -721,6 +788,52 @@ class PocketOptionSource:
             del tampon[:fin]
             self._vus[nom] = 0
 
+    def authentifie(self) -> bool | None:
+        """Le broker a-t-il reconnu le compte ? `None` si on ne sait pas.
+
+        Le solde est le seul signal disponible : il n'arrive qu'après
+        authentification, alors que le catalogue des actifs est diffusé à tout
+        le monde. C'est ce qui rendait la panne indétectable — 183 actifs
+        reçus, tout avait l'air normal, et rien n'était authentifié.
+
+        On distingue « pas authentifié » de « pas encore » : juste après
+        l'ouverture du socket, l'absence de solde ne prouve rien.
+        """
+        if self._client is None:
+            return None
+        vu = getattr(self._globals, "balance_updated", None)
+        solde = getattr(self._globals, "balance", None)
+        if vu or solde is not None:
+            return True
+        return False
+
+    def _signaler_si_non_authentifie(self) -> None:
+        """Le dire fort, une fois, au moment où c'est constatable.
+
+        Pas une exception : le solde peut tarder, et tuer une collecte valide
+        sur un signal indirect serait pire que le mal. Mais un avertissement au
+        journal et un champ dans `/diag` valent mieux que le silence total qui
+        a coûté trois jours.
+        """
+        delai = (DELAI_AUTHENTIFICATION_SEC
+                 if self.delai_authentification_sec is None
+                 else self.delai_authentification_sec)
+        limite = time.monotonic() + delai
+        while True:
+            if self.authentifie():
+                log.info("Compte authentifié par le broker.")
+                return
+            if time.monotonic() >= limite:
+                break
+            time.sleep(0.5)
+        log.warning(
+            "AUCUN SOLDE reçu après %g s : la session n'est probablement PAS "
+            "authentifiée. Le catalogue des actifs est public, il arrive même "
+            "sans compte valide — mais aucun tick ne sera diffusé. Recapturez "
+            "le jeton avec outils/capturer_ssid.py.",
+            delai,
+        )
+
     def _verifier_point_d_acces(self) -> None:
         """Vérifier qu'on parle bien là où on a demandé.
 
@@ -760,12 +873,14 @@ class PocketOptionSource:
             "url": None,
             "url_demandee": self._url_demandee,
             "connecte": None,
+            "authentifie": None,
             "actifs_au_catalogue": None,
             "tampons": {},
             "cles_bibliotheque": None,
         }
         if self._client is None:
             return etat
+        etat["authentifie"] = self.authentifie()
         try:
             etat["connecte"] = bool(self._client.check_connect())
         except Exception as erreur:                      # noqa: BLE001

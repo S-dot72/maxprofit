@@ -206,6 +206,18 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
     return "\n".join(lignes)
 
 
+def _oui_non(valeur) -> str:
+    """Le champ qui manquait le plus.
+
+    Le catalogue des actifs est public : il arrive même sans compte valide, et
+    c'est ce qui rendait la panne invisible. Le solde, lui, n'arrive qu'après
+    authentification.
+    """
+    if valeur is None:
+        return "inconnu"
+    return "oui" if valeur else "NON — aucun tick ne sera diffusé"
+
+
 def _verdict_point_d_acces(etat: dict) -> str:
     """Dire si la substitution a pris, plutôt que de laisser deviner.
 
@@ -248,6 +260,7 @@ async def _diagnostic(superviseur: Superviseur) -> str:
         "<b>Intérieur du client du broker</b>",
         "",
         f"Socket connecté : {etat.get('connecte')}",
+        f"Compte authentifié : {_oui_non(etat.get('authentifie'))}",
         f"Point d'accès demandé : {etat.get('region')}",
         f"Réellement connecté à :\n<code>{etat.get('url') or 'url inconnue'}</code>",
         _verdict_point_d_acces(etat),
