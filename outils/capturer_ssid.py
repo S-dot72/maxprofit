@@ -76,13 +76,6 @@ exiger('webview', 'outils\\capturer_ssid.py')
 
 from maxprofit.core.config import charger_env_local  # noqa: E402
 
-# `.env` AVANT de résoudre le chemin du fichier de session. Sans cela, la
-# capture écrivait à la racine du projet pendant que le collecteur, lui, lisait
-# POCKET_OPTION_SESSION_FILE et cherchait ailleurs : deux points d'entrée, deux
-# réponses à la même question, et un jeton parfaitement valide invisible pour
-# celui qui en avait besoin.
-charger_env_local()
-
 
 def _cookies_de(window) -> dict[str, str]:
     """Extrait les cookies de la fenêtre, sans supposer du format exact.
@@ -178,6 +171,18 @@ def _surveiller(window, resultat: dict, delai_sec: int, demo: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # `.env` AVANT de résoudre le chemin du fichier de session. Sans cela, la
+    # capture écrivait à la racine du projet pendant que le collecteur, lui,
+    # lisait POCKET_OPTION_SESSION_FILE et cherchait ailleurs : deux points
+    # d'entrée, deux réponses à la même question, et un jeton parfaitement
+    # valide invisible pour celui qui en avait besoin.
+    #
+    # DANS main(), jamais à l'import : ce module est importé par les tests, et
+    # un fichier qui modifie l'environnement du seul fait qu'on l'importe
+    # contamine tout ce qui tourne ensuite. C'est écrit noir sur blanc dans
+    # `charger_env_local` — et je l'ai quand même fait.
+    charger_env_local()
+
     ap = argparse.ArgumentParser(description="Capture le SSID Pocket Option.")
     ap.add_argument("--delai", type=int, default=300,
                     help="Délai maximal d'attente, en secondes (défaut : 300)")
