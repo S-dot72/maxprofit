@@ -516,10 +516,14 @@ def test_un_silence_prolonge_declenche_un_reabonnement(tmp_path):
     assert len(src.abonnements) > 1, "aucun reabonnement malgre le silence"
 
 
-def test_sans_payout_minimal_le_collecteur_refuse_de_demarrer(monkeypatch, capsys):
+def test_sans_payout_minimal_le_collecteur_refuse_de_demarrer(tmp_path,
+                                                              monkeypatch):
     """Pas de valeur par defaut sur ce qui touche a l'argent (spec 5)."""
     from maxprofit.collect import collector as mod
 
+    # Depuis un repertoire vide : `main()` charge le `.env` du repertoire
+    # courant, et celui du projet n'a rien a faire dans un test.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MIN_PAYOUT_PCT", raising=False)
     assert mod.main(["--source", "sim"]) == 2
 

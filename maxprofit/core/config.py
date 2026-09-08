@@ -210,6 +210,7 @@ def charger_env_local(chemin: Path | None = None) -> list[str]:
         return []
 
     definies: list[str] = []
+    vues: dict[str, int] = {}
     for numero, ligne in enumerate(
         chemin.read_text(encoding="utf-8").splitlines(), start=1
     ):
@@ -225,6 +226,17 @@ def charger_env_local(chemin: Path | None = None) -> list[str]:
         cle = cle.strip()
         if not cle:
             raise ConfigurationError(f"{chemin}:{numero} : clé vide")
+        if cle in vues:
+            # Deux valeurs pour une clé : laquelle est la bonne ? Le fichier ne
+            # le dit pas, et un chargeur qui tranche tout seul se trompera un
+            # jour sur celle qui compte — un chemin de base, un payout minimal.
+            # On refuse plutôt que d'appliquer une règle que personne n'a lue.
+            raise ConfigurationError(
+                f"{chemin} : {cle} est défini deux fois (lignes "
+                f"{vues[cle]} et {numero}). Gardez-en un seul : rien ici ne "
+                f"dit lequel devrait l'emporter."
+            )
+        vues[cle] = numero
         if cle in os.environ:
             continue          # l'environnement réel l'emporte
         valeur = valeur.strip()

@@ -555,6 +555,14 @@ def build_config(args) -> Config:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # AVANT de construire les arguments, pas apres. Plusieurs defauts sont
+    # lus dans l'environnement au moment ou `add_argument` s'execute : les
+    # charger ensuite revenait a ignorer le `.env` en silence. Sur un
+    # hebergeur, les variables sont deja dans l'environnement et rien ne se
+    # voyait ; en local, MIN_PAYOUT_PCT etait present dans le fichier et le
+    # collecteur refusait quand meme de demarrer.
+    charger_env_local()
+
     ap = argparse.ArgumentParser(description="Collecteur de données de marché")
     ap.add_argument("--source", choices=["sim", "po"], default="sim")
     ap.add_argument("--db", default=None,
@@ -574,8 +582,6 @@ def main(argv: list[str] | None = None) -> int:
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
-
-    charger_env_local()
 
     logging.basicConfig(
         level=logging.DEBUG if a.verbose else logging.INFO,

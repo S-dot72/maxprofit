@@ -177,3 +177,66 @@ def test_le_message_dit_pourquoi_creer_le_repertoire_ne_reglerait_rien(monkeypat
 def test_les_plateformes_courantes_sont_reconnues(monkeypatch, marqueur):
     monkeypatch.setenv(marqueur, "peu importe")
     assert config._dans_un_conteneur()
+
+
+# --------------------------------------------------------------------------- #
+# Le .env : doublons, et moment du chargement
+# --------------------------------------------------------------------------- #
+
+def test_une_cle_definie_deux_fois_est_refusee(tmp_path, monkeypatch):
+    """Rien dans le fichier ne dit laquelle l'emporte.
+
+    Un chargeur qui tranche tout seul se trompera un jour sur celle qui compte
+    -- un chemin de base, un payout minimal -- et personne ne verra rien.
+    """
+    fichier = tmp_path / ".env"
+    fichier.write_text(
+        "TRADING_DB_PATH=/data/market.db\n"
+        "MIN_PAYOUT_PCT=92\n"
+        "TRADING_DB_PATH=C:/Users/moi/trading_data/market.db\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TRADING_DB_PATH", raising=False)
+    monkeypatch.delenv("MIN_PAYOUT_PCT", raising=False)
+
+    with pytest.raises(ConfigurationError) as capture:
+        config.charger_env_local(fichier)
+    message = str(capture.value)
+    assert "TRADING_DB_PATH" in message
+    assert "1" in message and "3" in message
+
+
+def test_le_env_est_charge_avant_la_construction_des_arguments(tmp_path,
+                                                               monkeypatch):
+    """Regression : le collecteur refusait de demarrer avec MIN_PAYOUT_PCT
+    present dans le .env.
+
+    Les defauts d'argparse sont evalues au moment de `add_argument`. Charger le
+    fichier apres `parse_args` revenait a l'ignorer en silence. Sur un
+    hebergeur, les variables sont deja dans l'environnement : le bug ne pouvait
+    apparaitre que sur le poste de quelqu'un.
+    """
+    from maxprofit.collect import collector as mod
+
+    (tmp_path / ".env").write_text("MIN_PAYOUT_PCT=91\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MIN_PAYOUT_PCT", raising=False)
+    monkeypatch.setattr(mod, "Collector", _CollecteurMuet)
+
+    assert mod.main(["--source", "sim", "--db", str(tmp_path / "m.db")]) == 0
+    assert _CollecteurMuet.dernier_min_payout == 91
+
+
+class _CollecteurMuet:
+    """Ne collecte rien : on ne verifie que la configuration assemblee."""
+
+    dernier_min_payout = None
+
+    def __init__(self, source, cfg):
+        type(self).dernier_min_payout = cfg.min_payout
+
+    def run(self):
+        return None
+
+    def stop(self, *_):
+        return None

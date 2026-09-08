@@ -305,6 +305,13 @@ async def _paires(superviseur: Superviseur) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # AVANT de construire les arguments, pas après. Plusieurs défauts sont lus
+    # dans l'environnement au moment où `add_argument` s'exécute ; les charger
+    # ensuite revenait à ignorer le `.env` en silence. Sur un hébergeur les
+    # variables sont déjà dans l'environnement, donc rien ne se voyait — c'est
+    # exactement le genre de bug qui n'apparaît que sur le poste de quelqu'un.
+    charger_env_local()
+
     ap = argparse.ArgumentParser(
         description="Processus hébergé : collecteur + sonde HTTP",
     )
@@ -324,8 +331,6 @@ def main(argv: list[str] | None = None) -> int:
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
-
-    charger_env_local()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

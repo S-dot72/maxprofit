@@ -4,6 +4,7 @@ construisent des séries à la main, dont le résultat est calculable de tête
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -41,3 +42,23 @@ def series() -> list[Candle]:
     """10 bougies de clôture 100, 101, ... 109. Le prix vaut 100 + son index :
     toute erreur d'indexation devient visible d'un coup d'œil."""
     return [make_candle(i, 100.0 + i) for i in range(10)]
+
+
+@pytest.fixture(autouse=True)
+def _environnement_isole(monkeypatch):
+    """Aucun test ne doit laisser de trace dans l'environnement du suivant.
+
+    Un point d'entrée qui charge `.env` — et ils le font tous, c'est leur rôle —
+    injecte les variables du développeur dans le processus pytest pour de bon.
+    Il a suffi d'un test appelant `main()` depuis la racine pour que
+    `TURSO_DATABASE_URL` devienne définie partout, et que trente tests sans
+    rapport tentent d'ouvrir une réplique distante.
+
+    `monkeypatch` restaure `os.environ` après chaque test, à condition que les
+    modifications passent par lui. Ici elles viennent de code applicatif, d'où
+    la sauvegarde explicite.
+    """
+    avant = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(avant)
