@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from maxprofit.core.errors import BotError
@@ -109,6 +110,35 @@ def chemin_cache() -> Path:
     return Path(tempfile.gettempdir()) / "maxprofit-replique.db"
 
 
+#: Versions de CPython pour lesquelles `libsql` publie un binaire Windows.
+#: Au-delà, pip tente de compiler du Rust et échoue sur le lieur — avec une
+#: page d'erreurs de `link.exe` qui ne dit nulle part que le problème est la
+#: version de Python.
+PYTHON_MAX_MINEUR_WINDOWS = 13
+
+
+def _diagnostic_libsql() -> str:
+    """Dire POURQUOI le pilote manque, pas seulement qu'il manque.
+
+    Le message d'origine renvoyait vers `requirements-broker.txt`, où libsql
+    n'a jamais été : il est dans `requirements.txt`. Et sur un Python trop
+    récent, l'installer ne peut pas marcher — inutile de le faire essayer.
+    """
+    trop_recent = (
+        sys.platform == "win32"
+        and sys.version_info[:2] > (3, PYTHON_MAX_MINEUR_WINDOWS)
+    )
+    if trop_recent:
+        return (
+            f"Python {sys.version_info[0]}.{sys.version_info[1]} sur "
+            f"Windows : libsql ne publie de binaire que jusqu'à 3."
+            f"{PYTHON_MAX_MINEUR_WINDOWS}. pip essaierait de le compiler "
+            f"depuis Rust et échouerait sur le lieur. Créez un environnement "
+            f"avec Python 3.13 ou 3.12 pour la collecte."
+        )
+    return "pip install -r requirements.txt"
+
+
 def ouvrir(chemin_cache: Path):
     """Ouvre la réplique embarquée et tire l'état distant.
 
@@ -122,9 +152,10 @@ def ouvrir(chemin_cache: Path):
         import libsql
     except ImportError as erreur:
         raise TursoIndisponible(
-            f"Le pilote libsql n'est pas installé ({erreur}). "
-            f"pip install -r requirements-broker.txt, ou retirez {ENV_URL} "
-            f"pour revenir au stockage local."
+            f"Le pilote libsql n'est pas installé ({erreur}).\n"
+            f"{_diagnostic_libsql()}\n"
+            f"Ou retirez {ENV_URL} du .env pour collecter dans un fichier "
+            f"local — les données seront bonnes, simplement pas partagées."
         ) from None
 
     chemin_cache.parent.mkdir(parents=True, exist_ok=True)

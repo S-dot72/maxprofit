@@ -613,7 +613,14 @@ def main(argv: list[str] | None = None) -> int:
         import threading
         threading.Timer(a.duration, c.stop).start()
 
-    c.run()
+    try:
+        c.run()
+    except BotError as erreur:
+        # Code 2 = configuration : `collecter.ps1` s'arrête au lieu de relancer.
+        # Un pilote manquant ou un jeton invalide ne se répare pas en
+        # réessayant, et trois traces identiques noient le message utile.
+        log.error("%s", erreur)
+        return 2
     return 0
 
 

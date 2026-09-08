@@ -345,3 +345,31 @@ def test_les_ecritures_sont_validees_avant_la_synchronisation(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 5
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Dire POURQUOI le pilote manque
+# --------------------------------------------------------------------------- #
+
+def test_sur_un_python_trop_recent_le_message_nomme_la_cause(monkeypatch):
+    """Le message d'origine envoyait vers un fichier ou libsql n'est pas, et
+    conseillait une installation qui ne peut pas aboutir : pip compile alors du
+    Rust et echoue sur une page d'erreurs de `link.exe` qui ne mentionne nulle
+    part la version de Python."""
+    monkeypatch.setattr(turso.sys, "platform", "win32", raising=False)
+    monkeypatch.setattr(turso.sys, "version_info", (3, 14, 0), raising=False)
+    message = turso._diagnostic_libsql()
+    assert "3.14" in message
+    assert "3.13" in message
+
+
+def test_sur_une_version_supportee_on_conseille_l_installation(monkeypatch):
+    monkeypatch.setattr(turso.sys, "platform", "win32", raising=False)
+    monkeypatch.setattr(turso.sys, "version_info", (3, 12, 0), raising=False)
+    assert "requirements.txt" in turso._diagnostic_libsql()
+
+
+def test_ailleurs_que_sur_windows_on_ne_parle_pas_de_version(monkeypatch):
+    monkeypatch.setattr(turso.sys, "platform", "linux", raising=False)
+    monkeypatch.setattr(turso.sys, "version_info", (3, 14, 0), raising=False)
+    assert "requirements.txt" in turso._diagnostic_libsql()
