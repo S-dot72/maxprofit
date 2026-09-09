@@ -140,7 +140,16 @@ class Config:
     #: fenêtre de perte maximale si le conteneur est tué brutalement : une
     #: minute de ticks, qui laissera un trou dans `uptime` et sera donc écartée
     #: par le backtest (§2.4) plutôt que raisonnée dessus.
-    sync_sec: int = 60
+    #: Mesuré : à 60 s, le quota de synchronisations du plan gratuit Turso
+    #: était consommé à 77 % avant même que la collecte n'ait commencé. Une
+    #: campagne de quatorze jours en demande 20 000 à ce rythme.
+    #:
+    #: À 300 s, la fenêtre de perte passe de une à cinq minutes en cas d'arrêt
+    #: brutal du conteneur. Ce n'est pas une perte silencieuse : elle laisse un
+    #: trou dans `uptime`, et le backtest écarte les fenêtres qui le chevauchent
+    #: (§2.4). Cinq minutes écartées valent mieux qu'une collecte interrompue au
+    #: dixième jour faute de quota.
+    sync_sec: int = 300
     max_backoff_sec: int = 60
     #: Au-dela de combien de secondes sans un seul tick on le dit dans le
     #: journal. Deux minutes : assez pour ne pas crier sur une paire calme,
@@ -547,11 +556,17 @@ def _min_payout_env() -> int | None:
 def build_config(args) -> Config:
     """Assemble la configuration. `--db` l'emporte sur `TRADING_DB_PATH` pour
     les tests et l'inspection ; en production, on ne passe pas `--db`."""
-    return Config(
+    reglages = dict(
         db=Path(args.db) if args.db else chemin_donnees(),
         min_payout=args.min_payout,
         max_paires=args.max_paires,
     )
+    # 0 ou absent = on garde le défaut de Config, plutôt que d'écrire un zéro
+    # qui ferait synchroniser à chaque tour de boucle.
+    sync = getattr(args, "sync_sec", 0)
+    if sync:
+        reglages["sync_sec"] = sync
+    return Config(**reglages)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -578,6 +593,12 @@ def main(argv: list[str] | None = None) -> int:
                          "$MAX_PAIRES). 4 est le seul nombre observé en train "
                          "de livrer des ticks ; au-delà, le broker ferme le "
                          "socket sans rien envoyer.")
+    ap.add_argument("--sync-sec", type=int,
+                    default=int(os.environ.get("TURSO_SYNC_SEC", "0") or 0),
+                    help="Intervalle de synchronisation vers Turso, en "
+                         "secondes (défaut : 300, ou $TURSO_SYNC_SEC). "
+                         "L'augmenter économise le quota, au prix d'une "
+                         "fenêtre de perte plus large en cas d'arrêt brutal.")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")

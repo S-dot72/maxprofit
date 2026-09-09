@@ -87,6 +87,7 @@ async def _servir(args) -> int:
     log.info("%s", version_deployee.resume())
     log.info("Base : %s", cfg.db)
     log.info("Paires souscrites au maximum : %d", cfg.max_paires)
+    log.info("Synchronisation Turso : toutes les %d s", cfg.sync_sec)
 
     etat_collecte = EtatCollecte(cfg.db)
 
@@ -340,6 +341,10 @@ def main(argv: list[str] | None = None) -> int:
                     default=int(os.environ.get("MAX_PAIRES", "4") or 4),
                     help="Nombre maximal de paires souscrites (défaut : 8, ou "
                          "$MAX_PAIRES).")
+    ap.add_argument("--sync-sec", type=int,
+                    default=int(os.environ.get("TURSO_SYNC_SEC", "0") or 0),
+                    help="Intervalle de synchronisation vers Turso, en "
+                         "secondes (défaut : 300, ou $TURSO_SYNC_SEC).")
     ap.add_argument("--duration", type=int, default=0,
                     help="Arrêt automatique après N secondes (0 = illimité)")
     ap.add_argument("-v", "--verbose", action="store_true")

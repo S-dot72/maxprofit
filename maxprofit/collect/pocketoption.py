@@ -557,10 +557,18 @@ class PocketOptionSource:
                 log.info("Socket ouvert (démo=%s). Attente du catalogue des "
                          "actifs...", self.demo)
                 self._vus.clear()
-                # Une reconnexion peut enjamber un changement d'heure côté
-                # broker : on remesure plutôt que de reconduire l'ancien.
-                self._decalage_sec = None
-                self._prochaine_verif_horloge = 0.0
+                # Le décalage mesuré est CONSERVÉ. Le remettre à zéro obligeait
+                # à recalibrer immédiatement, or juste après une reconnexion le
+                # seul horodatage disponible vient du tampon rejoué : le plus
+                # ancien, vieux de plusieurs minutes. Mesuré en production, un
+                # résidu de -136 s a fait lever `HorlogeIncoherente` et tué la
+                # collecte alors que rien n'était incohérent.
+                #
+                # Un changement d'heure côté broker reste détecté : la
+                # re-vérification périodique tourne toutes les cinq minutes, et
+                # elle, sur un tick récent.
+                self._prochaine_verif_horloge = (
+                    time.monotonic() + INTERVALLE_VERIF_HORLOGE_SEC)
                 # « Connecté » ne suffit pas : sans le catalogue des actifs, la
                 # source ne sait rien faire. On attend donc ici plutôt que de
                 # laisser le premier appel échouer.
@@ -780,7 +788,9 @@ class PocketOptionSource:
         if fin <= vus:
             return
 
-        for brut in tampon[vus:fin]:
+        tranche = tampon[vus:fin]
+        self._caler_sur_le_plus_recent(tranche)
+        for brut in tranche:
             tick = self._vers_tick(nom, brut)
             if tick is not None:
                 yield tick
@@ -912,6 +922,36 @@ class PocketOptionSource:
                     "lus": self._vus.get(nom, 0),
                 }
         return etat
+
+    def _caler_sur_le_plus_recent(self, bruts) -> None:
+        """Régler l'horloge sur l'horodatage le plus récent du lot.
+
+        Le calage se faisait sur le premier tick converti. Après une
+        reconnexion, on rejoue le tampon depuis le début : ce premier tick a
+        plusieurs minutes, et la mesure du décalage s'en trouvait faussée
+        d'autant. En production, un résidu de -136 s a tué la collecte.
+
+        On ne duplique pas la conversion : on appelle `_vers_ms` sur la valeur
+        la plus récente, ce qui déclenche détection d'unité et calage. Les
+        appels suivants du lot rendent la main tout de suite, la re-vérification
+        étant planifiée.
+        """
+        recent = None
+        for brut in bruts:
+            try:
+                valeur = float(brut["time"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if recent is None or valeur > recent:
+                recent = valeur
+        if recent is None:
+            return
+        try:
+            self._vers_ms(recent)
+        except BotError:
+            # Laisser la conversion normale relever l'erreur, avec le tick
+            # fautif en main : ici on n'aurait qu'un nombre nu à montrer.
+            pass
 
     def _vers_tick(self, nom: str, brut) -> Tick | None:
         try:

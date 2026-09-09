@@ -1117,3 +1117,55 @@ def test_l_absence_de_jeton_n_est_pas_une_panne_du_broker(broker, monkeypatch,
 
     with pytest.raises(po.SessionExpiree, match="capturer_ssid"):
         src.connect()
+
+
+# --------------------------------------------------------------------------- #
+# L'horloge, apres une reconnexion
+# --------------------------------------------------------------------------- #
+#
+# Mesure en production : reconnexion a 20:04:00, le tampon de la bibliotheque
+# contenait encore les ticks depuis 20:01:50. `_vus` etant remis a zero, on
+# rejouait le tampon depuis le debut -- et l'horloge etait calee sur le tick le
+# PLUS ANCIEN. Residu de -136 s, `HorlogeIncoherente`, collecte morte, alors que
+# rien n'etait incoherent.
+
+def test_l_horloge_se_cale_sur_le_tick_le_plus_recent(monkeypatch):
+    import time as horloge
+
+    client = _ClientATampon()
+    source = _source_branchee(client, ["EURUSD_otc"])
+    source._decalage_sec = None
+    source._unite = None
+    source._prochaine_verif_horloge = 0.0
+
+    maintenant = horloge.time()
+    # Un lot qui commence il y a trois minutes et finit maintenant, comme un
+    # tampon rejoue apres reconnexion.
+    client.tampons["EURUSD_otc"] = [
+        {"time": maintenant - 180 + i * 60, "price": 1.1} for i in range(4)
+    ]
+    list(source._drainer("EURUSD_otc"))       # ne doit pas lever
+
+    assert source._decalage_sec == 0, (
+        "le decalage a ete mesure sur un tick perime"
+    )
+
+
+def test_un_tampon_entierement_perime_ne_tue_pas_la_collecte(monkeypatch):
+    """Le decalage deja mesure est conserve : plus rien a recalibrer."""
+    import time as horloge
+
+    client = _ClientATampon()
+    source = _source_branchee(client, ["EURUSD_otc"])
+    source._decalage_sec = 0
+    source._unite = "sec"
+    # Prochaine verification dans longtemps : c'est ce que fait `connect()`
+    # depuis qu'il ne jette plus la mesure.
+    source._prochaine_verif_horloge = horloge.monotonic() + 300
+
+    vieux = horloge.time() - 600
+    client.tampons["EURUSD_otc"] = [
+        {"time": vieux + i, "price": 1.1} for i in range(5)
+    ]
+    ticks = list(source._drainer("EURUSD_otc"))
+    assert len(ticks) == 5

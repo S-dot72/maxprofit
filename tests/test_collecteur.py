@@ -21,6 +21,7 @@ observé les pannes, et ils échouent sur le code d'avant.
 
 from __future__ import annotations
 
+import argparse
 import threading
 import time
 from pathlib import Path
@@ -540,3 +541,25 @@ def test_un_payout_illisible_vaut_absence(monkeypatch):
 
     monkeypatch.setenv("MIN_PAYOUT_PCT", "quatre-vingt-douze")
     assert mod._min_payout_env() is None
+
+
+def test_l_intervalle_de_synchronisation_est_reglable(monkeypatch, tmp_path):
+    """Le quota de synchronisations de Turso etait consomme a 77 % avant meme
+    que la collecte n'ait commence. Il faut pouvoir l'espacer sans toucher au
+    code."""
+    from maxprofit.collect import collector as mod
+
+    args = argparse.Namespace(db=str(tmp_path / "m.db"), min_payout=92,
+                              max_paires=4, sync_sec=900)
+    assert mod.build_config(args).sync_sec == 900
+
+
+def test_un_intervalle_absent_garde_le_defaut(tmp_path):
+    """Zero ferait synchroniser a chaque tour de boucle : c'est l'inverse du
+    but recherche."""
+    from maxprofit.collect import collector as mod
+
+    args = argparse.Namespace(db=str(tmp_path / "m.db"), min_payout=92,
+                              max_paires=4, sync_sec=0)
+    assert mod.build_config(args).sync_sec == Config.sync_sec
+    assert Config.sync_sec >= 300
