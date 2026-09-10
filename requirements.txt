@@ -35,3 +35,8 @@ tzdata>=2024.1
 # code le contourne — Turso ne s'active que si TURSO_DATABASE_URL est défini,
 # et tests/test_turso.py l'éprouve avec un double.
 libsql>=0.1.11
+
+# PostgreSQL (Neon) : le stockage durable depuis le 2026-09-10. Le pilote est
+# pur binaire, aucune compilation, et il existe pour toutes les versions de
+# Python que ce projet supporte.
+psycopg[binary]>=3.2

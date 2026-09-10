@@ -590,3 +590,51 @@ def test_un_redemarrage_ne_reecrit_pas_l_etat_courant(db):
     assert MarketWriter(conn).insert_payouts(T0_SEC + 300, paires) == 0
     assert conn.execute("SELECT COUNT(*) FROM payouts").fetchone()[0] == 183
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Le choix du moteur
+# --------------------------------------------------------------------------- #
+
+def test_postgres_l_emporte_sur_turso_et_sur_le_fichier(monkeypatch):
+    """Trois modes de stockage, une seule regle de priorite.
+
+    Sans ordre explicite, une variable Turso oubliee dans les reglages d'un
+    hebergeur ferait repartir la collecte sur une base vide -- exactement le
+    desastre silencieux que la §1.1 cherche a empecher.
+    """
+    from maxprofit.store import db as mod
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/base")
+    monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://ailleurs.turso.io")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "jeton")
+
+    ouverts = []
+    monkeypatch.setattr(mod.postgres, "ouvrir", lambda: ouverts.append("pg") or _ConnFactice())
+    monkeypatch.setattr(mod.turso, "ouvrir", lambda p: ouverts.append("turso"))
+
+    assert mod.chemin_donnees() == Path("postgresql")
+    mod.open_read_only("peu-importe")
+    assert ouverts == ["pg"], "Turso a ete prefere a PostgreSQL"
+
+
+def test_une_url_qui_n_est_pas_postgres_est_refusee(monkeypatch):
+    """Pas de repli silencieux : une URL copiee du mauvais endroit doit se
+    voir au demarrage, pas se traduire par une base locale qui repart vide."""
+    from maxprofit.store import postgres
+
+    monkeypatch.setenv("DATABASE_URL", "Maxprofit")
+    with pytest.raises(postgres.PostgresIndisponible, match="postgresql://"):
+        postgres.configure()
+
+
+def test_sans_url_postgres_n_est_pas_demande(monkeypatch):
+    from maxprofit.store import postgres
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert postgres.configure() is False
+
+
+class _ConnFactice:
+    def execute(self, *a, **k):
+        raise AssertionError("aucune requete ne devait partir dans ce test")

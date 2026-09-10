@@ -28,7 +28,7 @@ import sqlite3
 from pathlib import Path
 
 from maxprofit.core.errors import BotError
-from maxprofit.store import turso
+from maxprofit.store import postgres, turso
 from maxprofit.store import version as version_schema
 from maxprofit.store.migrations import MIGRATIONS, SCHEMA_VERSION, Migration
 
@@ -87,10 +87,15 @@ def _annuler(conn) -> None:
 def _valide_implicitement(conn) -> bool:
     """La connexion tient-elle déjà une transaction ouverte ?
 
-    Reconnu à la présence de `sync` — donc à la nature de la connexion — plutôt
-    qu'à un drapeau passé par l'appelant, qui se désynchroniserait.
+    Reconnu à la nature de la connexion — pas à un drapeau passé par
+    l'appelant, qui se désynchroniserait.
+
+    `sqlite3` ouvert en `isolation_level=None` valide chaque instruction ;
+    libSQL et psycopg ouvrent une transaction et attendent un `commit()`. Un
+    `BEGIN` explicite sur ces deux-là échoue, d'où cette distinction plutôt
+    qu'un régime unique.
     """
-    return turso.est_replique(conn)
+    return turso.est_replique(conn) or postgres.est_postgres(conn)
 
 
 def valider(conn) -> None:
@@ -205,7 +210,12 @@ def open_read_write(
     """
     path = Path(path)
 
-    if turso.configure():
+    if postgres.configure():
+        # Aucun fichier local : la base est distante, point. C'est ce qui rend
+        # l'hébergement sans disque possible sans le détour d'une réplique — et
+        # sans le quota de synchronisations qui va avec.
+        conn = postgres.ouvrir()
+    elif turso.configure():
         # Le fichier local n'est plus qu'un CACHE : la vérité est chez Turso,
         # et la connexion la tire à l'ouverture. Son répertoire peut donc être
         # créé — ce qui serait interdit pour une base durable (§1.1), mais qui
@@ -243,6 +253,14 @@ def open_read_only(path: Path | str) -> sqlite3.Connection:
     - aucune migration n'est appliquée. Un outil de lecture ne doit jamais
       modifier le schéma sous les pieds du collecteur qui tourne.
     """
+    if postgres.configure():
+        # PostgreSQL n'a pas de descripteur en lecture seule à opposer au
+        # backtest. La frontière du §0 y est tenue autrement : `MarketReader`
+        # n'expose aucune écriture, et `test_layering` refuse qu'un fichier de
+        # `maxprofit/backtest/` importe `MarketWriter`. C'est une garantie plus
+        # faible qu'un `mode=ro`, et il faut le dire plutôt que le taire.
+        return postgres.ouvrir()
+
     path = Path(path)
     if not path.is_file():
         raise SchemaError(
@@ -276,10 +294,17 @@ def schema_version(conn: sqlite3.Connection) -> int:
 def chemin_donnees() -> Path:
     """Où écrire, selon le mode de stockage.
 
+    PostgreSQL configuré : aucun fichier n'est ouvert, et le chemin retourné
+    ne sert qu'aux journaux. Exiger `TRADING_DB_PATH` ici ferait échouer un
+    déploiement pour un réglage sans objet.
+
     Turso configuré : une réplique locale, qui n'est qu'un cache et peut donc
     vivre n'importe où — y compris sur le disque éphémère d'un conteneur.
     Sinon : le chemin durable du §1.1, avec toutes ses exigences.
     """
     from maxprofit.core.config import db_path
+
+    if postgres.configure():
+        return Path("postgresql")
 
     return turso.chemin_cache() if turso.configure() else db_path()
