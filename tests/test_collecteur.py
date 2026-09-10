@@ -33,6 +33,8 @@ from maxprofit.collect.collector import CandleAggregator, Collector, Config
 from maxprofit.collect.sources import MarketDataSource
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import PairInfo, Tick
+from dataclasses import replace
+
 from maxprofit.store.db import open_read_only
 from maxprofit.store.market import MarketReader
 
@@ -586,3 +588,52 @@ def test_vider_les_tampons_ne_synchronise_pas(tmp_path, monkeypatch):
     collecteur.run()
 
     assert appels == [], "une synchronisation a ete declenchee sans necessite"
+
+
+# --------------------------------------------------------------------------- #
+# Les ticks bruts : 97,6 % du volume ecrit
+# --------------------------------------------------------------------------- #
+#
+# A 4 paires et 2 ticks/s : 9,9 millions de lignes sur quatorze jours contre
+# 238 000 pour tout le reste. C'est ce qui epuise un plan gratuit, chez
+# n'importe quel fournisseur. Les couper ne coute rien au §2 : le backtest
+# travaille sur les bougies M1, et `tick_count` est porte par la bougie.
+
+def test_sans_ticks_les_bougies_restent_completes(tmp_path):
+    src = SourceScriptee(_ticks(120))
+    cfg = replace(_config(tmp_path), stocker_ticks=False)
+    src.collecteur = collecteur = Collector(src, cfg)
+    collecteur.run()
+
+    compteurs = _lire(tmp_path)
+    assert compteurs["ticks"] == 0, "des ticks ont ete ecrits malgre le reglage"
+    assert compteurs["candles"] > 0, "les bougies ont disparu avec les ticks"
+
+
+def test_sans_ticks_le_tick_count_reste_exact(tmp_path):
+    """Le critere de qualite du §2.4 est porte par la bougie, pas par les
+    ticks : il doit etre identique avec et sans ecriture des ticks."""
+    avec = tmp_path / "avec"
+    sans = tmp_path / "sans"
+    avec.mkdir(); sans.mkdir()
+
+    resultats = []
+    for dossier, stocker in ((avec, True), (sans, False)):
+        src = SourceScriptee(_ticks(120))
+        cfg = replace(_config(dossier), stocker_ticks=stocker)
+        src.collecteur = c = Collector(src, cfg)
+        c.run()
+        conn = open_read_only(dossier / "market.db")
+        resultats.append(conn.execute(
+            "SELECT ts_sec, tick_count, complete FROM candles ORDER BY ts_sec"
+        ).fetchall())
+        conn.close()
+
+    assert resultats[0] == resultats[1], (
+        "les bougies different selon qu'on ecrit les ticks ou non"
+    )
+
+
+def test_par_defaut_on_n_ecarte_rien_en_silence(tmp_path):
+    """Jeter des donnees doit etre un choix explicite."""
+    assert Config(db=tmp_path / "m.db", min_payout=92).stocker_ticks is True

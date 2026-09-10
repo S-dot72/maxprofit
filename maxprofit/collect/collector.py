@@ -134,7 +134,11 @@ class Config:
     min_payout: int
     pairs_refresh_sec: int = 300      # relevé des payouts toutes les 5 min
     flush_sec: float = 2.0            # écriture disque groupée
-    heartbeat_sec: int = 10           # trace de connexion, pour repérer les trous
+    #: Battement de cœur. 30 s et non 10 : à 10 s c'était 8 640 lignes par
+    #: jour, plus que les bougies et les payouts réunis, pour une granularité
+    #: que rien n'exploite — les bougies sont à la minute, et un trou plus court
+    #: qu'une bougie ne change pas le verdict du §2.4.
+    heartbeat_sec: int = 30
     backup_sec: int = 6 * 3600        # sauvegarde toutes les 6 h (§1.4)
     #: Synchronisation vers Turso. Sans effet en stockage local.
     #:
@@ -163,6 +167,22 @@ class Config:
     #: journal. Deux minutes : assez pour ne pas crier sur une paire calme,
     #: assez peu pour ne pas decouvrir le silence deux heures plus tard.
     silence_alerte_sec: int = 120
+    #: Écrire ou non les ticks bruts.
+    #:
+    #: Mesuré : à 4 paires et 2 ticks/s, les ticks sont **97,6 % du volume
+    #: écrit** — 9,9 millions de lignes sur quatorze jours contre 238 000 pour
+    #: tout le reste. C'est ce qui épuise un plan gratuit, chez n'importe quel
+    #: fournisseur.
+    #:
+    #: Les couper ne coûte rien au §2 : le backtest travaille sur les bougies
+    #: M1, et `tick_count` — le critère de qualité du §2.4 — est porté par la
+    #: bougie elle-même, calculée depuis les ticks avant écriture. Ce qu'on perd
+    #: est l'analyse sous la minute et la possibilité de ré-agréger sur un autre
+    #: pas de temps.
+    #:
+    #: Vrai par défaut : ne pas jeter des données en silence. Sur un stockage
+    #: distant à quota, mettre `STOCKER_TICKS=0`.
+    stocker_ticks: bool = True
     #: Nombre maximal de paires SOUSCRITES simultanément.
     #:
     #: Mesuré, pas supposé. Le diagnostic a tourné 90 s sans faute sur 4 paires.
@@ -263,7 +283,7 @@ class Collector:
     # --- écriture -----------------------------------------------------------
 
     def flush(self) -> None:
-        n_t = self.store.insert_ticks(self.buf)
+        n_t = self.store.insert_ticks(self.buf) if self.cfg.stocker_ticks else 0
         n_c = self.store.upsert_candles(self.agg.drain_closed())
         self.buf.clear()
         # Valider explicitement : `libsql` tient une transaction implicite et
@@ -491,7 +511,11 @@ class Collector:
             if not self.running:
                 return
             if tick is not None:
-                self.buf.append(tick)
+                # Le tick alimente TOUJOURS l'agrégateur : c'est lui qui produit
+                # la bougie et son `tick_count`. Seule son écriture individuelle
+                # est optionnelle.
+                if self.cfg.stocker_ticks:
+                    self.buf.append(tick)
                 self.agg.add(tick)
                 self._t_dernier_tick = time.time()
             self._taches_periodiques()
@@ -575,6 +599,8 @@ def build_config(args) -> Config:
     sync = getattr(args, "sync_sec", 0)
     if sync:
         reglages["sync_sec"] = sync
+    if getattr(args, "sans_ticks", False):
+        reglages["stocker_ticks"] = False
     return Config(**reglages)
 
 
@@ -602,6 +628,11 @@ def main(argv: list[str] | None = None) -> int:
                          "$MAX_PAIRES). 4 est le seul nombre observé en train "
                          "de livrer des ticks ; au-delà, le broker ferme le "
                          "socket sans rien envoyer.")
+    ap.add_argument("--sans-ticks", action="store_true",
+                    default=os.environ.get("STOCKER_TICKS", "1").strip() == "0",
+                    help="N'écrit pas les ticks bruts (97,6 %% du volume). Les "
+                         "bougies M1 et leur tick_count restent complets : le "
+                         "backtest du §2 n'y perd rien. Ou $STOCKER_TICKS=0.")
     ap.add_argument("--sync-sec", type=int,
                     default=int(os.environ.get("TURSO_SYNC_SEC", "0") or 0),
                     help="Intervalle de synchronisation vers Turso, en "

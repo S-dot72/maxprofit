@@ -88,6 +88,8 @@ async def _servir(args) -> int:
     log.info("Base : %s", cfg.db)
     log.info("Paires souscrites au maximum : %d", cfg.max_paires)
     log.info("Synchronisation Turso : toutes les %d s", cfg.sync_sec)
+    log.info("Ticks bruts : %s", "enregistrés" if cfg.stocker_ticks
+             else "NON enregistrés (bougies M1 seules)")
 
     etat_collecte = EtatCollecte(cfg.db)
 
@@ -341,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
                     default=int(os.environ.get("MAX_PAIRES", "4") or 4),
                     help="Nombre maximal de paires souscrites (défaut : 8, ou "
                          "$MAX_PAIRES).")
+    ap.add_argument("--sans-ticks", action="store_true",
+                    default=os.environ.get("STOCKER_TICKS", "1").strip() == "0",
+                    help="N'écrit pas les ticks bruts (97,6 %% du volume). "
+                         "Ou $STOCKER_TICKS=0.")
     ap.add_argument("--sync-sec", type=int,
                     default=int(os.environ.get("TURSO_SYNC_SEC", "0") or 0),
                     help="Intervalle de synchronisation vers Turso, en "
