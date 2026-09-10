@@ -6,35 +6,41 @@
 # repartez de zéro sans aucun message d'erreur — précisément le scénario contre
 # lequel toute la §1 est écrite.
 #
-# Un disque persistant est une option payante (plan Starter). Sans lui, ce
-# déploiement ne convient pas à une collecte de quatorze jours. Alternatives :
-# un volume Railway/Fly, ou une petite VPS où la base vit dans ~/trading_data.
+# Un disque persistant est une option payante (plan Starter). Le stockage
+# durable est donc EXTERNE : PostgreSQL chez Neon depuis le 2026-09-10.
+#
+# Turso l'a précédé et a coupé les lectures en pleine campagne. Les causes
+# étaient chez nous et sont corrigées — payouts répétés à l'identique (95,1 %
+# de redondance), synchronisations qui ne poussaient rien, ticks bruts à 97,6 %
+# du volume écrit. Le volume est passé de 708 000 lignes par jour à 17 000.
+# Mais une base dont le fournisseur peut bloquer les lectures à la frontière
+# d'un quota ne convient pas à une collecte de quatorze jours.
 
 services:
   - type: web
     name: maxprofit-collector
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free             # possible SANS disque, grâce à Turso (voir ci-dessous)
+    plan: free             # possible SANS disque : la base est chez Neon
     healthCheckPath: /ping # vivacité du processus. /health (503 si la collecte
                            # est morte) est fait pour un moniteur externe, pas
                            # pour l'auto-redémarrage : un redémarrage ne répare
                            # pas une source de données coupée.
-    # PAS de disque : le stockage durable est chez Turso. Le conteneur n'écrit
-    # que dans une réplique locale, qu'il retire au démarrage — un disque
-    # éphémère suffit donc, et l'offre gratuite convient.
+    # PAS de disque : le conteneur n'écrit aucun fichier de données. La base
+    # est distante, l'offre gratuite convient.
     envVars:
-      # Réplique locale : un simple cache, sur le disque éphémère du conteneur.
-      # Le perdre ne coûte que le temps d'une resynchronisation.
-      - key: TRADING_DB_PATH
-        value: /tmp/replique-market.db
-      # Stockage DURABLE. Sans ces deux variables, la collecte disparaîtrait à
-      # chaque redémarrage ; le code refuse de démarrer si l'une manque plutôt
-      # que de retomber en silence sur le disque local.
-      - key: TURSO_DATABASE_URL
+      # Stockage DURABLE. Sans cette variable, la collecte repartirait de zéro
+      # à chaque redémarrage. Le code refuse une URL qui n'est pas du
+      # PostgreSQL plutôt que de retomber en silence sur le disque local.
+      - key: DATABASE_URL
         sync: false
-      - key: TURSO_AUTH_TOKEN
-        sync: false
+      # Ne PAS écrire les ticks bruts : mesurés à 97,6 % du volume, soit 9,9
+      # millions de lignes sur quatorze jours contre 238 000 pour tout le
+      # reste. Le backtest du §2 travaille sur les bougies M1, dont le
+      # `tick_count` est calculé depuis les ticks avant écriture : il n'y perd
+      # rien. Ce qu'on abandonne est l'analyse sous la minute.
+      - key: STOCKER_TICKS
+        value: "0"
       - key: MIN_PAYOUT_PCT
         value: "92"
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
@@ -44,9 +50,9 @@ services:
       # pas à revenir ici — `capturer_ssid.py --envoyer` le pousse directement.
       - key: POCKET_OPTION_SSID
         sync: false
-      # Le jeton reçu en cours de route est réécrit à côté de la base, donc sur
-      # le disque persistant : il survit à un redémarrage, pas à un
-      # redéploiement (qui recharge cette variable-ci).
+      # Le jeton reçu en cours de route est réécrit sur le disque ÉPHÉMÈRE du
+      # conteneur : il ne survit ni à un redéploiement ni à une mise en veille.
+      # C'est `POCKET_OPTION_SSID` ci-dessus qui fait foi au démarrage.
       - key: POCKET_OPTION_SESSION_FILE
         value: /tmp/session.json
       # Alertes et renouvellement à distance. Les deux vont ensemble : un jeton
