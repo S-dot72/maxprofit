@@ -105,8 +105,14 @@ class MarketWriter:
         if not ticks:
             return 0
         rows = [(t.pair, t.ts_ms, t.price) for t in ticks]
+        # `ON CONFLICT DO NOTHING` plutôt que `INSERT OR IGNORE` : le premier
+        # est du SQL standard que SQLite comprend depuis la 3.24 ET que
+        # PostgreSQL accepte tel quel ; le second est une invention de SQLite
+        # qu'il faudrait traduire. Une SQL portable vaut mieux qu'une règle de
+        # traduction de plus.
         return _inserer_en_lot(
-            self.conn, "INSERT OR IGNORE INTO ticks (pair, ts_ms, price)", "", rows)
+            self.conn, "INSERT INTO ticks (pair, ts_ms, price)",
+            "ON CONFLICT DO NOTHING", rows)
 
     def upsert_candles(self, candles: Sequence[Candle]) -> int:
         """Une bougie en cours est réécrite à chaque flush jusqu'à sa clôture.
@@ -162,12 +168,16 @@ class MarketWriter:
             return 0
         return _inserer_en_lot(
             self.conn,
-            "INSERT OR REPLACE INTO payouts (ts_sec, pair, payout_pct, is_open)",
-            "", rows)
+            "INSERT INTO payouts (ts_sec, pair, payout_pct, is_open)",
+            """ON CONFLICT (ts_sec, pair) DO UPDATE SET
+                   payout_pct = excluded.payout_pct,
+                   is_open    = excluded.is_open""",
+            rows)
 
     def heartbeat(self, ts_sec: int, n_pairs: int) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO uptime (ts_sec, n_pairs) VALUES (?,?)",
+            "INSERT INTO uptime (ts_sec, n_pairs) VALUES (?,?) "
+            "ON CONFLICT (ts_sec) DO UPDATE SET n_pairs = excluded.n_pairs",
             (ts_sec, n_pairs),
         )
 

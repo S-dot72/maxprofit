@@ -131,8 +131,8 @@ def _v2_etat_broker(conn) -> None:
             derniere_raison       TEXT
         );
 
-        INSERT OR IGNORE INTO etat_broker (id, echecs_consecutifs)
-        VALUES (1, 0);
+        INSERT INTO etat_broker (id, echecs_consecutifs)
+        VALUES (1, 0) ON CONFLICT DO NOTHING;
         """
     ):
         conn.execute(instruction)
