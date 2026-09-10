@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable
 
 from maxprofit.hosting.operateurs import Role, TropDAdmins
@@ -185,12 +186,22 @@ RESERVE_ADMIN = (
     "collecté : cette commande n'est pas ouverte aux observateurs."
 )
 
+#: Ce que voit un inconnu. Il n'y est PAS question de code d'accès.
+#:
+#: L'ancien texte expliquait la syntaxe `/start <code>` à tout le monde. Or
+#: qui possède un code sait déjà quoi en faire : on ne l'apprenait donc qu'à
+#: ceux qui n'en ont pas, en leur signalant du même coup qu'un code existe et
+#: qu'il ouvre davantage que la file d'attente. C'est une invitation à
+#: chercher, pour un bénéfice nul.
+#: Durée pendant laquelle une alerte STRICTEMENT identique n'est pas renvoyée.
+#: Une demi-heure : assez pour absorber une boucle de redémarrages, assez peu
+#: pour qu'une panne qui dure se rappelle au souvenir.
+SILENCE_ALERTE_SEC = 1800
+
 INSCRIPTION = (
     "🔒 <b>Accès réservé</b>\n\n"
     "Ce bot surveille une installation privée.\n\n"
-    "Si vous avez un code d'accès :\n"
-    "<code>/start votre-code</code>\n\n"
-    "Sinon, envoyez <code>/start</code> : un administrateur "
+    "Envoyez <code>/start</code> pour demander l'accès : un administrateur "
     "recevra votre demande."
 )
 
@@ -236,6 +247,9 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._diagnostic = diagnostic
         self._offset = 0
         self.actif = True
+        #: Empreinte -> instant du dernier envoi, pour ne pas répéter la même
+        #: alerte à chaque redémarrage du collecteur.
+        self._alertes_recentes: dict[str, float] = {}
 
     async def alerter(self, texte: str) -> None:
         """Message poussé à TOUS les opérateurs. Le canal des pannes.
@@ -243,6 +257,8 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
 Un destinataire injoignable — bloqué, compte supprimé — ne doit pas
 empêcher les autres d'être prévenus : chaque envoi est isolé.
 """
+        if self._deja_dit(texte):
+            return
         destinataires = self.annuaire.destinataires()
         if not destinataires:
             log.warning(
@@ -253,6 +269,34 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             return
         for chat in destinataires:
             await self._alerter_un(chat, texte)
+
+    def _deja_dit(self, texte: str) -> bool:
+        """Taire une alerte identique répétée dans la fenêtre de silence.
+
+        Le collecteur qui meurt, l'hébergeur qui le relance, le collecteur qui
+        remeurt de la même cause : chaque tour envoyait « Collecte démarrée »
+        puis « Collecte arrêtée » avec le MÊME message. En une nuit, cela fait
+        des dizaines de notifications identiques — et une alerte qu'on apprend
+        à balayer ne prévient plus de rien.
+
+        La répétition n'ajoute aucune information : le texte porte déjà la
+        cause. Ce qui compte est de la voir UNE fois, et de la revoir si elle
+        persiste après la fenêtre.
+        """
+        maintenant = time.monotonic()
+        empreinte = texte.strip()
+        precedent = self._alertes_recentes.get(empreinte)
+        if precedent is not None and maintenant - precedent < SILENCE_ALERTE_SEC:
+            log.info("Alerte identique tue (repetee dans les %d s) : %s",
+                     SILENCE_ALERTE_SEC, empreinte.replace(chr(10), " ")[:80])
+            return True
+        # Purge des empreintes expirees : sans cela, un message qui varie a
+        # chaque envoi ferait croitre ce dictionnaire indefiniment.
+        for cle, instant in list(self._alertes_recentes.items()):
+            if maintenant - instant >= SILENCE_ALERTE_SEC:
+                del self._alertes_recentes[cle]
+        self._alertes_recentes[empreinte] = maintenant
+        return False
 
     async def _alerter_un(self, chat: str, texte: str) -> None:
         try:

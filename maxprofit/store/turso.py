@@ -19,12 +19,27 @@ les changements vers Turso. Trois conséquences qui comptent ici :
 - le fichier local devient un CACHE. Sa perte n'est plus un incident, ce qui
   retire tout son sens à l'exigence d'un volume persistant.
 
-**Ce que l'on perd, et qu'il faut regarder en face.** Entre deux `sync()`, les
-données ne sont qu'en local. Une coupure brutale du conteneur perd cet
-intervalle — c'est pourquoi la synchronisation suit le rythme d'écriture du
-collecteur plutôt qu'un minuteur lâche, et pourquoi une dernière
-synchronisation est faite à l'arrêt. Une donnée perdue de cette façon laisse un
-trou dans `uptime` : le backtest l'écartera (§2.4) au lieu de raisonner dessus.
+**Ce que `sync()` fait, et ce qu'il ne fait pas.** Cette section disait le
+contraire de la vérité, et cette erreur a bien failli coûter la campagne : le
+quota de synchronisations du plan gratuit était consommé à 77 % avant que la
+collecte n'ait commencé.
+
+`sync()` TIRE les changements distants vers la réplique locale. Il ne pousse
+rien : les écritures partent vers le serveur dès le `commit()`, en direct.
+
+Mesuré le 2026-09-09 plutôt que supposé — on a écrit sur une réplique, sans
+jamais la synchroniser ensuite, et une réplique NEUVE et indépendante a vu la
+ligne. Le protocole est donc en écriture traversante.
+
+Conséquence pour un collecteur qui est le SEUL écrivain : une synchronisation à
+l'ouverture suffit, pour hériter de ce qui existe déjà. Les suivantes ne lui
+apprennent rien, puisque personne d'autre n'écrit. Une synchronisation rare
+subsiste par prudence, au cas où une seconde instance aurait tourné.
+
+Il n'y a donc pas de fenêtre de perte entre deux synchronisations. Ce qui reste
+vrai : si le `commit()` échoue — réseau coupé, flux expiré — les ticks restent
+en tampon mémoire et sont réécrits au vidage suivant, et un arrêt brutal à cet
+instant laisse un trou dans `uptime` que le backtest écartera (§2.4).
 
 **Ce que Turso ne change pas.** Le schéma, les migrations, les requêtes : c'est
 du SQLite. Le seul point qui a dû bouger est le versionnage de schéma, qui

@@ -705,13 +705,16 @@ def test_decalage_negatif_aussi(caplog):
     assert src.decalage_horloge_heures == -5.0
 
 
-def test_un_residu_trop_grand_refuse():
-    """Un fuseau est un nombre entier d'heures. Un résidu de plusieurs minutes
-    signifie que l'horloge du poste est fausse, ou que le broker fait autre
-    chose que ce qu'on croit — dans les deux cas, écrire quand même produirait
-    un historique décalé dont rien ne signalerait l'erreur."""
+def test_un_residu_positif_trop_grand_refuse():
+    """Un fuseau est un nombre entier d'heures. Un résidu POSITIF de plusieurs
+    minutes date le tick du futur : aucun retard réseau ne l'explique, et
+    l'écrire produirait un historique antidaté dont rien ne signalerait
+    l'erreur.
+
+    Le cas négatif, lui, est normal — voir
+    `test_un_horodatage_en_retard_ne_tue_pas_la_collecte`."""
     src = PocketOptionSource()
-    with pytest.raises(BotError, match="Horloge incompréhensible"):
+    with pytest.raises(BotError, match="FUTUR"):
         src._vers_ms(time.time() + 2 * 3600 + 600)
 
 
@@ -1169,3 +1172,55 @@ def test_un_tampon_entierement_perime_ne_tue_pas_la_collecte(monkeypatch):
     ]
     ticks = list(source._drainer("EURUSD_otc"))
     assert len(ticks) == 5
+
+
+# --------------------------------------------------------------------------- #
+# Le signe du residu d'horloge
+# --------------------------------------------------------------------------- #
+#
+# Traite en valeur absolue, il a tue la collecte trois fois : un tampon rejoue
+# apres reconnexion contient des ticks vieux de plusieurs minutes, et le residu
+# NEGATIF qui en resulte n'a rien d'incoherent.
+
+def _source_horloge():
+    src = PocketOptionSource(demo=True)
+    src._unite = "sec"
+    src._decalage_sec = None
+    src._prochaine_verif_horloge = 0.0
+    return src
+
+
+def test_un_horodatage_en_retard_ne_tue_pas_la_collecte():
+    """Le cas mesure en production : residu de -576 s sur un tampon rejoue."""
+    import time as horloge
+
+    src = _source_horloge()
+    src._caler_horloge(horloge.time() + 2 * 3600 - 576)
+    assert src._decalage_sec == 2 * 3600, "le fuseau n'a pas ete retenu"
+
+
+def test_un_retard_de_dix_minutes_ne_change_pas_le_fuseau():
+    import time as horloge
+
+    src = _source_horloge()
+    src._caler_horloge(horloge.time() + 2 * 3600 - 600)
+    assert src._decalage_sec == 2 * 3600
+
+
+def test_un_horodatage_dans_le_futur_est_refuse():
+    """Aucun retard reseau n'explique un tick a venir, et l'ecrire produirait
+    des donnees antidatees -- du look-ahead que le §2 interdit."""
+    import time as horloge
+
+    src = _source_horloge()
+    with pytest.raises(po.HorlogeIncoherente, match="FUTUR"):
+        src._caler_horloge(horloge.time() + 2 * 3600 + 600)
+
+
+def test_un_decalage_impossible_reste_refuse():
+    """La borne des fuseaux ne bouge pas : UTC+14 est le maximum."""
+    import time as horloge
+
+    src = _source_horloge()
+    with pytest.raises(po.HorlogeIncoherente, match="impossible"):
+        src._caler_horloge(horloge.time() + 20 * 3600)

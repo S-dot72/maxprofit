@@ -1069,14 +1069,31 @@ class PocketOptionSource:
                 f"{secondes_broker:.3f}."
             )
 
-        if abs(residu) > TOLERANCE_HORLOGE_SEC:
+        # Le SIGNE du résidu compte, et le traiter en valeur absolue a tué la
+        # collecte trois fois de suite.
+        #
+        # Résidu NÉGATIF : l'horodatage est plus ancien que l'instant présent.
+        # C'est le cas normal d'un tampon rejoué après reconnexion — les ticks
+        # ont plusieurs minutes, et c'est précisément pour ça qu'on les rejoue.
+        # Rien n'y est incohérent, et l'arrondi à l'heure entière n'en souffre
+        # pas : dix minutes de retard ne pèsent que 0,16 h.
+        #
+        # Résidu POSITIF : le broker daterait ses ticks du FUTUR. Celui-là ne
+        # s'explique par aucun retard, et le laisser passer inscrirait dans la
+        # base des données antidatées — du look-ahead que le §2 interdit.
+        if residu > TOLERANCE_HORLOGE_SEC:
             raise HorlogeIncoherente(
-                f"Horloge incompréhensible : le broker est à {ecart:+.0f} s de "
+                f"Horodatage dans le FUTUR : le broker est à {ecart:+.0f} s de "
                 f"l'UTC de ce poste, soit {heures:+d} h et {residu:+.0f} s de "
-                f"résidu. Un fuseau est un nombre entier d'heures ; un résidu de "
-                f"cette taille signifie que l'horloge de ce poste est fausse, ou "
-                f"que le broker n'envoie pas ce qu'on croit. Vérifiez la "
-                f"synchronisation horaire avant de collecter."
+                f"résidu positif. Aucun retard réseau n'explique un tick à "
+                f"venir ; écrire cela produirait des données antidatées. "
+                f"Vérifiez la synchronisation horaire avant de collecter."
+            )
+        if residu < -TOLERANCE_HORLOGE_SEC:
+            log.info(
+                "Horodatage en retard de %.0f s sur l'heure courante : tampon "
+                "rejoué après coupure. Décalage retenu : %+d h.",
+                -residu, heures,
             )
 
         nouveau = heures * 3600

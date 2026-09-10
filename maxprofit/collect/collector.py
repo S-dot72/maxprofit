@@ -136,10 +136,18 @@ class Config:
     flush_sec: float = 2.0            # écriture disque groupée
     heartbeat_sec: int = 10           # trace de connexion, pour repérer les trous
     backup_sec: int = 6 * 3600        # sauvegarde toutes les 6 h (§1.4)
-    #: Synchronisation vers Turso. Sans effet en stockage local. C'est la
-    #: fenêtre de perte maximale si le conteneur est tué brutalement : une
-    #: minute de ticks, qui laissera un trou dans `uptime` et sera donc écartée
-    #: par le backtest (§2.4) plutôt que raisonnée dessus.
+    #: Synchronisation vers Turso. Sans effet en stockage local.
+    #:
+    #: Ce n'est PAS une fenêtre de perte, contrairement à ce que ce commentaire
+    #: affirmait. Mesuré le 2026-09-09 : `sync()` tire les changements distants,
+    #: il ne pousse rien — les écritures partent au `commit()`. Pour le seul
+    #: écrivain de la base, les synchronisations périodiques n'apprennent
+    #: strictement rien.
+    #:
+    #: Six heures, donc : une prudence résiduelle au cas où une seconde
+    #: instance aurait tourné, et non un mécanisme de durabilité. À 60 s, le
+    #: quota du plan gratuit était consommé à 77 % avant que la collecte n'ait
+    #: commencé.
     #: Mesuré : à 60 s, le quota de synchronisations du plan gratuit Turso
     #: était consommé à 77 % avant même que la collecte n'ait commencé. Une
     #: campagne de quatorze jours en demande 20 000 à ce rythme.
@@ -149,7 +157,7 @@ class Config:
     #: trou dans `uptime`, et le backtest écarte les fenêtres qui le chevauchent
     #: (§2.4). Cinq minutes écartées valent mieux qu'une collecte interrompue au
     #: dixième jour faute de quota.
-    sync_sec: int = 300
+    sync_sec: int = 6 * 3600
     max_backoff_sec: int = 60
     #: Au-dela de combien de secondes sans un seul tick on le dit dans le
     #: journal. Deux minutes : assez pour ne pas crier sur une paire calme,
@@ -459,11 +467,12 @@ class Collector:
             return
         try:
             self.store.upsert_candles(self.agg.drain_all())
+            # Pas de `synchroniser()` ici. Cette fonction est appelée à CHAQUE
+            # sortie de boucle, donc à chaque reconnexion — c'était le premier
+            # consommateur de quota, pour un geste qui ne pousse aucune donnée.
+            # Le `flush()` ci-dessous valide, et la validation est ce qui envoie
+            # les écritures au serveur.
             self.flush()
-            # Synchroniser APRÈS avoir vidé les tampons, et sur chaque sortie de
-            # boucle : c'est la dernière occasion de pousser vers Turso avant
-            # qu'un arrêt ne fasse disparaître la réplique locale.
-            turso.synchroniser(self.conn)
         except Exception:
             log.exception("Impossible de vider les tampons")
 

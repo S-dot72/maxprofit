@@ -103,7 +103,13 @@ def test_un_chat_non_autorise_est_ignore(caplog):
     assert len(client.envoyes) == 1
     destinataire, texte = client.envoyes[0]
     assert destinataire == INTRUS
-    assert "code d'accès" in texte or "Code" in texte
+    # Et surtout : PAS un mot sur l'existence d'un code d'accès. Qui en a un
+    # sait quoi en faire ; l'expliquer ne renseigne que ceux qui n'en ont pas,
+    # en leur signalant qu'il ouvre davantage que la file d'attente.
+    import re
+    sans_balises = re.sub(r"<[^>]+>", "", texte).lower()   # <code> n'est pas un mot
+    assert "code" not in sans_balises
+    assert "/start" in texte
     assert "collecte" not in texte.lower() or "privée" in texte
     assert client.effaces == []
     assert any("n'est pas inscrit" in m for m in caplog.messages)
@@ -464,3 +470,44 @@ def test_une_demande_sans_aucun_admin_est_signalee(tmp_path, caplog):
         _traiter(_bot(client, annuaire=annuaire), _message("/start", chat=INTRUS))
 
     assert any("sans administrateur" in m for m in caplog.messages)
+
+
+# --------------------------------------------------------------------------- #
+# Les alertes en rafale
+# --------------------------------------------------------------------------- #
+#
+# Le collecteur meurt, l'hebergeur le relance, il remeurt de la meme cause :
+# chaque tour envoyait « Collecte demarree » puis « Collecte arretee » avec le
+# MEME texte. En une nuit, des dizaines de notifications identiques -- et une
+# alerte qu'on apprend a balayer ne previent plus de rien.
+
+def test_une_alerte_identique_n_est_pas_repetee():
+    client = FauxClient()
+    bot = _bot(client)
+    for _ in range(5):
+        asyncio.run(bot.alerter("❌ Collecte arrêtée\nHorloge incompréhensible"))
+    assert len(client.envoyes) == 1, (
+        f"{len(client.envoyes)} envois pour une seule cause"
+    )
+
+
+def test_une_alerte_differente_passe_toujours():
+    client = FauxClient()
+    bot = _bot(client)
+    asyncio.run(bot.alerter("❌ Collecte arrêtée"))
+    asyncio.run(bot.alerter("🔑 Jeton expiré"))
+    assert len(client.envoyes) == 2
+
+
+def test_la_meme_alerte_repasse_apres_la_fenetre():
+    """Une panne qui dure doit se rappeler au souvenir."""
+    from maxprofit.hosting import telegram as mod
+
+    client = FauxClient()
+    bot = _bot(client)
+    asyncio.run(bot.alerter("❌ Collecte arrêtée"))
+    # On recule l'horodatage plutot que d'attendre une demi-heure.
+    for cle in list(bot._alertes_recentes):
+        bot._alertes_recentes[cle] -= mod.SILENCE_ALERTE_SEC + 1
+    asyncio.run(bot.alerter("❌ Collecte arrêtée"))
+    assert len(client.envoyes) == 2

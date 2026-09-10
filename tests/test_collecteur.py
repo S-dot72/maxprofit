@@ -562,4 +562,27 @@ def test_un_intervalle_absent_garde_le_defaut(tmp_path):
     args = argparse.Namespace(db=str(tmp_path / "m.db"), min_payout=92,
                               max_paires=4, sync_sec=0)
     assert mod.build_config(args).sync_sec == Config.sync_sec
-    assert Config.sync_sec >= 300
+    # `sync()` tire les changements distants, il ne pousse rien : pour le seul
+    # ecrivain de la base, le faire souvent ne fait que bruler du quota.
+    assert Config.sync_sec >= 3600
+
+
+def test_vider_les_tampons_ne_synchronise_pas(tmp_path, monkeypatch):
+    """Regression de quota.
+
+    `_vider_tampons` est appelee a CHAQUE sortie de boucle, donc a chaque
+    reconnexion. Elle y appelait `turso.synchroniser`, premier consommateur du
+    quota -- pour un geste qui ne pousse aucune donnee : les ecritures partent
+    au `commit()`.
+    """
+    from maxprofit.collect import collector as mod
+
+    appels = []
+    monkeypatch.setattr(mod.turso, "synchroniser",
+                        lambda conn, **kw: appels.append(1))
+
+    src = SourceScriptee(_ticks(3))
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+
+    assert appels == [], "une synchronisation a ete declenchee sans necessite"
