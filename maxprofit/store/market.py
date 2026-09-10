@@ -13,8 +13,12 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable, Sequence
 
+import logging
+
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle, PairInfo, Tick
+
+log = logging.getLogger(__name__)
 
 
 #: Nombre maximal de parametres lies par instruction. SQLite en accepte
@@ -68,6 +72,32 @@ class MarketWriter:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        #: Dernier (payout, ouvert) connu par paire. Sert à n'écrire QUE les
+        #: changements. Amorcé depuis la base pour qu'un redémarrage ne
+        #: réenregistre pas tout l'état courant.
+        self._dernier_payout: dict[str, tuple[int, int]] = {}
+        self._amorcer_payouts()
+
+    def _amorcer_payouts(self) -> None:
+        """Relit le dernier relevé de chaque paire.
+
+        Sans cela, chaque redémarrage réécrirait les 183 paires — et sur un
+        hébergeur qui redémarre souvent, la déduplication ne servirait à rien.
+        """
+        try:
+            lignes = self.conn.execute(
+                """SELECT p.pair, p.payout_pct, p.is_open FROM payouts p
+                   JOIN (SELECT pair, MAX(ts_sec) AS t FROM payouts
+                         GROUP BY pair) d
+                     ON d.pair = p.pair AND d.t = p.ts_sec"""
+            ).fetchall()
+        except Exception as erreur:                      # noqa: BLE001
+            # Base neuve, ou table absente : on repart de rien. Le pire qui
+            # puisse arriver est d'écrire une fois de trop.
+            log.debug("Amorçage des payouts impossible : %s", erreur)
+            return
+        for pair, payout, ouvert in lignes:
+            self._dernier_payout[str(pair)] = (int(payout), int(ouvert))
 
     # --- écritures groupées --------------------------------------------------
 
@@ -108,8 +138,26 @@ class MarketWriter:
         )
 
     def insert_payouts(self, ts_sec: int, pairs: Iterable[PairInfo]) -> int:
-        """Relevé horodaté de TOUTES les paires, ouvertes ou non (§2.3)."""
-        rows = [(ts_sec, p.name, p.payout_pct, 1 if p.is_open else 0) for p in pairs]
+        """Relevé horodaté des paires — SEULEMENT quand quelque chose change.
+
+        Mesuré sur la collecte réelle : 407 907 lignes enregistrées, 20 168
+        porteuses d'information. **95,1 % de redondance**, un facteur 20. À 183
+        paires relevées toutes les cinq minutes, c'est 52 704 lignes par jour
+        qui répètent la précédente — et c'est ce qui a épuisé le quota du
+        stockage distant avant la fin de la campagne.
+
+        Aucune règle du §2.3 ne bouge. `payout_at` prend « le relevé antérieur
+        le plus proche » : une valeur inchangée est déjà représentée par le
+        dernier point de changement. Et l'absence de ligne ne se confond pas
+        avec l'absence de collecte — c'est `uptime` qui dit quand on écoutait.
+        """
+        rows = []
+        for p in pairs:
+            etat = (p.payout_pct, 1 if p.is_open else 0)
+            if self._dernier_payout.get(p.name) == etat:
+                continue
+            self._dernier_payout[p.name] = etat
+            rows.append((ts_sec, p.name, etat[0], etat[1]))
         if not rows:
             return 0
         return _inserer_en_lot(

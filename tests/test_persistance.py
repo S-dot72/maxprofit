@@ -514,3 +514,79 @@ def test_une_bougie_groupee_se_fusionne_toujours_correctement(db):
     assert ligne[3] == 30
     assert ligne[4] == 1, "une bougie complete est redevenue incomplete"
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Les payouts : 95 % de redondance mesuree
+# --------------------------------------------------------------------------- #
+#
+# 407 907 lignes enregistrees en production, 20 168 porteuses d'information.
+# 183 paires relevees toutes les cinq minutes, c'est 52 704 lignes par jour qui
+# repetent la precedente -- et c'est ce qui a epuise le quota du stockage
+# distant avant la fin de la campagne.
+
+def test_un_payout_inchange_n_est_pas_reecrit(db):
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    paires = [PairInfo("EURUSD_otc", True, 92), PairInfo("GBPUSD_otc", True, 88)]
+
+    assert writer.insert_payouts(T0_SEC, paires) == 2
+    for i in range(1, 20):
+        assert writer.insert_payouts(T0_SEC + i * 300, paires) == 0
+
+    assert conn.execute("SELECT COUNT(*) FROM payouts").fetchone()[0] == 2
+    conn.close()
+
+
+def test_un_changement_est_toujours_enregistre(db):
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+
+    writer.insert_payouts(T0_SEC, [PairInfo("EURUSD_otc", True, 92)])
+    writer.insert_payouts(T0_SEC + 300, [PairInfo("EURUSD_otc", True, 92)])
+    writer.insert_payouts(T0_SEC + 600, [PairInfo("EURUSD_otc", True, 78)])
+    writer.insert_payouts(T0_SEC + 900, [PairInfo("EURUSD_otc", False, 78)])
+
+    lignes = conn.execute(
+        "SELECT ts_sec, payout_pct, is_open FROM payouts ORDER BY ts_sec"
+    ).fetchall()
+    assert [(l[1], l[2]) for l in lignes] == [(92, 1), (78, 1), (78, 0)]
+    conn.close()
+
+
+def test_la_regle_du_2_3_donne_le_meme_resultat_qu_avant(db):
+    """Le point qui compte : la deduplication ne doit RIEN changer a la
+    reponse de `payout_at`. Une valeur inchangee est deja representee par le
+    dernier point de changement."""
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    writer.insert_payouts(T0_SEC, [PairInfo("EURUSD_otc", True, 92)])
+    for i in range(1, 10):
+        writer.insert_payouts(T0_SEC + i * 300, [PairInfo("EURUSD_otc", True, 92)])
+    writer.insert_payouts(T0_SEC + 3000, [PairInfo("EURUSD_otc", True, 70)])
+    conn.commit()
+    conn.close()
+
+    ro = open_read_only(db)
+    lecteur = MarketReader(ro)
+    # Au milieu de la plage sans ligne : la valeur en vigueur est bien 92.
+    assert lecteur.payout_at("EURUSD_otc", T0_SEC + 1500).payout_pct == 92
+    assert lecteur.payout_at("EURUSD_otc", T0_SEC + 3600).payout_pct == 70
+    # Avant tout releve : rien, et surtout pas la valeur d'aujourd'hui.
+    assert lecteur.payout_at("EURUSD_otc", T0_SEC - 1) is None
+    ro.close()
+
+
+def test_un_redemarrage_ne_reecrit_pas_l_etat_courant(db):
+    """Sur un hebergeur qui redemarre souvent, une deduplication qui ne
+    survivrait pas au processus ne servirait a rien."""
+    conn = open_read_write(db)
+    paires = [PairInfo(f"P{i}_otc", True, 90) for i in range(183)]
+    assert MarketWriter(conn).insert_payouts(T0_SEC, paires) == 183
+    conn.commit()
+    conn.close()
+
+    conn = open_read_write(db)
+    assert MarketWriter(conn).insert_payouts(T0_SEC + 300, paires) == 0
+    assert conn.execute("SELECT COUNT(*) FROM payouts").fetchone()[0] == 183
+    conn.close()
