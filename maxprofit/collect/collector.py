@@ -183,6 +183,20 @@ class Config:
     #: Vrai par défaut : ne pas jeter des données en silence. Sur un stockage
     #: distant à quota, mettre `STOCKER_TICKS=0`.
     stocker_ticks: bool = True
+    #: Paires SUIVIES en permanence, au lieu des meilleurs payouts du moment.
+    #:
+    #: Mesuré sur la collecte réelle : suivre le classement des payouts a donné
+    #: 18 paires hachées en tranches de quelques heures, au lieu de 4 séries
+    #: continues. Le classement tourne, l'abonnement suit, et l'on ne peut plus
+    #: mesurer quoi que ce soit — une autocorrélation sur un morceau de deux
+    #: heures ne veut rien dire, et le §2 demande quatorze jours CONTINUS.
+    #:
+    #: Épingler coûte des payouts moins bons ; c'est le prix de la continuité,
+    #: et l'historique complet des payouts reste enregistré pour toutes les
+    #: paires, donc le backtest rejoue l'éligibilité telle qu'elle était (§2.3).
+    #:
+    #: Vide = comportement d'origine, les meilleurs payouts.
+    paires_fixes: tuple[str, ...] = ()
     #: Nombre maximal de paires SOUSCRITES simultanément.
     #:
     #: Mesuré, pas supposé. Le diagnostic a tourné 90 s sans faute sur 4 paires.
@@ -257,20 +271,23 @@ class Collector:
         # pour le backtest, qui rejouera l'éligibilité depuis cette table.
         self.store.insert_payouts(int(time.time()), pairs)
 
-        # Les meilleurs payouts d'abord : si l'on doit se limiter, autant que
-        # ce soit sur les paires qui rapportent le plus.
-        candidates = sorted(
-            (p for p in pairs
-             if p.is_open and p.payout_pct >= self.cfg.min_payout),
-            key=lambda p: (-p.payout_pct, p.name),
-        )
-        eligible = sorted(p.name for p in candidates[:self.cfg.max_paires])
-        if len(candidates) > self.cfg.max_paires:
-            log.info(
-                "%d paires éligibles, abonnement limité aux %d meilleurs "
-                "payouts. Les payouts de toutes restent enregistrés.",
-                len(candidates), self.cfg.max_paires,
+        if self.cfg.paires_fixes:
+            eligible = self._paires_epinglees(pairs)
+        else:
+            # Les meilleurs payouts d'abord : si l'on doit se limiter, autant
+            # que ce soit sur les paires qui rapportent le plus.
+            candidates = sorted(
+                (p for p in pairs
+                 if p.is_open and p.payout_pct >= self.cfg.min_payout),
+                key=lambda p: (-p.payout_pct, p.name),
             )
+            eligible = sorted(p.name for p in candidates[:self.cfg.max_paires])
+            if len(candidates) > self.cfg.max_paires:
+                log.info(
+                    "%d paires éligibles, abonnement limité aux %d meilleurs "
+                    "payouts. Les payouts de toutes restent enregistrés.",
+                    len(candidates), self.cfg.max_paires,
+                )
 
         if eligible != self.subscribed:
             ajoutees = set(eligible) - set(self.subscribed)
@@ -279,6 +296,45 @@ class Collector:
             self.subscribed = eligible
             log.info("Paires éligibles : %d (+%d / -%d)",
                      len(eligible), len(ajoutees), len(retirees))
+
+    def _paires_epinglees(self, pairs) -> List[str]:
+        """Les paires demandées, sans tenir compte du classement des payouts.
+
+        Le payout minimal n'est PAS appliqué ici. Il sert à choisir où l'on
+        mettrait de l'argent ; épingler, c'est décider où l'on veut une série
+        continue. Un payout qui descend sous le seuil pendant deux heures ne
+        doit pas trouer l'historique — le backtest rejouera l'éligibilité
+        depuis la table des payouts, qui, elle, enregistre tout (§2.3).
+
+        Un nom inconnu du catalogue est signalé fort : une faute de frappe
+        collecterait silencieusement moins de paires que demandé, et l'on s'en
+        apercevrait au moment d'analyser.
+        """
+        connues = {p.name: p for p in pairs}
+        retenues, inconnues, fermees = [], [], []
+        for nom in self.cfg.paires_fixes:
+            info = connues.get(nom)
+            if info is None:
+                inconnues.append(nom)
+            elif not info.is_open:
+                fermees.append(nom)
+            else:
+                retenues.append(nom)
+
+        if inconnues:
+            log.error(
+                "PAIRES_FIXES contient %d nom(s) inconnu(s) du broker : %s. "
+                "Vérifiez l'orthographe — ces paires ne seront jamais "
+                "collectées.", len(inconnues), ", ".join(inconnues))
+        if fermees:
+            log.info("Épinglées mais fermées pour l'instant : %s",
+                     ", ".join(fermees))
+        if not retenues:
+            log.warning(
+                "Aucune paire épinglée n'est ouverte : rien à suivre pour "
+                "l'instant. La collecte reste connectée et reprendra à "
+                "l'ouverture.")
+        return sorted(retenues)
 
     # --- écriture -----------------------------------------------------------
 
@@ -601,7 +657,26 @@ def build_config(args) -> Config:
         reglages["sync_sec"] = sync
     if getattr(args, "sans_ticks", False):
         reglages["stocker_ticks"] = False
+    fixes = _paires_fixes_env(getattr(args, "paires", ""))
+    if fixes:
+        reglages["paires_fixes"] = fixes
     return Config(**reglages)
+
+
+def _paires_fixes_env(brut: str) -> tuple[str, ...]:
+    """Liste séparée par des virgules, depuis l'argument ou `PAIRES_FIXES`.
+
+    Les doublons sont retirés en conservant l'ordre donné : ce sont les
+    premières qui comptent si la liste dépasse `max_paires`.
+    """
+    texte = (brut or "").strip() or os.environ.get("PAIRES_FIXES", "").strip()
+    vues, sortie = set(), []
+    for nom in texte.split(","):
+        nom = nom.strip()
+        if nom and nom not in vues:
+            vues.add(nom)
+            sortie.append(nom)
+    return tuple(sortie)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -628,6 +703,11 @@ def main(argv: list[str] | None = None) -> int:
                          "$MAX_PAIRES). 4 est le seul nombre observé en train "
                          "de livrer des ticks ; au-delà, le broker ferme le "
                          "socket sans rien envoyer.")
+    ap.add_argument("--paires", default="",
+                    help="Paires à suivre en permanence, séparées par des "
+                         "virgules (ou $PAIRES_FIXES). Remplace le classement "
+                         "par payout : c'est ce qui donne des séries CONTINUES, "
+                         "seules exploitables pour mesurer quoi que ce soit.")
     ap.add_argument("--sans-ticks", action="store_true",
                     default=os.environ.get("STOCKER_TICKS", "1").strip() == "0",
                     help="N'écrit pas les ticks bruts (97,6 %% du volume). Les "

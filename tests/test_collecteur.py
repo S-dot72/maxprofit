@@ -637,3 +637,91 @@ def test_sans_ticks_le_tick_count_reste_exact(tmp_path):
 def test_par_defaut_on_n_ecarte_rien_en_silence(tmp_path):
     """Jeter des donnees doit etre un choix explicite."""
     assert Config(db=tmp_path / "m.db", min_payout=92).stocker_ticks is True
+
+
+# --------------------------------------------------------------------------- #
+# Paires epinglees : la continuite avant le meilleur payout
+# --------------------------------------------------------------------------- #
+#
+# Suivre le classement des payouts a donne 18 paires hachees en tranches de
+# quelques heures au lieu de 4 series continues. Une autocorrelation mesuree sur
+# un morceau de deux heures ne veut rien dire, et le §2 demande quatorze jours
+# CONTINUS.
+
+class SourceCatalogue(SourceScriptee):
+    """Catalogue fixe, pour verifier a QUOI on s'abonne."""
+
+    def __init__(self, paires):
+        super().__init__([])
+        self._catalogue = paires
+
+    def list_pairs(self):
+        return self._catalogue
+
+    def stream(self):
+        self.passages_stream += 1
+        if self.collecteur is not None:
+            self.collecteur.stop()
+        return
+        yield                                    # pragma: no cover
+
+
+def _collecte(tmp_path, catalogue, **cfg):
+    src = SourceCatalogue(catalogue)
+    src.collecteur = c = Collector(src, replace(_config(tmp_path), **cfg))
+    c.run()
+    return src, c
+
+
+def test_les_paires_epinglees_l_emportent_sur_le_classement(tmp_path):
+    catalogue = [
+        PairInfo("EURUSD_otc", True, 80),      # epinglee, payout mediocre
+        PairInfo("EXOTIQUE_otc", True, 96),    # meilleur payout, non epinglee
+    ]
+    src, _ = _collecte(tmp_path, catalogue,
+                       paires_fixes=("EURUSD_otc",), min_payout=92)
+    assert src.abonnements[-1] == ["EURUSD_otc"]
+
+
+def test_un_payout_sous_le_seuil_ne_troue_pas_la_serie(tmp_path):
+    """Le payout minimal dit ou l'on mettrait de l'argent ; epingler dit ou
+    l'on veut une serie continue. Les confondre ferait un trou de deux heures
+    dans l'historique chaque fois que le payout baisse."""
+    catalogue = [PairInfo("EURUSD_otc", True, 60)]
+    src, _ = _collecte(tmp_path, catalogue,
+                       paires_fixes=("EURUSD_otc",), min_payout=92)
+    assert src.abonnements[-1] == ["EURUSD_otc"]
+
+
+def test_une_paire_fermee_est_simplement_omise(tmp_path):
+    catalogue = [PairInfo("EURUSD_otc", False, 92),
+                 PairInfo("GBPUSD_otc", True, 92)]
+    src, _ = _collecte(tmp_path, catalogue,
+                       paires_fixes=("EURUSD_otc", "GBPUSD_otc"))
+    assert src.abonnements[-1] == ["GBPUSD_otc"]
+
+
+def test_un_nom_inconnu_est_signale_fort(tmp_path, caplog):
+    """Une faute de frappe collecterait silencieusement moins de paires que
+    demande, et l'on s'en apercevrait au moment d'analyser."""
+    catalogue = [PairInfo("EURUSD_otc", True, 92)]
+    with caplog.at_level("ERROR"):
+        src, _ = _collecte(tmp_path, catalogue,
+                           paires_fixes=("EURUSD_otc", "EURSUD_otc"))
+    assert src.abonnements[-1] == ["EURUSD_otc"]
+    assert any("EURSUD_otc" in m for m in caplog.messages)
+
+
+def test_sans_epinglage_le_classement_reste_la_regle(tmp_path):
+    catalogue = [PairInfo("A_otc", True, 96), PairInfo("B_otc", True, 93)]
+    src, _ = _collecte(tmp_path, catalogue, min_payout=92, max_paires=1)
+    assert src.abonnements[-1] == ["A_otc"]
+
+
+def test_la_liste_est_lue_de_l_environnement(monkeypatch):
+    from maxprofit.collect.collector import _paires_fixes_env
+
+    monkeypatch.setenv("PAIRES_FIXES", " EURUSD_otc , GBPUSD_otc ,EURUSD_otc, ")
+    assert _paires_fixes_env("") == ("EURUSD_otc", "GBPUSD_otc")
+    # L'argument explicite l'emporte.
+    assert _paires_fixes_env("X_otc") == ("X_otc",)
