@@ -158,6 +158,11 @@ class DepotBase:
 
     def ecrire(self, inscrits: dict[str, dict]) -> None:
         try:
+            # Transaction EXPLICITE : la connexion PostgreSQL est en validation
+            # automatique, et sans ce groupement une panne entre l'effacement
+            # et la réinsertion laisserait un annuaire vide — donc plus aucun
+            # destinataire d'alerte, sans que personne ne s'en aperçoive.
+            self.conn.execute("BEGIN")
             self.conn.execute("DELETE FROM operateurs")
             for chat, e in inscrits.items():
                 self.conn.execute(

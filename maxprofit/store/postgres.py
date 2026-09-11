@@ -16,10 +16,18 @@ au-dessus ne sait quel moteur tourne. La traduction du SQL est isolée dans
 
 --- Deux différences de comportement qu'il faut connaître -------------------
 
-**La transaction est implicite.** `sqlite3` ouvert en `isolation_level=None`
-valide chaque instruction ; psycopg ouvre une transaction et attend un
-`commit()`. C'est le même régime que la réplique libSQL, et `store/db.py` le
-sait déjà : `_valide_implicitement` répond vrai ici aussi.
+**La connexion est en validation automatique.** Ce n'était pas le cas au
+départ, et cela a coûté la sonde. psycopg ouvre une transaction à la PREMIÈRE
+instruction, y compris un `SELECT`, et la garde ouverte jusqu'au `commit()`. La
+sonde ne fait que lire : sa transaction restait donc ouverte indéfiniment, et
+PostgreSQL a fini par couper — « terminating connection due to
+idle-in-transaction timeout ». La sonde est passée au rouge pendant que la
+collecte écrivait normalement.
+
+En validation automatique, chaque instruction est autonome et rien ne traîne.
+Les migrations, elles, ont besoin d'être atomiques : elles ouvrent un `BEGIN`
+explicite, exactement comme sur `sqlite3`. Le régime est donc le même que celui
+de SQLite, et `store/db.py` n'a pas de cas particulier à connaître.
 
 **Une transaction avortée refuse tout.** Après une erreur SQL, PostgreSQL
 rejette chaque instruction suivante avec « current transaction is aborted »
@@ -137,6 +145,21 @@ class Connexion:
             raise
         return _Curseur(curseur)
 
+    @property
+    def in_transaction(self) -> bool:
+        """Une transaction explicite est-elle en cours ?
+
+        Lu par `store/db._annuler` : tenter un `ROLLBACK` hors transaction
+        masquerait l'erreur d'origine par un message sans rapport.
+        """
+        try:
+            import psycopg
+
+            return (self._conn.info.transaction_status
+                    != psycopg.pq.TransactionStatus.IDLE)
+        except Exception:                                # noqa: BLE001
+            return False
+
     def commit(self) -> None:
         self._conn.commit()
 
@@ -163,7 +186,8 @@ def ouvrir() -> Connexion:
         ) from None
 
     try:
-        brute = psycopg.connect(url, connect_timeout=DELAI_CONNEXION_SEC)
+        brute = psycopg.connect(url, connect_timeout=DELAI_CONNEXION_SEC,
+                                autocommit=True)
     except Exception as erreur:                          # noqa: BLE001
         raise PostgresIndisponible(
             f"Connexion à PostgreSQL impossible : {erreur}. Vérifiez "

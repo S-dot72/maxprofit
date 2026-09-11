@@ -15,6 +15,7 @@ c'est ce jour-là qu'on perd les données.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -704,3 +705,38 @@ def test_sur_un_poste_un_fichier_local_reste_legitime(db, monkeypatch):
 
     conn = open_read_write(db)                  # ne leve pas
     conn.close()
+
+
+def test_la_connexion_postgres_est_en_validation_automatique(monkeypatch):
+    """La sonde est passee au rouge a cause de l'inverse.
+
+    psycopg ouvre une transaction a la PREMIERE instruction, y compris un
+    SELECT. La sonde ne fait que lire : sa transaction restait ouverte, et
+    PostgreSQL a fini par couper la connexion (« terminating connection due to
+    idle-in-transaction timeout ») pendant que la collecte ecrivait
+    normalement.
+    """
+    import types
+
+    from maxprofit.store import postgres
+
+    recu = {}
+
+    def _connect(url, **kw):
+        recu.update(kw)
+        return types.SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/base")
+    monkeypatch.setitem(sys.modules, "psycopg",
+                        types.SimpleNamespace(connect=_connect))
+    postgres.ouvrir()
+    assert recu.get("autocommit") is True
+
+
+def test_postgres_ouvre_une_transaction_explicite_pour_migrer(monkeypatch):
+    """En validation automatique, une migration doit grouper elle-meme :
+    a moitie appliquee, elle serait pire qu'echouee."""
+    from maxprofit.store import db as mod, postgres
+
+    conn = postgres.Connexion.__new__(postgres.Connexion)
+    assert mod._valide_implicitement(conn) is False

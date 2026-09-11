@@ -90,12 +90,16 @@ def _valide_implicitement(conn) -> bool:
     Reconnu à la nature de la connexion — pas à un drapeau passé par
     l'appelant, qui se désynchroniserait.
 
-    `sqlite3` ouvert en `isolation_level=None` valide chaque instruction ;
-    libSQL et psycopg ouvrent une transaction et attendent un `commit()`. Un
-    `BEGIN` explicite sur ces deux-là échoue, d'où cette distinction plutôt
-    qu'un régime unique.
+    `sqlite3` en `isolation_level=None` et PostgreSQL en validation automatique
+    ne tiennent rien : un `BEGIN` explicite y est nécessaire pour grouper une
+    migration. `libsql` ouvre au contraire une transaction dès la connexion, et
+    lui envoyer un `BEGIN` lève.
     """
-    return turso.est_replique(conn) or postgres.est_postgres(conn)
+    # PostgreSQL n'est PAS dans cette liste : sa connexion est ouverte en
+    # validation automatique, précisément pour qu'une lecture ne laisse pas une
+    # transaction ouverte derrière elle. Il suit donc le même chemin que
+    # `sqlite3` — `BEGIN` explicite autour d'une migration.
+    return turso.est_replique(conn)
 
 
 def valider(conn) -> None:
