@@ -638,3 +638,27 @@ def test_sans_url_postgres_n_est_pas_demande(monkeypatch):
 class _ConnFactice:
     def execute(self, *a, **k):
         raise AssertionError("aucune requete ne devait partir dans ce test")
+
+
+def test_les_reglages_de_stockage_ignores_sont_signales(monkeypatch, caplog):
+    """Une variable Turso laissee dans les reglages d'un hebergeur donne
+    l'impression qu'elle agit. Elle ne fait rien -- c'est le silence qui
+    laissait croire le contraire."""
+    from maxprofit.store import db as mod
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/base")
+    monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://ailleurs.turso.io")
+    with caplog.at_level("WARNING"):
+        mod._signaler_reglages_ignores()
+    assert any("IGNOR" in m for m in caplog.messages)
+    assert any("TURSO_DATABASE_URL" in m for m in caplog.messages)
+
+
+def test_sans_postgres_aucun_reglage_n_est_reproche(monkeypatch, caplog):
+    from maxprofit.store import db as mod
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://ailleurs.turso.io")
+    with caplog.at_level("WARNING"):
+        mod._signaler_reglages_ignores()
+    assert not [m for m in caplog.messages if "IGNOR" in m]

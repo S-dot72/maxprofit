@@ -153,6 +153,10 @@ CLAVIER = [["📊 État", "📈 Paires"], ["🔑 Renouveler le jeton", "❓ Aide
 #: quand on tape « / ». Sans cet appel, les commandes fonctionnent mais restent
 #: invisibles — il faut les connaître pour s'en servir.
 COMMANDES = [
+    # `/start` d'abord : c'est la seule commande qu'un inconnu puisse utiliser,
+    # et elle manquait au menu. Un bot dont la porte d'entrée n'est pas listée
+    # oblige à la deviner.
+    ("start", "Demander l'accès"),
     ("etat", "État de la collecte"),
     ("paires", "Paires actuellement suivies"),
     ("diag", "Ce que la bibliotheque recoit vraiment (admin)"),

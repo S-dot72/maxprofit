@@ -196,6 +196,29 @@ def apply_migrations(
     return _user_version(conn)
 
 
+def _signaler_reglages_ignores() -> None:
+    """Dire tout haut qu'un réglage de stockage ne sert à rien.
+
+    Trois modes coexistent, et l'ordre de priorité est dans le code. Mais une
+    variable Turso laissée dans les réglages d'un hébergeur donne l'impression
+    qu'elle agit — on la voit, elle est là, et l'on cherche ensuite pourquoi
+    « le code essaie toujours de se connecter à Turso ». Il ne le fait pas ;
+    c'est le silence qui laissait croire le contraire.
+    """
+    import os
+
+    if not os.environ.get(postgres.ENV_URL, "").strip():
+        return
+    restes = [nom for nom in (turso.ENV_URL, turso.ENV_JETON, "TRADING_DB_PATH")
+              if os.environ.get(nom, "").strip()]
+    if restes:
+        log.warning(
+            "%s est défini : %s sont IGNORÉS. Retirez-les des réglages pour "
+            "que ce qui est affiché corresponde à ce qui s'exécute.",
+            postgres.ENV_URL, ", ".join(restes),
+        )
+
+
 def open_read_write(
     path: Path | str,
     *,
@@ -210,6 +233,7 @@ def open_read_write(
     """
     path = Path(path)
 
+    _signaler_reglages_ignores()
     if postgres.configure():
         # Aucun fichier local : la base est distante, point. C'est ce qui rend
         # l'hébergement sans disque possible sans le détour d'une réplique — et

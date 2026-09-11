@@ -191,13 +191,16 @@ def ouvrir(chemin_cache: Path):
 
 
 def synchroniser(conn, *, obligatoire: bool = False) -> bool:
-    """Pousse les écritures locales vers Turso. Retourne True si c'est fait.
+    """TIRE l'état distant vers la réplique locale. Retourne True si c'est fait.
 
-    En fonctionnement normal, un échec de synchronisation n'arrête pas la
-    collecte : le réseau revient, et les données sont toujours dans la réplique
-    locale en attendant. Mais l'échec est journalisé en ERROR, parce qu'une
-    réplique qui ne se synchronise plus est une collecte qui ne survivra pas au
-    prochain redémarrage — et rien d'autre ne le signalerait.
+    Ce nom prête à confusion et la version précédente de ce texte s'y est
+    laissé prendre : elle affirmait que cette fonction « pousse les écritures
+    vers Turso ». C'est faux, et l'erreur a coûté 77 % d'un quota. Les écritures
+    partent au `commit()`, en direct. `sync()` ne fait que descendre ce que
+    d'autres ont écrit.
+
+    Rend donc immédiatement `False` sur une connexion qui n'est pas une
+    réplique — PostgreSQL, ou un fichier local : il n'y a rien à tirer.
 
     `obligatoire=True` à l'ouverture : là, échouer signifie qu'on ne sait pas
     ce que contient la base distante, et continuer serait travailler à l'aveugle.

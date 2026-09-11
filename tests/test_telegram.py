@@ -511,3 +511,15 @@ def test_la_meme_alerte_repasse_apres_la_fenetre():
         bot._alertes_recentes[cle] -= mod.SILENCE_ALERTE_SEC + 1
     asyncio.run(bot.alerter("❌ Collecte arrêtée"))
     assert len(client.envoyes) == 2
+
+
+def test_start_figure_dans_le_menu():
+    """La seule commande qu'un inconnu puisse utiliser manquait au menu.
+
+    Un bot dont la porte d'entree n'est pas listee oblige a la deviner.
+    """
+    from maxprofit.hosting.telegram import COMMANDES
+
+    noms = [nom for nom, _ in COMMANDES]
+    assert "start" in noms
+    assert noms[0] == "start", "la porte d'entree doit venir en premier"
