@@ -662,3 +662,45 @@ def test_sans_postgres_aucun_reglage_n_est_reproche(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         mod._signaler_reglages_ignores()
     assert not [m for m in caplog.messages if "IGNOR" in m]
+
+
+# --------------------------------------------------------------------------- #
+# Le desastre silencieux de la §1.1, en conteneur
+# --------------------------------------------------------------------------- #
+#
+# `DATABASE_URL` non renseigne cote hebergeur : le code retombait sur un fichier
+# dans /tmp, la collecte tournait avec une sonde verte et des compteurs qui
+# montaient -- et repartait de zero a chaque redemarrage. Il a fallu comparer
+# deux captures d'ecran pour s'en apercevoir.
+
+def test_en_conteneur_sans_stockage_durable_on_refuse_de_demarrer(
+        db, monkeypatch):
+    from maxprofit.store import db as mod
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.setenv("RENDER", "1")
+
+    with pytest.raises(SchemaError, match="conteneur"):
+        open_read_write(db)
+
+
+def test_en_conteneur_avec_postgres_on_demarre(monkeypatch):
+    from maxprofit.store import db as mod
+
+    monkeypatch.setenv("RENDER", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/base")
+    mod._refuser_un_disque_ephemere()          # ne leve pas
+
+
+def test_sur_un_poste_un_fichier_local_reste_legitime(db, monkeypatch):
+    """La detection vise le conteneur, pas le fichier : collecter dans
+    ~/trading_data est un usage normal."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    for nom in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT",
+                "FLY_APP_NAME", "KUBERNETES_SERVICE_HOST"):
+        monkeypatch.delenv(nom, raising=False)
+
+    conn = open_read_write(db)                  # ne leve pas
+    conn.close()

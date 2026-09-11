@@ -196,6 +196,35 @@ def apply_migrations(
     return _user_version(conn)
 
 
+def _refuser_un_disque_ephemere() -> None:
+    """Dans un conteneur sans stockage distant, ARRÊTER au lieu de collecter.
+
+    C'est le désastre exact que toute la §1 cherche à empêcher, et il vient de
+    se produire : `DATABASE_URL` n'était pas renseigné côté hébergeur, le code
+    est retombé sur un fichier dans `/tmp`, et la collecte a tourné en affichant
+    une sonde verte et des compteurs qui montaient. Ils repartaient de zéro à
+    chaque redémarrage, et il a fallu comparer deux captures d'écran pour s'en
+    apercevoir.
+
+    Un fichier local est parfaitement légitime sur un poste de travail — d'où la
+    détection de conteneur plutôt qu'une interdiction générale.
+    """
+    from maxprofit.core.config import _dans_un_conteneur
+
+    if postgres.configure() or turso.configure():
+        return
+    if not _dans_un_conteneur():
+        return
+    raise SchemaError(
+        f"Aucun stockage durable configuré, et ce processus tourne dans un "
+        f"conteneur : le disque y est effacé à chaque déploiement, à chaque "
+        f"redémarrage et après chaque mise en veille.\n"
+        f"La collecte semblerait fonctionner — sonde verte, compteurs qui "
+        f"montent — et repartirait de zéro sans un message. Définissez "
+        f"{postgres.ENV_URL}."
+    )
+
+
 def _signaler_reglages_ignores() -> None:
     """Dire tout haut qu'un réglage de stockage ne sert à rien.
 
@@ -234,6 +263,7 @@ def open_read_write(
     path = Path(path)
 
     _signaler_reglages_ignores()
+    _refuser_un_disque_ephemere()
     if postgres.configure():
         # Aucun fichier local : la base est distante, point. C'est ce qui rend
         # l'hébergement sans disque possible sans le détour d'une réplique — et
