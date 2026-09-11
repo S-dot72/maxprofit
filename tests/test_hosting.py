@@ -278,3 +278,36 @@ def test_sans_demande_le_verdict_ne_reproche_rien():
     verdict = _verdict_point_d_acces(
         {"url_demandee": None, "url": "wss://demo-api-eu.po.market/"})
     assert "défaut" in verdict
+
+
+def test_la_sonde_ne_cherche_pas_de_fichier_avec_postgres(monkeypatch, tmp_path):
+    """`is_file()` n'a aucun sens pour PostgreSQL.
+
+    La sonde restait rouge sur « demarrage » pendant que la collecte ecrivait
+    normalement dans Neon : l'hebergeur voyait un service en panne.
+    """
+    from maxprofit.hosting import health
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/base")
+    ouvertures = []
+    monkeypatch.setattr(health, "open_read_only",
+                        lambda p: ouvertures.append(p) or _ConnSonde())
+
+    etat = health.EtatCollecte(tmp_path / "inexistant.db")
+    assert etat._lecteur() is not None, "la sonde a renonce faute de fichier"
+    assert ouvertures, "aucune connexion n'a ete tentee"
+
+
+def test_sans_postgres_un_fichier_absent_reste_un_demarrage(monkeypatch, tmp_path):
+    from maxprofit.hosting import health
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    etat = health.EtatCollecte(tmp_path / "inexistant.db")
+    sain, details = etat.rapport()
+    assert sain is False
+    assert details["status"] == "demarrage"
+
+
+class _ConnSonde:
+    def execute(self, *a, **k):
+        raise AssertionError("aucune requete attendue dans ce test")

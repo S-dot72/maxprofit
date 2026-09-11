@@ -46,6 +46,7 @@ from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import EtatCollecte, start_http_server
 from maxprofit.hosting.operateurs import Annuaire, chemin_annuaire
 from maxprofit.hosting import version as version_deployee
+from maxprofit.store import postgres
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
@@ -63,6 +64,13 @@ def _verifier_emplacement_base(db: Path) -> None:
     mais en production c'est le bug de conception que toute la §1 cherche à
     empêcher : le prochain déploiement remplace ce répertoire, et la collecte
     disparaît sans un message."""
+    if postgres.configure():
+        # Il n'y a pas d'emplacement à vérifier : rien n'est écrit sur le
+        # disque. Sans cette sortie, le chemin symbolique « postgresql » était
+        # résolu relativement au répertoire de travail et l'on avertissait que
+        # la base vivait dans le code — un reproche sans objet, placé juste
+        # au-dessus des lignes qu'il faut vraiment lire.
+        return
     racine = Path(__file__).resolve().parents[2]
     try:
         db.resolve().relative_to(racine)
@@ -87,7 +95,8 @@ async def _servir(args) -> int:
     log.info("%s", version_deployee.resume())
     log.info("Base : %s", cfg.db)
     log.info("Paires souscrites au maximum : %d", cfg.max_paires)
-    log.info("Synchronisation Turso : toutes les %d s", cfg.sync_sec)
+    if not postgres.configure():
+        log.info("Synchronisation Turso : toutes les %d s", cfg.sync_sec)
     log.info("Ticks bruts : %s", "enregistrés" if cfg.stocker_ticks
              else "NON enregistrés (bougies M1 seules)")
 

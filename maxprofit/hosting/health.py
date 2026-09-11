@@ -34,6 +34,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from maxprofit.store import postgres
 from maxprofit.store.db import open_read_only, schema_version
 from maxprofit.store.market import MarketReader
 
@@ -75,7 +76,12 @@ class EtatCollecte:
 
     def _lecteur(self) -> MarketReader | None:
         if self._reader is None:
-            if not self.db.is_file():
+            # `is_file()` est la bonne question pour SQLite et pour une
+            # réplique, qui sont des fichiers. Elle n'a aucun sens pour
+            # PostgreSQL : il n'y a rien sur le disque, et la sonde restait
+            # rouge sur « démarrage » pendant que la collecte écrivait
+            # normalement. L'hébergeur voyait un service en panne.
+            if not postgres.configure() and not self.db.is_file():
                 return None
             try:
                 self._reader = MarketReader(open_read_only(self.db))
