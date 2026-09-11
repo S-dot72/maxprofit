@@ -19,18 +19,27 @@ Deux codes distincts, tous deux facultatifs. Sans code administrateur, personne
 ne peut s'inscrire comme administrateur — le bot reste consultable et le jeton
 ne se renouvelle plus que par `POST /session`.
 
---- Où c'est stocké, et ce que ça implique --------------------------------
+--- Où c'est stocké, et pourquoi ça a changé -------------------------------
 
-Dans un fichier JSON, à côté du fichier de session. Sur un hébergement sans
-disque, ce fichier est ÉPHÉMÈRE : après un redéploiement, les inscriptions sont
-perdues et chacun doit renvoyer `/start <code>`.
+En BASE quand il y en a une, dans un fichier JSON sinon.
 
-C'est un choix délibéré plutôt qu'un oubli. L'alternative — stocker les
-opérateurs dans la base Turso — obligerait le bot à ouvrir sa propre connexion
-à la réplique locale, depuis un autre thread que le collecteur. Deux répliques
-libSQL sur le même fichier, c'est un risque de corruption pour la seule
-commodité de ne pas retaper une commande après un déploiement. La collecte, elle,
-ne doit rien perdre.
+L'annuaire a d'abord vécu dans un JSON posé à côté du fichier de session, et ce
+choix était argumenté : le stocker dans la base Turso aurait obligé le bot à
+ouvrir sa propre réplique libSQL sur le même fichier que le collecteur, depuis
+un autre thread — un risque de corruption pour la seule commodité de ne pas
+retaper une commande.
+
+Le raisonnement était juste et la conclusion mauvaise, parce qu'elle acceptait
+une conséquence qu'on n'avait pas regardée en face : sur un hébergement sans
+disque, ce fichier disparaît à CHAQUE déploiement. Le journal affichait « 0
+opérateur(s) inscrit(s) », les alertes n'avaient plus de destinataire, et
+personne n'était prévenu des pannes — précisément quand on en a besoin. Une
+alerte qu'on ne reçoit plus est pire qu'une alerte absente : on se croit
+couvert.
+
+L'objection tombe avec PostgreSQL : une connexion de plus n'y coûte rien, et la
+question de la corruption ne se pose pas. Le fichier JSON reste le dépôt par
+défaut pour un poste de travail, où il convient parfaitement.
 """
 
 from __future__ import annotations
@@ -92,12 +101,89 @@ class Role(enum.Enum):
         return self.value
 
 
+class DepotFichier:
+    """Annuaire dans un JSON. Convient à un poste ; éphémère en conteneur."""
+
+    def __init__(self, chemin: Path):
+        self.chemin = chemin
+
+    def lire(self) -> dict[str, dict]:
+        if not self.chemin.is_file():
+            return {}
+        try:
+            donnees = json.loads(self.chemin.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as erreur:
+            # Un annuaire illisible ne doit pas empêcher le bot de démarrer :
+            # on repart à vide, et chacun se réinscrit. Perdre des inscriptions
+            # est réparable en une commande ; ne plus recevoir d'alerte, non.
+            log.warning("Annuaire illisible (%s) : %s", self.chemin, erreur)
+            return {}
+        return {str(k): v for k, v in donnees.items()} if isinstance(donnees, dict) else {}
+
+    def ecrire(self, inscrits: dict[str, dict]) -> None:
+        try:
+            self.chemin.parent.mkdir(parents=True, exist_ok=True)
+            self.chemin.write_text(
+                json.dumps(inscrits, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as erreur:
+            log.error("Annuaire non enregistré (%s) : %s", self.chemin, erreur)
+
+
+class DepotBase:
+    """Annuaire en base. Survit aux déploiements, c'est tout son intérêt.
+
+    L'écriture remplace la table entière plutôt que de calculer un delta.
+    L'annuaire tient en quelques lignes, et une révocation qui n'aurait pas
+    d'équivalent en `DELETE` laisserait un accès actif en croyant l'avoir
+    retiré — un delta muet sur ce sujet-là ne vaut pas l'économie.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def lire(self) -> dict[str, dict]:
+        try:
+            lignes = self.conn.execute(
+                "SELECT chat_id, role, nom, inscrit_ts_sec FROM operateurs"
+            ).fetchall()
+        except Exception as erreur:                      # noqa: BLE001
+            log.warning("Annuaire illisible en base : %s", erreur)
+            return {}
+        return {
+            str(chat): {"role": role, "nom": nom, "inscrit_ts_sec": ts}
+            for chat, role, nom, ts in lignes
+        }
+
+    def ecrire(self, inscrits: dict[str, dict]) -> None:
+        try:
+            self.conn.execute("DELETE FROM operateurs")
+            for chat, e in inscrits.items():
+                self.conn.execute(
+                    "INSERT INTO operateurs (chat_id, role, nom, inscrit_ts_sec) "
+                    "VALUES (?,?,?,?)",
+                    (str(chat), str(e.get("role", "")), str(e.get("nom") or ""),
+                     int(e.get("inscrit_ts_sec") or 0)),
+                )
+            self.conn.commit()
+        except Exception as erreur:                      # noqa: BLE001
+            log.error("Annuaire non enregistré en base : %s", erreur)
+            try:
+                self.conn.rollback()
+            except Exception:                            # noqa: BLE001
+                pass
+
+
 class Annuaire:
     """Les opérateurs inscrits. Sûr entre threads : la boucle Telegram lit et
     écrit pendant que le superviseur diffuse des alertes."""
 
-    def __init__(self, chemin: Path):
-        self.chemin = chemin
+    def __init__(self, chemin: Path | None = None, depot=None):
+        if depot is None and chemin is None:
+            raise ValueError("Annuaire : il faut un chemin ou un dépôt")
+        self.depot = depot if depot is not None else DepotFichier(chemin)
+        self.chemin = getattr(self.depot, "chemin", None)
         self._verrou = threading.Lock()
         self._inscrits: dict[str, dict] = {}
         self._charger()
@@ -106,28 +192,10 @@ class Annuaire:
     # --- persistance --------------------------------------------------------
 
     def _charger(self) -> None:
-        if not self.chemin.is_file():
-            return
-        try:
-            donnees = json.loads(self.chemin.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as erreur:
-            # Un annuaire illisible ne doit pas empêcher le bot de démarrer :
-            # on repart à vide, et chacun se réinscrit. Perdre des inscriptions
-            # est réparable en une commande ; ne plus recevoir d'alerte, non.
-            log.warning("Annuaire illisible (%s) : %s", self.chemin, erreur)
-            return
-        if isinstance(donnees, dict):
-            self._inscrits = {str(k): v for k, v in donnees.items()}
+        self._inscrits = self.depot.lire()
 
     def _enregistrer(self) -> None:
-        try:
-            self.chemin.parent.mkdir(parents=True, exist_ok=True)
-            self.chemin.write_text(
-                json.dumps(self._inscrits, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError as erreur:
-            log.error("Annuaire non enregistré (%s) : %s", self.chemin, erreur)
+        self.depot.ecrire(self._inscrits)
 
     def _reprendre_configuration(self) -> None:
         """`TELEGRAM_CHAT_ID` reste admin s'il est défini.

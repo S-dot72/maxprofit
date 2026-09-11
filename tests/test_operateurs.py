@@ -243,3 +243,59 @@ def test_les_demandes_en_attente_sont_listables(annuaire):
     annuaire.demander_acces("222", "bob")
     assert annuaire.en_attente() == [("222", "bob")]
     assert annuaire.administrateurs() == ["111"]
+
+
+# --------------------------------------------------------------------------- #
+# L'annuaire en base : survivre au deploiement
+# --------------------------------------------------------------------------- #
+#
+# Le fichier JSON vit sur le disque du conteneur, efface a chaque deploiement.
+# Le journal affichait « 0 operateur(s) inscrit(s) » apres chaque mise a jour,
+# les alertes n'avaient plus de destinataire, et l'on se croyait couvert.
+
+def _conn(tmp_path):
+    from maxprofit.store.db import open_read_write
+    return open_read_write(tmp_path / "market.db")
+
+
+def test_les_inscriptions_survivent_a_un_redemarrage(tmp_path, monkeypatch):
+    from maxprofit.hosting.operateurs import Annuaire, DepotBase, Role
+
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    conn = _conn(tmp_path)
+
+    premier = Annuaire(depot=DepotBase(conn))
+    premier.inscrire("123", Role.ADMIN, "denis")
+    premier.inscrire("456", Role.OBSERVATEUR, "invite")
+
+    # Un processus neuf, la meme base.
+    second = Annuaire(depot=DepotBase(conn))
+    assert second.role("123") is Role.ADMIN
+    assert second.role("456") is Role.OBSERVATEUR
+    assert sorted(second.destinataires()) == ["123", "456"]
+    conn.close()
+
+
+def test_une_revocation_est_bien_persistee(tmp_path, monkeypatch):
+    """Le point qui compte le plus : un acces retire doit l'etre pour de bon."""
+    from maxprofit.hosting.operateurs import Annuaire, DepotBase, Role
+
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    conn = _conn(tmp_path)
+
+    a = Annuaire(depot=DepotBase(conn))
+    a.inscrire("123", Role.ADMIN, "denis")
+    a.inscrire("666", Role.OBSERVATEUR, "a-revoquer")
+    assert a.revoquer("666") is True
+
+    b = Annuaire(depot=DepotBase(conn))
+    assert b.role("666") is None, "l'acces revoque est toujours actif"
+    assert b.role("123") is Role.ADMIN
+    conn.close()
+
+
+def test_un_annuaire_exige_un_chemin_ou_un_depot():
+    from maxprofit.hosting.operateurs import Annuaire
+
+    with pytest.raises(ValueError):
+        Annuaire()

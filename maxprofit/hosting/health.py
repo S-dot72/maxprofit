@@ -109,7 +109,18 @@ class EtatCollecte:
             dernier_battement = lecteur.last_heartbeat_sec()
             compteurs = lecteur.counts()
             version = schema_version(lecteur.conn)
-        except sqlite3.Error as erreur:
+        except Exception as erreur:                      # noqa: BLE001
+            # `sqlite3.Error` ne suffit plus depuis que la base peut être
+            # PostgreSQL : une erreur psycopg passait au travers et remontait
+            # jusqu'au serveur HTTP, qui répondait 500. Or une sonde qui plante
+            # prive l'hébergeur de la seule information qu'il sait lire — et le
+            # contrat de cette méthode, écrit deux lignes plus haut, est
+            # justement de ne JAMAIS lever.
+            #
+            # La connexion est oubliée : sur une base distante, l'erreur est
+            # souvent une connexion morte, et la garder ferait échouer toutes
+            # les sondes suivantes de la même façon.
+            self._reader = None
             return False, {**base, "status": "erreur", "detail": str(erreur)}
 
         if dernier_battement is None:

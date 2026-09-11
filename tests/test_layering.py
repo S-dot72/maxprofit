@@ -214,11 +214,18 @@ def test_aucune_strategie_n_utilise_le_zigzag_repeignant():
             )
 
 
+#: Les tables que le §1.2 protège : la donnée COLLECTÉE, qu'aucune exécution ne
+#: reconstitue. `operateurs` et `etat_broker` n'en font pas partie — ce sont des
+#: états d'exploitation, refaits en une commande, et les modifier est une
+#: opération normale : révoquer un accès EXIGE un DELETE.
+TABLES_PROTEGEES = ("ticks", "candles", "payouts", "uptime")
+
 DESTRUCTIF = re.compile(
     r"\bDROP\s+TABLE\b"
     r"|\bDROP\s+DATABASE\b"
     r"|\bTRUNCATE\b"
-    r"|\bDELETE\s+FROM\s+\w+\s*(?![\w\s]*\bWHERE\b)",
+    r"|\bDELETE\s+FROM\s+(?:" + "|".join(TABLES_PROTEGEES) + r")\b"
+    r"\s*(?![\w\s]*\bWHERE\b)",
     re.IGNORECASE,
 )
 
@@ -268,3 +275,21 @@ def test_le_backtest_ne_peut_pas_ecrire_dans_les_tables_de_marche():
                     f"{path.relative_to(ROOT)} importe {sorted(noms)}. Le "
                     f"backtest lit les tables de marché, il n'y écrit jamais."
                 )
+
+
+def test_la_regle_destructrice_protege_toujours_les_tables_de_marche():
+    """L'assouplissement ne doit pas avoir ouvert la porte en grand.
+
+    Precise le 2026-09-11 pour laisser `DELETE FROM operateurs` -- revoquer un
+    acces l'exige. Les tables de marche, elles, restent intouchables.
+    """
+    for table in TABLES_PROTEGEES:
+        assert DESTRUCTIF.search(f'conn.execute("DELETE FROM {table}")'), (
+            f"{table} n'est plus protegee contre un DELETE sans WHERE"
+        )
+    assert DESTRUCTIF.search('conn.execute("DROP TABLE ticks")')
+    assert DESTRUCTIF.search('conn.execute("TRUNCATE candles")')
+    # Et ce qui doit passer.
+    assert not DESTRUCTIF.search('conn.execute("DELETE FROM operateurs")')
+    assert not DESTRUCTIF.search(
+        'conn.execute("DELETE FROM ticks WHERE ts_ms < ?")')

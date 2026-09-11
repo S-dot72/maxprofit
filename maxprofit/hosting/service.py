@@ -44,7 +44,7 @@ from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
 from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import EtatCollecte, start_http_server
-from maxprofit.hosting.operateurs import Annuaire, chemin_annuaire
+from maxprofit.hosting.operateurs import Annuaire, DepotBase, chemin_annuaire
 from maxprofit.hosting import version as version_deployee
 from maxprofit.store import postgres
 from maxprofit.hosting.superviseur import Superviseur
@@ -163,6 +163,30 @@ async def _servir(args) -> int:
     return 0
 
 
+def _annuaire() -> Annuaire:
+    """L'annuaire en base quand il y en a une, dans un fichier sinon.
+
+    Le fichier vit sur le disque du conteneur, effacé à chaque déploiement : le
+    journal affichait « 0 opérateur(s) inscrit(s) » après chaque mise à jour, et
+    les alertes n'avaient plus de destinataire. On se croyait couvert.
+
+    Le bot ouvre sa PROPRE connexion, distincte de celle du collecteur : un
+    objet de connexion n'est pas partageable entre threads, et le bot tourne
+    dans la boucle asyncio pendant que le collecteur écrit dans le sien.
+    """
+    if not postgres.configure():
+        return Annuaire(chemin_annuaire())
+    try:
+        return Annuaire(depot=DepotBase(postgres.ouvrir()))
+    except Exception as erreur:                          # noqa: BLE001
+        # Un annuaire injoignable ne doit pas empêcher la collecte de démarrer :
+        # elle, elle n'a besoin de personne. On perd la persistance des
+        # inscriptions, et on le dit.
+        log.error("Annuaire en base indisponible (%s) : repli sur le fichier, "
+                  "les inscriptions ne survivront pas au déploiement.", erreur)
+        return Annuaire(chemin_annuaire())
+
+
 def _fabriquer_bot(http) -> BotExploitation | None:
     """`None` si Telegram n'est pas configuré : la collecte doit tourner sans.
 
@@ -176,7 +200,7 @@ def _fabriquer_bot(http) -> BotExploitation | None:
                  "distance.")
         return None
 
-    annuaire = Annuaire(chemin_annuaire())
+    annuaire = _annuaire()
     if len(annuaire) == 0 and not os.environ.get(ENV_CODE_ADMIN, "").strip():
         # Ni inscrit ni code : le bot répondrait à tout le monde « demandez un
         # code » sans que ce code existe. Personne ne recevrait jamais d'alerte,

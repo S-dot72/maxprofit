@@ -140,9 +140,37 @@ def _v2_etat_broker(conn) -> None:
 
 #: Liste ordonnée et immuable. Ajouter une migration = ajouter une ligne à la
 #: fin, jamais modifier une ligne existante.
+def _v3_operateurs(conn) -> None:
+    """Qui a accès au bot — en BASE, plus dans un fichier.
+
+    L'annuaire vivait dans un JSON posé à côté de la base. Sur un hébergement
+    sans disque, ce fichier disparaît à chaque déploiement : le journal affichait
+    « 0 opérateur(s) inscrit(s) », les alertes n'avaient plus de destinataire, et
+    il fallait renvoyer `/start <code>` après chaque mise à jour. Une alerte
+    qu'on ne reçoit plus est pire qu'une alerte absente : on croit être couvert.
+
+    Le choix contraire avait été documenté et argumenté — deux répliques libSQL
+    sur le même fichier auraient été un risque de corruption pour la seule
+    commodité de ne pas retaper une commande. L'argument tombe avec PostgreSQL :
+    une connexion de plus n'y coûte rien.
+    """
+    for instruction in _decouper(
+        """
+        CREATE TABLE IF NOT EXISTS operateurs (
+            chat_id        TEXT PRIMARY KEY,
+            role           TEXT    NOT NULL,
+            nom            TEXT    NOT NULL,
+            inscrit_ts_sec INTEGER NOT NULL
+        );
+        """
+    ):
+        conn.execute(instruction)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
+    Migration(3, "annuaire des opérateurs", _v3_operateurs),
 )
 
 #: Version de schéma que ce code sait produire.
