@@ -109,6 +109,7 @@ class EtatCollecte:
             dernier_battement = lecteur.last_heartbeat_sec()
             compteurs = lecteur.counts()
             version = schema_version(lecteur.conn)
+            couverture = lecteur.couverture()
         except Exception as erreur:                      # noqa: BLE001
             # `sqlite3.Error` ne suffit plus depuis que la base peut être
             # PostgreSQL : une erreur psycopg passait au travers et remontait
@@ -137,6 +138,7 @@ class EtatCollecte:
             "age_battement_sec": age,
             "schema_version": version,
             "compteurs": compteurs,
+            "couverture": couverture,
         }
 
 

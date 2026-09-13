@@ -239,6 +239,13 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
             f"Ticks : {compteurs.get('ticks', 0):,} — "
             f"bougies : {compteurs.get('candles', 0):,}"
         )
+    couv = details.get("couverture")
+    if couv and couv.get("fenetre_sec"):
+        lignes.append(
+            f"Couverture : {100 * couv['part']:.1f} % "
+            f"({couv['collecte_sec'] / 3600:.0f} h sur "
+            f"{couv['fenetre_sec'] / 3600:.0f} h, "
+            f"{couv['interruptions']} interruption(s))")
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
     lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")

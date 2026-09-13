@@ -311,3 +311,43 @@ def test_sans_postgres_un_fichier_absent_reste_un_demarrage(monkeypatch, tmp_pat
 class _ConnSonde:
     def execute(self, *a, **k):
         raise AssertionError("aucune requete attendue dans ce test")
+
+
+def test_la_couverture_distingue_une_base_qui_grossit_d_une_collecte_continue(
+        tmp_path):
+    """« Quatorze jours de donnees continues » (§2) ne se lit pas dans un
+    compteur de lignes : une base grossit aussi en collectant deux heures par
+    jour. Il a fallu extraire ce ratio a la main pour decouvrir que la collecte
+    ne tournait que 38 % du temps."""
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    # Deux heures de battements toutes les 30 s, avec un trou d'une heure.
+    t = 1_704_067_200
+    for i in range(120):
+        writer.heartbeat(t + i * 30, 4)
+    for i in range(120):
+        writer.heartbeat(t + 3600 + 3600 + i * 30, 4)
+    conn.commit()
+    conn.close()
+
+    ro = open_read_only(db)
+    couv = MarketReader(ro).couverture()
+    assert couv["interruptions"] == 1
+    assert couv["plus_long_trou_sec"] > 3000
+    assert 0.4 < couv["part"] < 0.8, couv
+    ro.close()
+
+
+def test_une_base_sans_battement_ne_pretend_pas_a_une_couverture(tmp_path):
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader
+
+    db = tmp_path / "market.db"
+    open_read_write(db).close()
+    ro = open_read_only(db)
+    assert MarketReader(ro).couverture()["fenetre_sec"] == 0
+    ro.close()

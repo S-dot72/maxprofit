@@ -29,16 +29,23 @@ log = logging.getLogger(__name__)
 
 #: Attente après le n-ième échec consécutif, en secondes.
 #:
-#: Les trois premiers échecs ne coûtent RIEN. C'est délibéré : une coupure
-#: réseau de dix secondes est le cas courant, et lui répondre par une minute de
-#: silence creuserait dans les bougies un trou plus grand que la panne. Le
-#: collecteur a déjà sa propre temporisation en mémoire (1 s, 2 s, 4 s…) qui
-#: suffit largement pour ça.
+#: Le plafond est passé de SIX HEURES à trente minutes, sur mesure. Sur 149 h
+#: de campagne, la collecte n'a tourné que 38,2 % du temps, et les plus longues
+#: interruptions duraient 587, 590, 605, 609 et 799 minutes — toutes voisines de
+#: dix heures, c'est-à-dire six heures d'attente, un essai raté, puis quatre
+#: heures de la suivante. Quand le broker redevenait joignable au bout de vingt
+#: minutes, on l'ignorait pendant six heures.
 #:
-#: À partir du quatrième, la progression devient franche. Quatre refus d'affilée
-#: ne sont plus un incident : c'est un refus. Continuer à composer ne fait
-#: qu'entretenir la raison du refus.
-PALIERS_SEC = (0, 0, 0, 0, 60, 180, 600, 1800, 3600, 7200, 21600)
+#: Le plafond long visait à laisser une limitation de débit expirer. Le
+#: raisonnement tenait pour des refus IMMÉDIATS, qui signalent qu'on frappe trop
+#: fort. Or la panne observée est un `timed out during opening handshake` : la
+#: tentative dure trente secondes et n'aboutit pas. Une tentative par demi-heure
+#: dans ces conditions ne harcèle personne — et si le blocage dure dix heures,
+#: on aura sondé vingt fois au lieu de deux, ce qui reste modeste.
+#:
+#: Le compromis est asymétrique et c'est voulu : attendre trop peu coûte
+#: quelques connexions inutiles, attendre trop coûte des heures de marché.
+PALIERS_SEC = (0, 0, 0, 0, 60, 180, 600, 1200, 1800, 1800, 1800)
 
 
 def lire(conn) -> tuple[int, int | None, str | None]:

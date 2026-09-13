@@ -130,3 +130,22 @@ def test_table_absente_ne_leve_pas(tmp_path: Path):
     etat_broker.noter_echec(conn, "peu importe")     # ne lève pas
     etat_broker.noter_succes(conn)                   # ne lève pas
     conn.close()
+
+
+def test_l_attente_ne_depasse_jamais_une_demi_heure():
+    """Mesure de campagne : 38,2 % de collecte effective sur 149 h, avec des
+    trous de dix heures produits par un plafond a six heures. Quand le broker
+    redevient joignable au bout de vingt minutes, il ne faut pas l'ignorer
+    jusqu'au soir."""
+    assert max(etat_broker.PALIERS_SEC) <= 1800
+
+
+def test_les_premiers_echecs_restent_gratuits():
+    """Une coupure reseau de quelques secondes ne doit rien couter : le
+    collecteur a son propre backoff en memoire pour ca."""
+    assert etat_broker.PALIERS_SEC[:4] == (0, 0, 0, 0)
+
+
+def test_l_attente_croit_toujours_avec_les_echecs():
+    paliers = etat_broker.PALIERS_SEC
+    assert list(paliers) == sorted(paliers), "les paliers doivent etre croissants"

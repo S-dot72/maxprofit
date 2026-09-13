@@ -199,6 +199,35 @@ class MarketReader:
     def counts(self) -> dict[str, int]:
         return _counts(self.conn)
 
+    def couverture(self, trou_max_sec: int = 90) -> dict:
+        """Part du temps réellement collectée, depuis les battements de cœur.
+
+        C'est LE chiffre de la campagne du §2 : « quatorze jours de données
+        continues ». Une base qui grossit ne prouve rien — elle grossit aussi
+        en collectant deux heures par jour. Il a fallu extraire ce ratio à la
+        main pour comprendre que la collecte ne tournait que 38 % du temps.
+
+        `trou_max_sec` doit rester supérieur à l'intervalle de battement, sinon
+        chaque battement compterait pour une interruption.
+        """
+        battements = [r[0] for r in self.conn.execute(
+            "SELECT ts_sec FROM uptime ORDER BY ts_sec").fetchall()]
+        if len(battements) < 2:
+            return {"fenetre_sec": 0, "collecte_sec": 0, "part": 0.0,
+                    "interruptions": 0, "plus_long_trou_sec": 0}
+
+        fenetre = battements[-1] - battements[0]
+        trous = [(b - a) for a, b in zip(battements, battements[1:])
+                 if b - a > trou_max_sec]
+        collecte = fenetre - sum(trous)
+        return {
+            "fenetre_sec": fenetre,
+            "collecte_sec": collecte,
+            "part": collecte / fenetre if fenetre else 0.0,
+            "interruptions": len(trous),
+            "plus_long_trou_sec": max(trous) if trous else 0,
+        }
+
     def payout_at(self, pair: str, ts_sec: int) -> PairInfo | None:
         """Payout EN VIGUEUR à `ts_sec` : le relevé antérieur le plus proche.
 
