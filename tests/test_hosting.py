@@ -335,7 +335,11 @@ def test_la_couverture_distingue_une_base_qui_grossit_d_une_collecte_continue(
     conn.close()
 
     ro = open_read_only(db)
-    couv = MarketReader(ro).couverture()
+    # `maintenant` est fourni : sans lui, le silence entre la derniere bougie
+    # factice et l'instant reel compterait pour une interruption -- ce qui est
+    # le comportement voulu, mais pas ce que ce test mesure.
+    fin = t + 3600 + 3600 + 119 * 30
+    couv = MarketReader(ro).couverture(maintenant=fin)
     assert couv["interruptions"] == 1
     assert couv["plus_long_trou_sec"] > 3000
     assert 0.4 < couv["part"] < 0.8, couv
@@ -350,4 +354,61 @@ def test_une_base_sans_battement_ne_pretend_pas_a_une_couverture(tmp_path):
     open_read_write(db).close()
     ro = open_read_only(db)
     assert MarketReader(ro).couverture()["fenetre_sec"] == 0
+    ro.close()
+
+
+def test_une_collecte_arretee_maintenant_compte_dans_la_couverture(tmp_path):
+    """Le defaut qui cachait la panne la plus importante : celle qui dure.
+
+    La fenetre s'arretait au DERNIER battement. Une collecte morte depuis cinq
+    heures ne comptait donc pas ces cinq heures -- le silence en cours
+    n'apparaissait nulle part, et la couverture restait flatteuse.
+    """
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    t = 1_704_067_200
+    for i in range(120):                       # une heure de battements
+        writer.heartbeat(t + i * 30, 4)
+    conn.commit()
+    conn.close()
+
+    ro = open_read_only(db)
+    lecteur = MarketReader(ro)
+    # Puis cinq heures de silence jusqu'a « maintenant ».
+    couv = lecteur.couverture(maintenant=t + 3600 + 5 * 3600)
+    assert couv["interruptions"] == 1
+    assert couv["plus_long_trou_sec"] >= 5 * 3600 - 60
+    assert couv["part"] < 0.20, couv
+    ro.close()
+
+
+def test_la_fenetre_glissante_ignore_les_pannes_anciennes(tmp_path):
+    """Le cumul est tire vers le bas par des pannes deja reparees et ne remonte
+    plus, quoi qu'on fasse. La question utile est « est-ce que ca marche EN CE
+    MOMENT »."""
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    t = 1_704_067_200
+    writer.heartbeat(t, 4)                     # un battement tres ancien
+    debut_recent = t + 100 * 3600              # puis 100 h de panne
+    for i in range(240):                       # et deux heures impeccables
+        writer.heartbeat(debut_recent + i * 30, 4)
+    conn.commit()
+    conn.close()
+
+    maintenant = debut_recent + 2 * 3600
+    ro = open_read_only(db)
+    lecteur = MarketReader(ro)
+    recent = lecteur.couverture(fenetre_sec=2 * 3600, maintenant=maintenant)
+    total = lecteur.couverture(maintenant=maintenant)
+    assert recent["part"] > 0.95, recent
+    assert total["part"] < 0.10, total
     ro.close()

@@ -199,31 +199,59 @@ class MarketReader:
     def counts(self) -> dict[str, int]:
         return _counts(self.conn)
 
-    def couverture(self, trou_max_sec: int = 90) -> dict:
+    def couverture(self, fenetre_sec: int | None = None,
+                   trou_max_sec: int = 90, maintenant: int | None = None) -> dict:
         """Part du temps réellement collectée, depuis les battements de cœur.
 
         C'est LE chiffre de la campagne du §2 : « quatorze jours de données
         continues ». Une base qui grossit ne prouve rien — elle grossit aussi
-        en collectant deux heures par jour. Il a fallu extraire ce ratio à la
-        main pour comprendre que la collecte ne tournait que 38 % du temps.
+        en collectant deux heures par jour.
+
+        **La fenêtre se termine MAINTENANT, pas au dernier battement.** Sans
+        cela, une collecte arrêtée depuis cinq heures ne comptait pas ces cinq
+        heures : la fenêtre s'arrêtait juste avant, et le silence en cours
+        n'apparaissait nulle part. La panne la plus importante — celle qui dure
+        encore — était la seule à ne pas être mesurée.
+
+        `fenetre_sec` limite au passé récent. Le cumul depuis le premier
+        battement répond à « comment cela s'est-il passé depuis le début » ; il
+        est tiré vers le bas par des pannes anciennes et déjà réparées, et ne
+        remonte plus quoi qu'on fasse. La question utile — « est-ce que ça
+        marche EN CE MOMENT » — demande une fenêtre glissante.
 
         `trou_max_sec` doit rester supérieur à l'intervalle de battement, sinon
         chaque battement compterait pour une interruption.
         """
+        import time as _t
+
+        maintenant = int(maintenant if maintenant is not None else _t.time())
         battements = [r[0] for r in self.conn.execute(
             "SELECT ts_sec FROM uptime ORDER BY ts_sec").fetchall()]
-        if len(battements) < 2:
-            return {"fenetre_sec": 0, "collecte_sec": 0, "part": 0.0,
-                    "interruptions": 0, "plus_long_trou_sec": 0}
+        vide = {"fenetre_sec": 0, "collecte_sec": 0, "part": 0.0,
+                "interruptions": 0, "plus_long_trou_sec": 0}
+        if not battements:
+            return vide
 
-        fenetre = battements[-1] - battements[0]
-        trous = [(b - a) for a, b in zip(battements, battements[1:])
-                 if b - a > trou_max_sec]
-        collecte = fenetre - sum(trous)
+        debut = (maintenant - fenetre_sec if fenetre_sec
+                 else battements[0])
+        dans = [t for t in battements if t >= debut]
+        fenetre = maintenant - debut
+        if fenetre <= 0 or not dans:
+            return vide
+
+        trous = [(b - a) for a, b in zip(dans, dans[1:]) if b - a > trou_max_sec]
+        # Le silence AVANT le premier battement de la fenêtre et APRÈS le
+        # dernier sont des interruptions comme les autres.
+        if dans[0] - debut > trou_max_sec:
+            trous.append(dans[0] - debut)
+        if maintenant - dans[-1] > trou_max_sec:
+            trous.append(maintenant - dans[-1])
+
+        collecte = max(0, fenetre - sum(trous))
         return {
             "fenetre_sec": fenetre,
             "collecte_sec": collecte,
-            "part": collecte / fenetre if fenetre else 0.0,
+            "part": collecte / fenetre,
             "interruptions": len(trous),
             "plus_long_trou_sec": max(trous) if trous else 0,
         }

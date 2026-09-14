@@ -241,11 +241,18 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
         )
     couv = details.get("couverture")
     if couv and couv.get("fenetre_sec"):
+        # Les 24 dernières heures D'ABORD : c'est la seule qui réagit à ce
+        # qu'on vient de corriger. Le cumul est tiré vers le bas par des pannes
+        # anciennes et ne remonte plus, quoi qu'on fasse.
         lignes.append(
-            f"Couverture : {100 * couv['part']:.1f} % "
-            f"({couv['collecte_sec'] / 3600:.0f} h sur "
-            f"{couv['fenetre_sec'] / 3600:.0f} h, "
-            f"{couv['interruptions']} interruption(s))")
+            f"Couverture 24 h : {100 * couv['part']:.1f} % "
+            f"({couv['interruptions']} interruption(s))")
+    tot = details.get("couverture_totale")
+    if tot and tot.get("fenetre_sec"):
+        lignes.append(
+            f"Depuis le début : {100 * tot['part']:.1f} % "
+            f"({tot['collecte_sec'] / 3600:.0f} h sur "
+            f"{tot['fenetre_sec'] / 3600:.0f} h)")
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
     lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
