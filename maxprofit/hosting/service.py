@@ -247,6 +247,13 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
         lignes.append(
             f"Couverture 24 h : {100 * couv['part']:.1f} % "
             f"({couv['interruptions']} interruption(s))")
+        # Immédiatement parlant, là où la moyenne sur 24 h met 24 h à oublier
+        # un trou. Sans lui, on lit « 66 % » pendant une journée entière alors
+        # que tout va bien depuis une heure.
+        if couv.get("en_cours"):
+            lignes.append(
+                f"Sans interruption depuis : "
+                f"{_duree_h(couv.get('continue_depuis_sec', 0))}")
     tot = details.get("couverture_totale")
     if tot and tot.get("fenetre_sec"):
         lignes.append(
@@ -257,6 +264,13 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
     lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
+
+
+def _duree_h(secondes: float) -> str:
+    heures = secondes / 3600
+    if heures < 1:
+        return f"{secondes / 60:.0f} min"
+    return f"{heures:.1f} h"
 
 
 def _oui_non(valeur) -> str:

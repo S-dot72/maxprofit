@@ -412,3 +412,52 @@ def test_la_fenetre_glissante_ignore_les_pannes_anciennes(tmp_path):
     assert recent["part"] > 0.95, recent
     assert total["part"] < 0.10, total
     ro.close()
+
+
+def test_le_temps_sans_interruption_reagit_immediatement(tmp_path):
+    """Une moyenne sur 24 h met 24 h a oublier un trou de huit heures : elle
+    affiche 66 % pendant toute une journee alors que la collecte est parfaite
+    depuis une heure. Les deux chiffres sont vrais ; seul celui-ci repond a
+    « est-ce que ca marche LA, maintenant »."""
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    t = 1_704_067_200
+    writer.heartbeat(t, 4)                        # puis huit heures de trou
+    reprise = t + 8 * 3600
+    for i in range(240):                          # deux heures impeccables
+        writer.heartbeat(reprise + i * 30, 4)
+    conn.commit()
+    conn.close()
+
+    maintenant = reprise + 2 * 3600
+    ro = open_read_only(db)
+    couv = MarketReader(ro).couverture(fenetre_sec=24 * 3600,
+                                       maintenant=maintenant)
+    assert couv["en_cours"] is True
+    assert abs(couv["continue_depuis_sec"] - 2 * 3600) < 120, couv
+    # La moyenne, elle, reste plombee par le trou.
+    assert couv["part"] < 0.5, couv
+    ro.close()
+
+
+def test_une_collecte_morte_ne_pretend_pas_etre_en_cours(tmp_path):
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    db = tmp_path / "market.db"
+    conn = open_read_write(db)
+    writer = MarketWriter(conn)
+    t = 1_704_067_200
+    for i in range(120):
+        writer.heartbeat(t + i * 30, 4)
+    conn.commit()
+    conn.close()
+
+    ro = open_read_only(db)
+    couv = MarketReader(ro).couverture(maintenant=t + 3600 + 4 * 3600)
+    assert couv["en_cours"] is False
+    ro.close()

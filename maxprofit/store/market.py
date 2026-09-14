@@ -248,12 +248,26 @@ class MarketReader:
             trous.append(maintenant - dans[-1])
 
         collecte = max(0, fenetre - sum(trous))
+        # Temps écoulé depuis la fin de la dernière interruption. C'est le seul
+        # chiffre qui réagit IMMÉDIATEMENT : une moyenne sur 24 h met 24 h à
+        # oublier un trou de huit heures, et affiche 66 % pendant tout ce temps
+        # alors que la collecte est parfaite depuis une heure. Les deux sont
+        # vraies ; celle-ci répond à « est-ce que ça marche là, maintenant ».
+        continue_sec = maintenant - dans[-1] if maintenant > dans[-1] else 0
+        if maintenant - dans[-1] <= trou_max_sec:
+            derniere_reprise = dans[0]
+            for a, b in zip(dans, dans[1:]):
+                if b - a > trou_max_sec:
+                    derniere_reprise = b
+            continue_sec = maintenant - derniere_reprise
         return {
             "fenetre_sec": fenetre,
             "collecte_sec": collecte,
             "part": collecte / fenetre,
             "interruptions": len(trous),
             "plus_long_trou_sec": max(trous) if trous else 0,
+            "continue_depuis_sec": continue_sec,
+            "en_cours": maintenant - dans[-1] <= trou_max_sec,
         }
 
     def payout_at(self, pair: str, ts_sec: int) -> PairInfo | None:
