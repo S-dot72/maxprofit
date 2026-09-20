@@ -103,7 +103,15 @@ ALLOWED: dict[str, set[str]] = {
     "execution": {"core", "store", "collect"},
     # Couche d'exécution : démarre les processus et expose la sonde HTTP
     # attendue par l'hébergeur. Aucune logique métier — elle assemble.
-    "hosting": {"core", "store", "collect"},
+    # `hosting` assemble, et c'est pour ça qu'il importe `live` : la course du
+    # plan tourne dans un thread de ce service faute d'instance séparée, qui
+    # serait payante. Le droit est déclaré ici plutôt que contourné.
+    #
+    # Le sens reste bon : `hosting` connaît `live`, jamais l'inverse. Et
+    # `live` ne connaît pas `collect` — c'est `hosting` qui lui passe le jeton
+    # de session, parce que la couche qui décide et exécute n'a rien à faire
+    # dans celle qui collecte.
+    "hosting": {"core", "store", "collect", "live"},
     # Note : `hosting` importe Telegram, mais UNIQUEMENT pour
     # l'exploitation — alertes et renouvellement du jeton de session.
     # Aucun signal, aucune stratégie : le bot de signaux reste

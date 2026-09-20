@@ -356,3 +356,68 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         session.engagees = [float(x) for x in engagees]
         etat.session = session
     return etat, int(ligne[5])
+
+
+def fabriquer_course(ssid: str, *, campagne: str, capital: float,
+                     sessions_par_jour: int, jours: int,
+                     paires: tuple[str, ...], chemin_lecture="lecture",
+                     chemin_ecriture="ecriture"):
+    """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
+
+    ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
+    `collect`, droit que `live` n'a pas et ne doit pas avoir : la couche qui
+    décide et exécute n'a rien à faire dans celle qui collecte. C'est
+    l'appelant — `hosting`, dont c'est le métier d'assembler — qui le fournit.
+
+    Rend un objet à `tour()` / `resume()`, plus la fonction qui sauve son
+    état. Le superviseur appelle les deux sans rien savoir du reste.
+    """
+    from pathlib import Path
+
+    from maxprofit.execution.courtier import CourtierDemo
+    from maxprofit.execution.garde import Plafonds
+    from maxprofit.execution.journal import JournalExecution
+    from maxprofit.plan import Echelle, Risque
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader
+    from maxprofit.strategies.zone_h1 import ZoneH1
+
+    plan = PlanCapital.depuis_risque(
+        capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
+        sessions_par_jour=sessions_par_jour, jours=jours,
+        sessions_perdues_max=2)
+    # Le plafond de mise est celui du 3e pas, majoré de moitié. Au-delà, le
+    # dimensionnement a dérapé et il vaut mieux qu'un ordre soit refusé qu'une
+    # mise inattendue placée.
+    pire = Echelle(payout_pct=92,
+                   gain_vise=capital * plan.gain_par_session_pct / 100).mises()[-1]
+    plafonds = Plafonds(mise=round(pire * 1.5, 2), ordres_max=2000,
+                        duree_max_sec=11 * 86400)
+
+    lecteur = MarketReader(open_read_only(Path(chemin_lecture)))
+    ecriture = open_read_write(Path(chemin_ecriture))
+    journal = JournalExecution(ecriture, campagne=campagne)
+    courtier = CourtierDemo(ssid, plafonds)
+    courtier.connecter()
+    course = CoursePlanDemo(lecteur, courtier, journal, plan, paires, ZoneH1())
+
+    repris = charger_etat(ecriture, campagne, plan)
+    if repris is not None:
+        course.etat, _ = repris
+        log.info("Course REPRISE depuis la base : %s", course.resume())
+    else:
+        log.info("Nouvelle course : %s", course.resume())
+
+    tour_nu = course.tour
+
+    def tour_persistant() -> bool:
+        # L'état est sauvé après CHAQUE pas. Le processus peut mourir à
+        # n'importe quel moment — l'hébergeur redéploie, met en veille — et un
+        # état sauvé par intermittence rejouerait des ordres déjà passés.
+        joue = tour_nu()
+        if joue:
+            sauver_etat(ecriture, campagne, course.etat, jour_utc())
+        return joue
+
+    course.tour = tour_persistant
+    return course

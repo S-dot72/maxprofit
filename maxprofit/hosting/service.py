@@ -47,7 +47,10 @@ from maxprofit.hosting.health import EtatCollecte, start_http_server
 from maxprofit.hosting.operateurs import Annuaire, DepotBase, chemin_annuaire
 from maxprofit.hosting import version as version_deployee
 from maxprofit.store import postgres
+from maxprofit.collect.pocketoption import resoudre_ssid
+from maxprofit.hosting.course import SuperviseurCourse, course_activee
 from maxprofit.hosting.superviseur import Superviseur
+from maxprofit.live.plan_demo import fabriquer_course
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -87,6 +90,35 @@ def _fabriquer_source(nom: str):
     return SimulatedSource() if nom == "sim" else PocketOptionSource(demo=True)
 
 
+#: Le superviseur de course, partagé avec `/etat`. Un dict plutôt qu'une
+#: variable : il est rempli APRÈS la construction du bot, et le capturer par
+#: fermeture avant qu'il existe donnerait un `None` figé — la ligne de la
+#: course manquerait dans `/etat` sans que rien ne le signale.
+_course: dict = {}
+
+#: Les paires de la course, quand `PAIRES_FIXES` n'est pas réglé. Ce sont
+#: celles sur lesquelles l'hypothèse a été mesurée : en changer ferait tourner
+#: la course sur un univers différent de celui qui a été pré-inscrit.
+PAIRES_PAR_DEFAUT = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc")
+
+
+def _alerte_synchrone(bot):
+    """Un pont thread -> boucle asyncio pour que la course puisse alerter.
+
+    La course tourne dans un thread ; `bot.alerter` est une coroutine. Appeler
+    l'une depuis l'autre sans passer par la boucle ne ferait RIEN et ne
+    lèverait pas : la coroutine ne serait jamais attendue, et l'alerte
+    disparaîtrait en silence — exactement le mode de panne que ce projet
+    passe son temps à éliminer.
+    """
+    boucle = asyncio.get_running_loop()
+
+    def alerter(message: str) -> None:
+        asyncio.run_coroutine_threadsafe(bot.alerter(message), boucle)
+
+    return alerter
+
+
 async def _servir(args) -> int:
     cfg = build_config(args)
     _verifier_emplacement_base(cfg.db)
@@ -112,7 +144,8 @@ async def _servir(args) -> int:
             alerter=(bot.alerter if bot else None),
         )
         if bot is not None:
-            bot._etat = lambda: _resume(superviseur, etat_collecte)
+            bot._etat = lambda: _resume(superviseur, etat_collecte,
+                                        _course.get("sup"))
             bot._installer_jeton = superviseur.installer_jeton
             bot._paires = lambda: _paires(superviseur)
             bot._diagnostic = lambda: _diagnostic(superviseur)
@@ -149,6 +182,31 @@ async def _servir(args) -> int:
             await bot.alerter("🟢 <b>Collecte démarrée</b>")
             taches.append(asyncio.create_task(bot.boucler(), name="telegram"))
 
+        # La course du plan, dans un thread À PART et INACTIVE par défaut.
+        #
+        # Elle partage ce processus faute d'instance séparée, qui serait
+        # payante. Tout le confinement est dans `SuperviseurCourse` : aucune
+        # exception n'en sort, elle renonce après cinq échecs plutôt que de
+        # marteler le broker, et son thread est `daemon`. La collecte vaut
+        # plus que la course — quatorze jours de série continue ne se
+        # rattrapent pas, dix jours de course si.
+        course = SuperviseurCourse(
+            lambda: fabriquer_course(
+                resoudre_ssid(demo=True),
+                campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v1"),
+                capital=float(os.environ.get("PLAN_CAPITAL", "250")),
+                sessions_par_jour=int(os.environ.get("PLAN_SESSIONS", "18")),
+                jours=int(os.environ.get("PLAN_JOURS", "30")),
+                paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT),
+            alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
+        )
+        _course["sup"] = course
+        if course_activee():
+            course.demarrer()
+        else:
+            log.info("Course du plan : INACTIVE (PLAN_DEMO=0). Le code est "
+                     "déployé et éprouvé, aucun ordre ne part.")
+
         # Le superviseur commande : quand il rend la main, le processus s'arrête.
         # Le bot n'est qu'un canal ; le laisser maintenir le processus en vie
         # donnerait une instance verte côté hébergeur qui n'enregistre plus rien.
@@ -157,6 +215,10 @@ async def _servir(args) -> int:
         except Exception:
             log.exception("Le collecteur s'est arrêté sur une exception")
         finally:
+            # La course d'abord : son thread est `daemon` et ne retarderait
+            # rien, mais lui demander de s'arrêter lui laisse le temps de
+            # sauver son état après le pas en cours.
+            course.arreter()
             for tache in taches[1:]:
                 tache.cancel()
             await asyncio.gather(*taches[1:], return_exceptions=True)
@@ -220,7 +282,8 @@ def _fabriquer_bot(http) -> BotExploitation | None:
     )
 
 
-async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
+async def _resume(superviseur: Superviseur, etat: EtatCollecte,
+                  course=None) -> str:
     """Ce que raconte /etat. Aucune décision ici : on formate (§0)."""
     sain, details = etat.rapport()
     compteurs = details.get("compteurs") or {}
@@ -278,6 +341,8 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
             f"{tot['fenetre_sec'] / 3600:.0f} h)")
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
     lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
+    if course is not None:
+        lignes.append(f"Course du plan : {course.resume()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
 
