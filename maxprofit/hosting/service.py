@@ -235,10 +235,26 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte) -> str:
     if age is not None:
         lignes.append(f"Dernier battement : il y a {age} s")
     if compteurs:
-        lignes.append(
-            f"Ticks : {compteurs.get('ticks', 0):,} — "
-            f"bougies : {compteurs.get('candles', 0):,}"
-        )
+        lignes.append(f"Bougies : {compteurs.get('candles', 0):,}")
+        # La sous-minute a sa propre ligne, et elle dit ce qui est RÉGLÉ autant
+        # que ce qui est écrit.
+        #
+        # Elle existe à cause d'un écart qui s'est produit : `STOCKER_TICKS=1`
+        # poussé dans `render.yaml`, et la variable du tableau de bord — restée
+        # à "0" — l'emporte, parce qu'un blueprint ne se resynchronise pas sur
+        # un simple `git push`. Le collecteur tournait, les bougies arrivaient,
+        # tout était vert, et pas un tick n'était enregistré. Un réglage qu'on
+        # croit actif est pire qu'un réglage absent.
+        minutes = compteurs.get("tick_paths", 0)
+        if superviseur.cfg.stocker_ticks:
+            lignes.append(
+                f"Sous-minute : {minutes:,} minute(s) de ticks"
+                + ("" if minutes else
+                   " — ⚠ activé mais rien d'écrit pour l'instant"))
+        else:
+            lignes.append(
+                "Sous-minute : ⚠ DÉSACTIVÉE (STOCKER_TICKS=0) — bougies M1 "
+                "seules, aucune analyse sous la minute possible")
     couv = details.get("couverture")
     if couv and couv.get("fenetre_sec"):
         # Les 24 dernières heures D'ABORD : c'est la seule qui réagit à ce
