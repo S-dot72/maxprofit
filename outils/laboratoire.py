@@ -372,22 +372,36 @@ def charger() -> dict[str, list[list[Candle]]]:
 # Évaluation
 # --------------------------------------------------------------------------- #
 
-def evaluer(par_paire, hypotheses, par_paire_aussi: bool = False):
+def evaluer(par_paire, hypotheses, echeance: int = 1,
+            par_paire_aussi: bool = False):
     """Compte, pour chaque hypothèse, signaux et réussites.
 
-    La règle du binaire M1 : on décide à la clôture de la bougie `i`, on gagne
-    si la bougie `i+1` clôture dans le sens prédit. Une clôture identique est
-    une perte — le broker ne rembourse pas l'égalité sur ces contrats.
+    La règle du binaire : on décide à la clôture de la bougie `i`, et l'on
+    gagne si la clôture de `i + echeance` est du côté prédit.
+
+    **`echeance` n'était pas un paramètre, et c'était une lacune.** Sur Pocket
+    Option la durée du contrat se choisit — 1, 2, 3, 5, 15, 30 minutes — et un
+    avantage peut exister à un horizon sans exister à l'autre. Ne tester que la
+    minute suivante revenait à n'essayer qu'un seul des réglages offerts.
+
+    L'égalité est une PERTE : le broker ne rembourse pas sur ces contrats.
     """
+    if echeance < 1:
+        raise ValueError(f"echeance doit valoir au moins 1 : {echeance}")
     total = defaultdict(lambda: [0, 0])
     detail = defaultdict(lambda: defaultdict(lambda: [0, 0]))
 
     for paire, segs in par_paire.items():
         for seg in segs:
-            for i in range(CONTEXTE, len(seg) - 1):
+            for i in range(CONTEXTE, len(seg) - echeance):
                 historique = seg[:i + 1]
-                suivant = seg[i + 1]
-                resultat = _sens(suivant)
+                # Le résultat se lit sur la CLÔTURE d'échéance comparée à la
+                # clôture d'entrée — pas sur le corps de la bougie d'arrivée,
+                # qui dirait autre chose dès que l'échéance dépasse une minute.
+                depart = seg[i].close
+                arrivee = seg[i + echeance].close
+                resultat = (1 if arrivee > depart
+                            else -1 if arrivee < depart else 0)
                 for nom, f in hypotheses.items():
                     pari = f(historique)
                     if pari == 0:
@@ -407,6 +421,10 @@ def main(argv=None) -> int:
     ap.add_argument("--payout", type=float, default=88.0,
                     help="Payout en %% (défaut 88, mesuré sur les paires "
                          "épinglées). Il fixe le seuil de rentabilité.")
+    ap.add_argument("--echeance", type=int, default=1,
+                    help="Durée du contrat, en bougies M1 (1, 2, 3, 5, 15, "
+                         "30). Un avantage peut exister à un horizon sans "
+                         "exister à l'autre.")
     ap.add_argument("--min-signaux", type=int, default=100,
                     help="Hypothèses sous ce nombre de signaux : écartées. "
                          "En dessous, la marge d'erreur dépasse l'avantage "
@@ -431,10 +449,11 @@ def main(argv=None) -> int:
           f"{n_bougies} bougies exploitables")
     print(f"Payout {a.payout:.0f} % -> il faut battre {100 * seuil:.2f} % "
           f"de réussite pour ne rien perdre")
+    print(f"Échéance : {a.echeance} minute(s)")
     print()
 
     hypotheses = catalogue()
-    total, _ = evaluer(par_paire, hypotheses)
+    total, _ = evaluer(par_paire, hypotheses, echeance=a.echeance)
 
     retenues = [(nom, r, n) for nom, (n, r) in total.items()
                 if n >= a.min_signaux]
