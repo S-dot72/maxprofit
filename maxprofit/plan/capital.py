@@ -51,7 +51,7 @@ import enum
 from dataclasses import dataclass, field
 
 from maxprofit.core.errors import BotError
-from maxprofit.plan.progression import PAS_MAX_PAR_DEFAUT, Echelle
+from maxprofit.plan.progression import PAS_MAX_PAR_DEFAUT, Echelle, Risque
 
 #: Marge de comparaison des pourcentages.
 #:
@@ -131,6 +131,33 @@ class PlanCapital:
     #: la seule façon d'empêcher plutôt que de constater.
     exposition_max_pct: float = 10.0
 
+    @classmethod
+    def depuis_risque(cls, capital_initial: float, risque: Risque,
+                      payout_pct: int, sessions_par_jour: int, jours: int,
+                      **gardes) -> "PlanCapital":
+        """Construit le plan dans le SENS où il se décide.
+
+        L'utilisateur ne choisit pas un gain : il choisit **combien de pertes
+        d'affilée son capital doit encaisser**. Tout le reste se déduit.
+
+            risque (1/7, 3/7…)      ->  gain par session  (l'« Account Gain »)
+            + sessions par jour     ->  ratio journalier
+            + nombre de jours       ->  capital visé
+
+        C'est l'ordre de la feuille, et c'était le seul qui manquait : la
+        première version prenait le gain en entrée, ce qui obligeait à le
+        deviner puis à vérifier qu'il tenait dans le capital.
+        """
+        return cls(
+            capital_initial=capital_initial,
+            gain_par_session_pct=risque.gain_par_session_pct(
+                capital_initial, payout_pct),
+            payout_pct=payout_pct,
+            sessions_par_jour=sessions_par_jour,
+            jours=jours,
+            **gardes,
+        )
+
     def __post_init__(self) -> None:
         if self.capital_initial <= 0:
             raise BotError(
@@ -158,6 +185,16 @@ class PlanCapital:
         if not (0 < self.exposition_max_pct <= 100):
             raise BotError(
                 f"exposition_max_pct hors ]0,100] : {self.exposition_max_pct}")
+
+        # Le 7e trade doit être INATTEIGNABLE, pas seulement évité.
+        liquidation = self.pas_avant_liquidation()
+        if self.pas_max >= liquidation:
+            raise BotError(
+                f"pas_max={self.pas_max} atteindrait le {liquidation}e trade, "
+                f"celui qui engage la totalité du capital. Sous aucun prétexte "
+                f"la descente ne doit y arriver : c'est la configuration qui "
+                f"est refusée, pas une session en cours."
+            )
 
         # Le stop loss, vérifié MAINTENANT et pas en cours de journée.
         part = self.echelle(self.capital_initial).part_du_capital(
@@ -211,6 +248,37 @@ class PlanCapital:
 
     def seuil_de_rentabilite_pct(self) -> float:
         return 100 / (1 + self.payout_pct / 100)
+
+    def pas_avant_liquidation(self) -> int:
+        """À quel pas l'échelle épuiserait le capital.
+
+        Vaut le dénominateur du risque pour un plan 1/N — 7 pour un 1/7 — et
+        moins dès que le numérateur monte. C'est la borne que `pas_max` ne doit
+        jamais atteindre.
+        """
+        gain = self.gain_vise(self.capital_initial)
+        payout = self.payout_pct / 100
+        cumul, pas = 0.0, 0
+        while True:
+            mise = (cumul + gain) / payout
+            pas += 1
+            # Le pas de LIQUIDATION est celui qui consomme ce qui reste, pas le
+            # premier qui dépasse. Sur un plan 1/7 les sept mises totalisent
+            # exactement le capital : c'est donc la 7e qui liquide, et une
+            # première version rendait 8 pour avoir compté le débordement.
+            if cumul + mise >= self.capital_initial - TOLERANCE:
+                return pas
+            cumul += mise
+
+    def capital_vise(self, compose: bool = False) -> float:
+        """Le solde visé au dernier jour. DÉDUIT, jamais saisi.
+
+        C'est le bout de la chaîne : risque -> gain -> ratio -> objectif. Le
+        saisir séparément permettrait de viser un montant que la configuration
+        ne produit pas, et l'écart ne se verrait qu'au trentième jour.
+        """
+        ratio = self.ratio_journalier_pct(compose=compose) / 100
+        return self.capital_initial * (1 + ratio) ** self.jours
 
 
 @dataclass

@@ -135,10 +135,14 @@ def test_une_echelle_refuse_un_payout_absurde():
 # La configuration — rien d'implicite sur ce qui touche à l'argent (§5)
 # --------------------------------------------------------------------------- #
 
-def test_le_garde_fou_vaut_deux_par_defaut():
+def test_le_garde_fou_vaut_TROIS_par_defaut():
     """Un défaut est admis ici parce qu'il va dans le sens sûr : se tromper
-    vers 2 coûte des gains manqués, se tromper vers 7 coûte le compte."""
-    assert plan().pas_max == 2
+    vers 3 coûte des gains manqués, se tromper vers 7 coûte le compte.
+
+    Passé de 2 à 3 sur décision explicite — l'exposition monte de 1,96 % à
+    4,72 % du solde, et le 4e pas reste interdit.
+    """
+    assert plan().pas_max == 3
 
 
 def test_le_capital_et_le_payout_n_ont_aucun_defaut():
@@ -426,8 +430,10 @@ def test_le_pont_alimente_la_journee():
         if gagne:
             s.enregistrer(gagne=True)
         else:
-            s.enregistrer(gagne=False)
-            s.enregistrer(gagne=False)
+            # `pas_max` pas jusqu'au bout : une session n'est PERDUE qu'après
+            # avoir épuisé sa profondeur, pas avant.
+            for _ in range(s.echelle.pas_max):
+                s.enregistrer(gagne=False)
         j.enregistrer(gagnee=s.etat is EtatSession.GAGNEE, montant=s.montant)
 
     assert j.sessions_jouees == 3
@@ -462,3 +468,135 @@ def test_la_session_ne_produit_aucun_signal():
         elif isinstance(noeud, ast.ImportFrom):
             noms = [a.name for a in noeud.names] + [noeud.module or ""]
         assert "Signal" not in noms, f"le module importe {noms}"
+
+
+# --------------------------------------------------------------------------- #
+# Le RISQUE decide, le gain en decoule — le sens de la feuille
+# --------------------------------------------------------------------------- #
+
+from maxprofit.plan import Risque, jour_le_plus_proche      # noqa: E402
+
+
+def test_un_plan_1_sur_7_reproduit_l_account_gain_de_la_feuille():
+    """La chaine complete : risque -> gain -> ratio. La feuille dit 1,46 $,
+    0,58 % et 3,48 %."""
+    r = Risque(1, 7)
+    assert r.gain_par_session(CAPITAL, PAYOUT) == pytest.approx(1.46, abs=0.01)
+    assert r.gain_par_session_pct(CAPITAL, PAYOUT) == pytest.approx(0.583,
+                                                                    abs=0.005)
+    assert r.pas_tenables(CAPITAL, PAYOUT) == 7
+
+
+def test_plus_on_est_gourmand_moins_le_capital_tient_de_pas():
+    """3/7 mise trois fois l'unite : gain triple, echelle plus courte."""
+    assert Risque(3, 7).gain_par_session(CAPITAL, PAYOUT) == pytest.approx(
+        3 * Risque(1, 7).gain_par_session(CAPITAL, PAYOUT))
+    assert Risque(3, 7).pas_tenables(CAPITAL, PAYOUT) == 5
+
+
+def test_le_denominateur_fixe_le_nombre_de_pas_tenables():
+    for n in (5, 6, 7, 8, 10):
+        assert Risque(1, n).pas_tenables(CAPITAL, PAYOUT) == n
+
+
+def test_un_numerateur_superieur_au_denominateur_est_refuse():
+    with pytest.raises(BotError, match="numerateur"):
+        Risque(8, 7)
+
+
+def test_le_plan_se_construit_DEPUIS_le_risque():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert p.gain_par_session_pct == pytest.approx(0.583, abs=0.005)
+    assert p.ratio_journalier_pct() == pytest.approx(3.50, abs=0.02)
+
+
+def test_le_capital_vise_est_DEDUIT_et_non_saisi():
+    """Le bout de la chaine. Le saisir separement permettrait de viser un
+    montant que la configuration ne produit pas, et l'ecart ne se verrait
+    qu'au trentieme jour."""
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert p.capital_vise() == pytest.approx(701.72, abs=0.5)
+    assert p.capital_vise() == pytest.approx(projeter(p)[-1].solde, abs=0.01)
+
+
+# --------------------------------------------------------------------------- #
+# ⚠ Le 7e trade doit etre INATTEIGNABLE
+# --------------------------------------------------------------------------- #
+
+def test_le_pas_de_liquidation_est_le_septieme_sur_un_plan_1_sur_7():
+    """C'est la 7e mise qui consomme ce qui reste, pas la 8e. Une premiere
+    version rendait 8 pour avoir compte le debordement."""
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert p.pas_avant_liquidation() == 7
+
+
+def test_une_profondeur_qui_atteint_la_liquidation_est_REFUSEE():
+    """« Sous aucun pretexte on ne doit arriver au 7e trade. » Refuse a la
+    configuration, donc impossible en seance."""
+    with pytest.raises(BotError, match="liquidation|7e trade"):
+        PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS,
+                                  JOURS, pas_max=7, exposition_max_pct=100.0)
+
+
+def test_la_profondeur_par_defaut_est_TROIS():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert p.pas_max == 3
+    assert p.echelle(CAPITAL).part_du_capital(CAPITAL) == pytest.approx(
+        4.72, abs=0.05)
+
+
+def test_le_message_de_protection_nomme_la_RAISON():
+    """« Session perdue » laisse croire a un accident ; nommer la protection
+    dit que le systeme a fait ce pour quoi il a ete regle."""
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    s = Session(p.echelle(CAPITAL))
+    for _ in range(3):
+        s.enregistrer(gagne=False)
+
+    message = s.message_protection(CAPITAL, p.pas_avant_liquidation())
+    assert "protection de votre capital" in message
+    assert "4e perte" in message
+    assert "7e trade" in message
+    assert message.encode("latin-1"), "doit survivre a un encodeur cp1252"
+
+
+def test_le_message_ne_concerne_que_l_arret_sur_la_profondeur():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    s = Session(p.echelle(CAPITAL))
+    s.enregistrer(gagne=True)
+    with pytest.raises(BotError, match="gagnée"):
+        s.message_protection(CAPITAL, 7)
+
+
+# --------------------------------------------------------------------------- #
+# La reprise : se reancrer, ne pas rattraper
+# --------------------------------------------------------------------------- #
+
+def test_apres_une_perte_on_repart_du_jour_le_plus_proche_du_solde():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    lignes = projeter(p)
+    for jour in (5, 12, 25):
+        solde = lignes[jour - 1].solde
+        assert jour_le_plus_proche(p, solde) == jour
+
+
+def test_un_solde_retombe_au_capital_initial_recommence_le_plan():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert jour_le_plus_proche(p, CAPITAL) == 0
+    assert jour_le_plus_proche(p, CAPITAL - 50) == 0
+
+
+def test_un_solde_au_dela_du_plan_est_ancre_au_dernier_jour():
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    assert jour_le_plus_proche(p, 10_000.0) == JOURS
+
+
+def test_le_reancrage_recule_quand_le_solde_recule():
+    """La propriete qui compte : on ne peut pas se reancrer plus loin que ce
+    qu'on a. Sans cela les mises resteraient calibrees sur un capital qu'on
+    n'a plus."""
+    p = PlanCapital.depuis_risque(CAPITAL, Risque(1, 7), PAYOUT, SESSIONS, JOURS)
+    lignes = projeter(p)
+    haut = jour_le_plus_proche(p, lignes[19].solde)
+    apres_perte = jour_le_plus_proche(p, lignes[19].solde * 0.85)
+    assert apres_perte < haut

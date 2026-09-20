@@ -83,6 +83,38 @@ def solde_projete(plan: PlanCapital, jour: int, compose: bool = False) -> float:
     return projeter(plan, compose=compose)[jour - 1].solde
 
 
+def jour_le_plus_proche(plan: PlanCapital, solde: float,
+                        compose: bool = False) -> int:
+    """Le jour du planning dont le solde prévu colle le mieux au solde RÉEL.
+
+    C'est la règle de reprise après deux pertes consécutives : on ne rattrape
+    pas, **on se réancre**. La nouvelle session est dimensionnée depuis le jour
+    qui correspond à ce qu'on a vraiment, pas depuis celui où l'on croyait être.
+
+    > **Pourquoi c'est la bonne réponse, et non une résignation.** Sans
+    > réancrage, un compte tombé au niveau du jour 7 continue de viser les gains
+    > du jour 12 : les mises restent calibrées sur un capital qu'on n'a plus, et
+    > chaque session suivante risque une part plus grande de ce qui reste. La
+    > martingale se met alors à courir après le plan — exactement le
+    > comportement qui vide un compte.
+    >
+    > Se réancrer allonge le calendrier et ne change rien au risque par session.
+    > C'est le seul des deux qui soit réparable.
+
+    Rend 0 quand le solde est retombé au niveau du capital de départ ou en
+    dessous — on recommence le plan, on ne le poursuit pas en négatif.
+    """
+    if solde <= plan.capital_initial:
+        return 0
+    lignes = projeter(plan, compose=compose)
+    if solde >= lignes[-1].solde:
+        return plan.jours
+    return min(
+        range(1, plan.jours + 1),
+        key=lambda j: abs(lignes[j - 1].solde - solde),
+    )
+
+
 @dataclass(frozen=True)
 class EcartAuPlan:
     """Où l'on en est par rapport au planning. Le seul chiffre qui juge."""

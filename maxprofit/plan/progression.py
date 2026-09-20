@@ -47,14 +47,117 @@ from dataclasses import dataclass
 
 from maxprofit.core.errors import BotError
 
-#: Profondeur d'échelle par défaut. **Deux**, et c'est une décision de sécurité
-#: plutôt qu'un réglage : à sept pas, une session perdue coûte la totalité du
-#: capital ; à deux pas, elle coûte 1,96 %.
+#: Profondeur d'échelle par défaut. **Trois**, et c'est une décision de
+#: sécurité plutôt qu'un réglage.
 #:
-#: Un défaut est admis ici — contrairement au capital ou au payout, qui n'en ont
-#: aucun (§5) — parce qu'il va dans le sens sûr. Se tromper vers 2 coûte des
-#: gains manqués ; se tromper vers 7 coûte le compte.
-PAS_MAX_PAR_DEFAUT = 2
+#: Mesuré sur un plan 1/7 à 250 $ et 92 % de payout :
+#:
+#:     2 pas    4,90 $    1,96 % du solde
+#:     3 pas   11,81 $    4,72 %      <- le défaut
+#:     4 pas   24,22 $    9,69 %
+#:     7 pas  250,28 $  100,11 %      <- la liquidation
+#:
+#: Un défaut est admis ici — contrairement au capital ou au payout, qui n'en
+#: ont aucun (§5) — parce qu'il va dans le sens sûr. Se tromper vers 3 coûte
+#: des gains manqués ; se tromper vers 7 coûte le compte.
+PAS_MAX_PAR_DEFAUT = 3
+
+#: Ce que l'utilisateur doit lire quand une session s'arrête sur sa profondeur.
+#:
+#: Le message dit la RAISON, pas le fait. « Session perdue » laisse croire à un
+#: accident ; nommer la protection dit que le système a fait ce pour quoi il a
+#: été réglé — et rappelle ce qu'il vient d'éviter.
+#: ⚠ Caractères limités au latin-1 : pas d'exposant « ᵉ ». Ce message part
+#: dans un journal, un terminal Windows et un message Telegram ; le premier
+#: encodeur qui ne le comprend pas fait disparaître l'avertissement entier.
+MESSAGE_PROTECTION = (
+    "Pour la protection de votre capital, nous ne risquerons pas une "
+    "{suivante}e perte. La descente s'arrête à {pas} pas et coûte {engage:.2f} "
+    "{devise} ({part:.2f} % du solde). Sans cette limite, l'échelle irait "
+    "jusqu'au {liquidation}e trade, qui engagerait la totalité du capital."
+)
+
+
+@dataclass(frozen=True)
+class Risque:
+    """Le niveau de risque, choisi en premier — « 1 sur 7 », « 3 sur 7 ».
+
+    **C'est lui qui détermine le gain, et non l'inverse.** Le sens de lecture
+    compte : on ne choisit pas un gain en espérant qu'il tienne dans le
+    capital ; on choisit combien de pertes d'affilée le capital doit encaisser,
+    et le gain par session en découle.
+
+        1/7   le capital couvre exactement 7 pas — le 7ᵉ l'épuise
+        3/7   on mise trois fois cette unité : plus gros gain, échelle plus
+              courte, le capital ne tient plus que 5 pas
+
+    Mesuré à 250 $ et 92 % de payout :
+
+        plan   gain      gain %    pas tenables   ratio à 6 sessions
+        1/7    1,46 $    0,583 %        7              3,50 %
+        2/7    2,92 $    1,167 %        6              7,00 %
+        3/7    4,38 $    1,750 %        5             10,50 %
+
+    Le 1/7 reproduit la feuille au centime : 1,46 $, 0,58 %, 3,48 %.
+    """
+
+    #: Combien d'unités on mise. 1 = le plus prudent du dénominateur choisi.
+    numerateur: int
+    #: En combien de pas le capital serait épuisé à une unité.
+    denominateur: int
+
+    def __post_init__(self) -> None:
+        if self.denominateur < 1:
+            raise BotError(
+                f"denominateur doit valoir au moins 1 : {self.denominateur}")
+        if not (1 <= self.numerateur <= self.denominateur):
+            raise BotError(
+                f"numerateur hors [1,{self.denominateur}] : {self.numerateur}. "
+                f"Un plan {self.numerateur}/{self.denominateur} miserait plus "
+                f"que ce que le dénominateur définit comme le capital entier."
+            )
+
+    def __str__(self) -> str:
+        return f"{self.numerateur}/{self.denominateur}"
+
+    def unite(self, capital: float, payout_pct: int) -> float:
+        """Le gain d'un plan 1/N : celui qui fait tenir EXACTEMENT N pas.
+
+        Résolu plutôt que tabulé. Toutes les mises étant proportionnelles au
+        gain, on déroule l'échelle avec un gain unitaire et l'on met à
+        l'échelle par le capital — une table recopiée serait fausse dès qu'on
+        change le payout, et elle le serait en silence.
+        """
+        if capital <= 0:
+            raise BotError(f"capital doit être positif : {capital}")
+        payout = payout_pct / 100
+        cumul = 0.0
+        for _ in range(self.denominateur):
+            cumul += (cumul + 1.0) / payout
+        return capital / cumul
+
+    def gain_par_session(self, capital: float, payout_pct: int) -> float:
+        return self.numerateur * self.unite(capital, payout_pct)
+
+    def gain_par_session_pct(self, capital: float, payout_pct: int) -> float:
+        """L'« Account Gain » de la feuille, déduit du risque choisi."""
+        return 100 * self.gain_par_session(capital, payout_pct) / capital
+
+    def pas_tenables(self, capital: float, payout_pct: int) -> int:
+        """Combien de pas le capital encaisse réellement à ce niveau de risque.
+
+        Vaut `denominateur` pour un plan 1/N, et moins dès que le numérateur
+        monte : un gain plus gros épuise le capital plus vite.
+        """
+        gain = self.gain_par_session(capital, payout_pct)
+        payout = payout_pct / 100
+        cumul, pas = 0.0, 0
+        while True:
+            mise = (cumul + gain) / payout
+            if cumul + mise > capital + 1e-9:
+                return pas
+            cumul += mise
+            pas += 1
 
 
 @dataclass(frozen=True)

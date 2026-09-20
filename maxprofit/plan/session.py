@@ -41,7 +41,7 @@ import enum
 from dataclasses import dataclass, field
 
 from maxprofit.core.errors import BotError
-from maxprofit.plan.progression import Echelle
+from maxprofit.plan.progression import MESSAGE_PROTECTION, Echelle
 
 
 class EtatSession(enum.Enum):
@@ -116,6 +116,29 @@ class Session:
     def engage(self) -> float:
         """Ce qui a réellement été misé, pas ce qui aurait pu l'être."""
         return sum(self.engagees)
+
+    def message_protection(self, solde: float, liquidation: int,
+                           devise: str = "$") -> str:
+        """Ce que l'utilisateur lit quand la descente s'arrête sur sa limite.
+
+        Le message dit la RAISON, pas le fait. « Session perdue » laisse croire
+        à un accident ; nommer la protection dit que le système a fait ce pour
+        quoi il a été réglé — et rappelle ce qu'il vient d'éviter.
+        """
+        if self.etat is not EtatSession.PERDUE:
+            raise BotError(
+                f"Session {self.etat} : ce message ne concerne que l'arrêt sur "
+                f"la profondeur maximale.")
+        if solde <= 0:
+            raise BotError(f"solde doit être positif : {solde}")
+        return MESSAGE_PROTECTION.format(
+            suivante=self.echelle.pas_max + 1,
+            pas=self.echelle.pas_max,
+            engage=self.engage,
+            devise=devise,
+            part=100 * self.engage / solde,
+            liquidation=liquidation,
+        )
 
     @property
     def montant(self) -> float:

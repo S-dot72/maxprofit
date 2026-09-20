@@ -12,11 +12,12 @@ stratégie *plus* la mise, sans moyen de séparer les deux.
 """
 
 from maxprofit.plan.capital import Arret, Journee, Mode, PlanCapital
-from maxprofit.plan.progression import PAS_MAX_PAR_DEFAUT, Echelle
+from maxprofit.plan.progression import PAS_MAX_PAR_DEFAUT, Echelle, Risque
 from maxprofit.plan.projection import (
     EcartAuPlan,
     JourProjete,
     ecart_au_plan,
+    jour_le_plus_proche,
     projeter,
     solde_projete,
 )
@@ -32,8 +33,10 @@ __all__ = [
     "Journee",
     "Mode",
     "PlanCapital",
+    "Risque",
     "Session",
     "ecart_au_plan",
+    "jour_le_plus_proche",
     "projeter",
     "solde_projete",
 ]
