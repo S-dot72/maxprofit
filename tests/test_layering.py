@@ -56,6 +56,22 @@ ALLOWED: dict[str, set[str]] = {
     # données via `store`, sur un descripteur en lecture seule.
     "backtest": {"core", "store", "strategies", "indicators"},
     "live": {"core", "store", "strategies", "indicators"},
+    # Le protocole de recherche. Il LIT les données et JUGE des hypothèses ;
+    # il n'en produit aucune et ne place aucun ordre.
+    #
+    # Deux absences valent d'être lues. `collect` : la recherche ne doit
+    # jamais pouvoir changer ce qui est collecté — sinon les données sont
+    # façonnées par les hypothèses du moment et tout devient circulaire, c'est
+    # la même raison qui interdit à `collect` de connaître les stratégies.
+    # `plan` : le dimensionnement des mises ne doit pas entrer dans un verdict
+    # de recherche, sinon une hypothèse serait déclarée bonne ou mauvaise
+    # selon un réglage de gestion de capital.
+    #
+    # `store` est en lecture seule ici par construction : `MarketReader`
+    # s'ouvre sur un descripteur `mode=ro`, et le registre des expériences vit
+    # dans une base SÉPARÉE — la recherche n'a aucun droit d'écriture sur la
+    # collecte.
+    "research": {"core", "store", "indicators", "strategies", "backtest"},
     # Couche d'exécution : démarre les processus et expose la sonde HTTP
     # attendue par l'hébergeur. Aucune logique métier — elle assemble.
     "hosting": {"core", "store", "collect"},
