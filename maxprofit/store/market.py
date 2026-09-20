@@ -17,7 +17,7 @@ import logging
 
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle, PairInfo, Tick
-from maxprofit.store.chemin_ticks import CheminTicks, decoder
+from maxprofit.store.chemin_ticks import MINUTE_SEC, CheminTicks, decoder
 
 log = logging.getLogger(__name__)
 
@@ -375,16 +375,33 @@ class MarketReader:
         ]
 
     def ticks(self, pair: str, start_sec: int, end_sec: int) -> list[Tick]:
-        """Les ticks de la période, décompressés et remis bout à bout.
+        """Les ticks de `[start_sec, end_sec[`, à la SECONDE près.
+
+        ⚠ La fenêtre est élargie aux minutes qui la couvrent avant
+        l'interrogation, puis les ticks sont filtrés à la seconde.
+
+        Sans cet élargissement, une fenêtre plus courte qu'une minute rend le
+        vide : `tick_paths` filtre sur `minute_sec`, qui est un multiple de 60,
+        et une fenêtre de seize secondes n'en contient aucun. Le symptôme est
+        cruel — pas d'erreur, une liste vide, et l'appelant conclut « pas de
+        données à cet instant » alors que la minute est en base. C'est arrivé
+        au premier usage réel, en comparant un prix de règlement du broker à
+        notre propre flux.
 
         Les minutes MANQUANTES ne sont pas comblées : une minute sans ligne est
         une minute non collectée, et la distinguer d'un marché immobile est
         tout l'intérêt de ne jamais écrire de chemin vide. L'appelant qui a
         besoin de continuité compare `tick_paths()` à la grille des minutes.
         """
+        if start_sec > end_sec:
+            raise BotError(f"Fenêtre inversée : {start_sec} > {end_sec}")
+        premiere = (start_sec // MINUTE_SEC) * MINUTE_SEC
+        derniere = -(-end_sec // MINUTE_SEC) * MINUTE_SEC
+        debut_ms, fin_ms = start_sec * 1000, end_sec * 1000
         sortie: list[Tick] = []
-        for chemin in self.tick_paths(pair, start_sec, end_sec):
-            sortie.extend(decoder(chemin))
+        for chemin in self.tick_paths(pair, premiere, derniere):
+            sortie.extend(t for t in decoder(chemin)
+                          if debut_ms <= t.ts_ms < fin_ms)
         return sortie
 
     def last_candle_ts_sec(self) -> int | None:

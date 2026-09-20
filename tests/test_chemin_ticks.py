@@ -277,3 +277,49 @@ def test_minute_de_arrondit_vers_le_bas():
     assert minute_de(MINUTE * 1000) == MINUTE
     assert minute_de(MINUTE * 1000 + 59_999) == MINUTE
     assert minute_de(MINUTE * 1000 + 60_000) == MINUTE + 60
+
+
+# --------------------------------------------------------------------------- #
+# La relecture à la seconde — le piège de l'index à la minute
+# --------------------------------------------------------------------------- #
+
+def test_une_fenetre_plus_courte_qu_une_minute_rend_quand_meme_ses_ticks(
+        tmp_path):
+    """Le bug trouvé au premier usage réel.
+
+    `tick_paths` filtre sur `minute_sec`, qui est un multiple de 60. Une
+    fenêtre de seize secondes n'en contient aucun : la requête rendait le vide,
+    sans erreur, et l'appelant concluait « pas de données à cet instant » alors
+    que la minute était en base.
+
+    Le symptôme était d'autant plus trompeur qu'une fenêtre LARGE fonctionnait
+    parfaitement — c'est la mesure fine qui échouait, c'est-à-dire précisément
+    celle pour laquelle les ticks ont été rallumés.
+    """
+    from maxprofit.store.db import open_read_only, open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    base = tmp_path / "market.db"
+    # Une minute de ticks, une toutes les deux secondes.
+    ticks = [Tick("EURUSD_otc", (MINUTE + 2 * i) * 1000, 1.1 + i / 100000)
+             for i in range(30)]
+    ecrivain = MarketWriter(open_read_write(base))
+    ecrivain.insert_tick_paths([encoder(ticks)])
+    ecrivain.conn.commit()
+    ecrivain.close()
+
+    lecteur = MarketReader(open_read_only(base))
+    try:
+        # Fenêtre de 16 s au MILIEU de la minute : aucune frontière de minute.
+        etroite = lecteur.ticks("EURUSD_otc", MINUTE + 20, MINUTE + 36)
+        assert etroite, "une fenêtre infra-minute ne doit pas rendre le vide"
+        assert [t.ts_ms for t in etroite] == [
+            (MINUTE + s) * 1000 for s in (20, 22, 24, 26, 28, 30, 32, 34)]
+
+        # Et le filtrage est exact : la borne haute est exclue.
+        assert all(MINUTE + 20 <= t.ts_ms / 1000 < MINUTE + 36
+                   for t in etroite)
+        # La minute entière reste accessible.
+        assert len(lecteur.ticks("EURUSD_otc", MINUTE, MINUTE + 60)) == 30
+    finally:
+        lecteur.close()
