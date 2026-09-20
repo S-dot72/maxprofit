@@ -20,3 +20,7 @@ venv/
 *.egg-info/
 build/
 dist/
+
+# Journal des mesures d'exécution (local, jamais versionné)
+execution.db
+research.db

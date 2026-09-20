@@ -72,6 +72,22 @@ ALLOWED: dict[str, set[str]] = {
     # dans une base SÉPARÉE — la recherche n'a aucun droit d'écriture sur la
     # collecte.
     "research": {"core", "store", "indicators", "strategies", "backtest"},
+    # L'exécution — le SEUL paquet qui engage de l'argent.
+    #
+    # `journal` et `mesure` ne dépendent que de `core` : ce sont des calculs
+    # purs sur des enregistrements, et ils doivent pouvoir être testés sans
+    # broker, sans réseau et sans risque. `collect` n'est là que pour
+    # l'adaptateur Pocket Option, qui est la seule implémentation du socket
+    # existante — et non pour le collecteur, qu'`execution` n'importe jamais.
+    #
+    # Ce qui est ABSENT compte plus que ce qui est présent. Pas `strategies` :
+    # la sonde d'exécution entre AU HASARD, volontairement, parce qu'aucune
+    # des quatre suppositions qu'elle mesure ne dépend de la règle qui a
+    # décidé d'entrer. Lui donner accès aux stratégies l'inviterait à mesurer
+    # un avantage au lieu d'un coût, et les deux se confondraient. Pas `plan`
+    # non plus : la mise d'une mesure est un plafond de sécurité, pas un
+    # dimensionnement de martingale.
+    "execution": {"core", "store", "collect"},
     # Couche d'exécution : démarre les processus et expose la sonde HTTP
     # attendue par l'hébergeur. Aucune logique métier — elle assemble.
     "hosting": {"core", "store", "collect"},
