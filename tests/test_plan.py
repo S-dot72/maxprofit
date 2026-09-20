@@ -340,3 +340,125 @@ def test_le_module_plan_n_importe_aucune_strategie():
                 noms = [noeud.module or ""]
             for nom in noms:
                 assert "strategies" not in nom, f"{fichier.name} importe {nom}"
+
+
+# --------------------------------------------------------------------------- #
+# La session — le pont entre les signaux et le plan
+# --------------------------------------------------------------------------- #
+
+from maxprofit.plan import EtatSession, Session      # noqa: E402
+
+
+def echelle_de_test(pas: int = 2) -> Echelle:
+    return Echelle(payout_pct=PAYOUT, gain_vise=1.46, pas_max=pas)
+
+
+def test_une_session_gagnee_au_premier_pas_rend_le_gain_vise():
+    s = Session(echelle_de_test())
+    assert s.enregistrer(gagne=True) is EtatSession.GAGNEE
+    assert s.montant == pytest.approx(1.46)
+    assert s.engage == pytest.approx(1.59, abs=0.02)
+
+
+def test_une_session_gagnee_au_second_pas_rend_le_MEME_gain():
+    """C'est toute la promesse de l'échelle : le pas gagnant rembourse le passé
+    et laisse exactement le gain visé, quel que soit le rang."""
+    s = Session(echelle_de_test())
+    s.enregistrer(gagne=False)
+    assert s.enregistrer(gagne=True) is EtatSession.GAGNEE
+    assert s.montant == pytest.approx(1.46)
+
+
+def test_une_session_perdue_coute_exactement_l_exposition():
+    s = Session(echelle_de_test())
+    s.enregistrer(gagne=False)
+    assert s.enregistrer(gagne=False) is EtatSession.PERDUE
+    assert s.montant == pytest.approx(-s.echelle.exposition())
+    assert s.montant == pytest.approx(-4.90, abs=0.05)
+
+
+def test_les_mises_suivent_l_echelle():
+    s = Session(echelle_de_test())
+    assert s.mise_courante() == pytest.approx(1.59, abs=0.02)
+    s.enregistrer(gagne=False)
+    assert s.mise_courante() == pytest.approx(3.31, abs=0.03)
+
+
+def test_une_session_terminee_refuse_d_enregistrer_encore():
+    s = Session(echelle_de_test())
+    s.enregistrer(gagne=True)
+    with pytest.raises(BotError, match="gagnée"):
+        s.enregistrer(gagne=False)
+    with pytest.raises(BotError, match="gagnée"):
+        s.mise_courante()
+
+
+def test_une_session_ouverte_n_a_pas_encore_de_resultat():
+    """Rendre zéro se propagerait en silence dans un calcul de solde."""
+    with pytest.raises(BotError, match="ouverte"):
+        Session(echelle_de_test()).montant
+
+
+def test_une_session_interrompue_ne_coute_QUE_ce_qui_fut_engage():
+    """La distinction qui compte : interrompue n'est pas perdue.
+
+    La compter comme perdue surestimerait la perte de l'exposition entière ;
+    la compter comme gagnée l'effacerait.
+    """
+    s = Session(echelle_de_test())
+    s.enregistrer(gagne=False)                     # un seul pas joué
+    assert s.interrompre() is EtatSession.INTERROMPUE
+    assert s.montant == pytest.approx(-1.59, abs=0.02)
+    assert s.montant > -s.echelle.exposition(), "moins que la perte totale"
+
+
+def test_interrompre_une_session_terminee_ne_change_rien():
+    s = Session(echelle_de_test())
+    s.enregistrer(gagne=True)
+    assert s.interrompre() is EtatSession.GAGNEE
+
+
+def test_le_pont_alimente_la_journee():
+    """Le bout en bout : des sessions résolues font avancer le solde."""
+    j = Journee(plan(), CAPITAL)
+    for gagne in (True, False, True):
+        s = Session(plan().echelle(j.solde))
+        if gagne:
+            s.enregistrer(gagne=True)
+        else:
+            s.enregistrer(gagne=False)
+            s.enregistrer(gagne=False)
+        j.enregistrer(gagnee=s.etat is EtatSession.GAGNEE, montant=s.montant)
+
+    assert j.sessions_jouees == 3
+    assert j.sessions_perdues_daffilee == 0        # la dernière est gagnée
+    assert j.solde < CAPITAL + 3 * 1.46            # la perte a bien mordu
+
+
+def test_la_session_ne_produit_aucun_signal():
+    """La frontière : forcer un pas pour « finir » la martingale ferait
+    prendre un trade que la stratégie n'a jamais demandé.
+
+    Vérifié par l'AST et non par une recherche de texte : `Signal` DOIT
+    apparaître dans la documentation du module — c'est là qu'on explique
+    pourquoi il n'y est pas dans le code. Une première version de ce test
+    cherchait la chaîne et rougissait sur le paragraphe qui énonce la règle.
+    """
+    import ast
+    from pathlib import Path
+
+    fichier = (Path(__file__).resolve().parents[1]
+               / "maxprofit" / "plan" / "session.py")
+    arbre = ast.parse(fichier.read_text(encoding="utf-8"))
+
+    for noeud in ast.walk(arbre):
+        if isinstance(noeud, ast.Name):
+            assert noeud.id != "Signal", "le module référence Signal"
+        if isinstance(noeud, ast.Attribute):
+            assert noeud.attr != "Signal", "le module référence Signal"
+        noms = []
+        if isinstance(noeud, ast.Import):
+            noms = [a.name for a in noeud.names]
+        elif isinstance(noeud, ast.ImportFrom):
+            noms = [a.name for a in noeud.names] + [noeud.module or ""]
+        assert "Signal" not in noms, f"le module importe {noms}"

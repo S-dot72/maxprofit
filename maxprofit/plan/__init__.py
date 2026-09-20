@@ -20,16 +20,19 @@ from maxprofit.plan.projection import (
     projeter,
     solde_projete,
 )
+from maxprofit.plan.session import EtatSession, Session
 
 __all__ = [
     "PAS_MAX_PAR_DEFAUT",
     "Arret",
     "EcartAuPlan",
     "Echelle",
+    "EtatSession",
     "JourProjete",
     "Journee",
     "Mode",
     "PlanCapital",
+    "Session",
     "ecart_au_plan",
     "projeter",
     "solde_projete",

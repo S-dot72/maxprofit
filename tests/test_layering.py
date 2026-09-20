@@ -195,6 +195,16 @@ def test_les_strategies_n_ont_acces_ni_a_l_horloge_ni_a_l_aleatoire():
                 )
 
 
+#: Les fonctions qui CONNAISSENT L'AVENIR. Elles existent pour chiffrer
+#: l'illusion par comparaison avec leur version honnete ; aucune decision ne
+#: doit en dependre.
+#:
+#: La liste grandit avec les indicateurs repeignants du projet : le zigzag
+#: (session d'origine), les order blocks (ajoutes avec `indicators/structure`).
+#: Un indicateur dont le pivot se confirme apres coup en aura toujours une.
+REPEIGNANTES = {"zigzag_repeignant", "order_blocks_repeignants"}
+
+
 def test_aucune_strategie_n_utilise_le_zigzag_repeignant():
     """Spec §2.1 : la version repeignante est un instrument de MESURE.
 
@@ -213,10 +223,11 @@ def test_aucune_strategie_n_utilise_le_zigzag_repeignant():
                 noms = {a.name for a in node.names}
             elif isinstance(node, ast.Attribute):
                 noms = {node.attr}
-            assert "zigzag_repeignant" not in noms, (
-                f"{path.relative_to(ROOT)} utilise zigzag_repeignant. Cette "
-                f"fonction connaît l'avenir : elle ne sert qu'à mesurer l'écart "
-                f"avec la version honnête, jamais à décider."
+            interdites = noms & REPEIGNANTES
+            assert not interdites, (
+                f"{path.relative_to(ROOT)} utilise {sorted(interdites)}. Ces "
+                f"fonctions connaissent l'avenir : elles ne servent qu'à "
+                f"mesurer l'écart avec leur version honnête, jamais à décider."
             )
 
 
