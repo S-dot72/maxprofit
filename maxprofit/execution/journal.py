@@ -56,9 +56,17 @@ CREATE TABLE IF NOT EXISTS executions (
     -- Les payouts. E1 compare les deux.
     payout_flux_pct    REAL    NOT NULL,   -- lu dans le flux au signal
     payout_broker_pct  REAL,               -- appliqué par le broker
-    -- Les expirations. E4 compare les deux.
+    -- Les expirations. ⚠ Les deux horodatages ci-dessous sont dans l'HORLOGE
+    -- DU BROKER, qui avance de deux heures sur l'UTC (mesuré, et documenté
+    -- dans collect/pocketoption.py). Les comparer à un horodatage local donne
+    -- « +7202 s d'écart » là où le contrat a duré 60 s exactement. C'est
+    -- arrivé au tout premier ordre passé.
     expiration_sec     INTEGER NOT NULL,   -- demandée
-    expiration_ts_ms   INTEGER,            -- réellement constatée
+    ouverture_ts_ms    INTEGER,            -- openTimestamp, horloge broker
+    expiration_ts_ms   INTEGER,            -- closeTimestamp, horloge broker
+    -- De combien l'horloge du broker avance sur la nôtre, au moment de
+    -- l'ordre. C'est ce qui rend les deux mondes comparables.
+    decalage_broker_ms INTEGER,
     -- Le dénouement.
     accepte            INTEGER NOT NULL,   -- 0 = le broker a refusé l'ordre
     refus              TEXT,
@@ -94,7 +102,9 @@ class Execution:
     prix_entree: float | None = None
     prix_sortie: float | None = None
     payout_broker_pct: float | None = None
+    ouverture_ts_ms: int | None = None
     expiration_ts_ms: int | None = None
+    decalage_broker_ms: int | None = None
     resultat: str | None = None
     profit: float | None = None
     brut: dict[str, Any] = field(default_factory=dict)
@@ -147,11 +157,39 @@ class Execution:
 
     @property
     def ecart_expiration_sec(self) -> float | None:
-        """E4 : durée réellement tenue moins durée demandée."""
-        if self.expiration_ts_ms is None or self.accepte_ts_ms is None:
+        """E4 : durée réellement tenue moins durée demandée.
+
+        ⚠ Les DEUX bornes viennent de l'horloge du broker. La première version
+        comparait `closeTimestamp` (horloge broker) à notre horodatage
+        d'acceptation (horloge locale) et annonçait **+7202 s d'écart** sur un
+        contrat qui avait duré 60 s exactement : l'horloge du broker avance de
+        deux heures, ce que le collecteur documente depuis longtemps et que
+        j'avais oublié ici.
+
+        Une différence entre deux instants de la MÊME horloge est immunisée
+        contre son décalage, quel qu'il soit et même s'il change.
+        """
+        if self.expiration_ts_ms is None or self.ouverture_ts_ms is None:
             return None
-        return (self.expiration_ts_ms - self.accepte_ts_ms) / 1000 \
+        return (self.expiration_ts_ms - self.ouverture_ts_ms) / 1000 \
             - self.expiration_sec
+
+    @property
+    def attente_ouverture_sec(self) -> float | None:
+        """Entre « le broker accepte » et « l'option commence ».
+
+        Découverte au premier ordre : le contrat s'est ouvert **2,3 s** après
+        l'acceptation. Ce n'est ni de la latence réseau ni du glissement, c'est
+        un troisième délai que je n'avais pas prévu — et sur une échéance de
+        30 s, il vaut 8 % du contrat.
+
+        Seule mesure qui traverse les deux horloges, d'où `decalage_broker_ms`.
+        """
+        if (self.ouverture_ts_ms is None or self.accepte_ts_ms is None
+                or self.decalage_broker_ms is None):
+            return None
+        return (self.ouverture_ts_ms - self.decalage_broker_ms
+                - self.accepte_ts_ms) / 1000
 
 
 class JournalExecution:
@@ -163,7 +201,25 @@ class JournalExecution:
         self.campagne = campagne.strip()
         self.conn = sqlite3.connect(str(chemin))
         self.conn.executescript(SCHEMA)
+        self._ajouter_les_colonnes_manquantes()
         self.conn.commit()
+
+    def _ajouter_les_colonnes_manquantes(self) -> None:
+        """`CREATE TABLE IF NOT EXISTS` n'ajoute rien à une table qui existe.
+
+        Un journal ouvert avant l'ajout de `ouverture_ts_ms` resterait donc
+        sans la colonne, et l'INSERT échouerait — ou pire, on effacerait le
+        fichier pour « repartir propre », en jetant des ordres réellement
+        passés. Même règle que les migrations de la base de marché : on ajoute,
+        on ne détruit jamais.
+        """
+        presentes = {ligne[1] for ligne in
+                     self.conn.execute("PRAGMA table_info(executions)")}
+        for nom, type_sql in (("ouverture_ts_ms", "INTEGER"),
+                              ("decalage_broker_ms", "INTEGER")):
+            if nom not in presentes:
+                self.conn.execute(
+                    f"ALTER TABLE executions ADD COLUMN {nom} {type_sql}")
 
     def ecrire(self, ex: Execution) -> int:
         """Enregistre un ordre, abouti OU REFUSÉ.
@@ -181,13 +237,14 @@ class JournalExecution:
                    (campagne, pair, sens, mise, signal_ts_ms, clic_ts_ms,
                     accepte_ts_ms, prix_attendu, prix_entree, prix_sortie,
                     payout_flux_pct, payout_broker_pct, expiration_sec,
-                    expiration_ts_ms, accepte, refus, resultat, profit,
-                    order_id, brut)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ouverture_ts_ms, expiration_ts_ms, decalage_broker_ms,
+                    accepte, refus, resultat, profit, order_id, brut)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (self.campagne, ex.pair, ex.sens, ex.mise, ex.signal_ts_ms,
              ex.clic_ts_ms, ex.accepte_ts_ms, ex.prix_attendu, ex.prix_entree,
              ex.prix_sortie, ex.payout_flux_pct, ex.payout_broker_pct,
-             ex.expiration_sec, ex.expiration_ts_ms, 1 if ex.accepte else 0,
+             ex.expiration_sec, ex.ouverture_ts_ms, ex.expiration_ts_ms,
+             ex.decalage_broker_ms, 1 if ex.accepte else 0,
              ex.refus, ex.resultat, ex.profit, ex.order_id,
              json.dumps(ex.brut, ensure_ascii=False, default=str)),
         )
@@ -200,7 +257,8 @@ class JournalExecution:
                       payout_flux_pct, expiration_sec, clic_ts_ms,
                       accepte_ts_ms, accepte, refus, order_id, prix_entree,
                       prix_sortie, payout_broker_pct, expiration_ts_ms,
-                      resultat, profit, brut
+                      resultat, profit, brut, ouverture_ts_ms,
+                      decalage_broker_ms
                FROM executions WHERE campagne = ? ORDER BY id""",
             (self.campagne,)).fetchall()
         return [
@@ -211,7 +269,8 @@ class JournalExecution:
                 refus=r[10], order_id=r[11], prix_entree=r[12],
                 prix_sortie=r[13], payout_broker_pct=r[14],
                 expiration_ts_ms=r[15], resultat=r[16], profit=r[17],
-                brut=json.loads(r[18]),
+                brut=json.loads(r[18]), ouverture_ts_ms=r[19],
+                decalage_broker_ms=r[20],
             )
             for r in lignes
         ]

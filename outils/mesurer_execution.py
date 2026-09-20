@@ -74,7 +74,7 @@ def _echelle(expiration_sec: int) -> float:
         lecteur.close()
 
 
-def _afficher(executions, sigma: float) -> None:
+def _afficher(executions, sigma: float, expiration_sec: int) -> None:
     print()
     print("=" * 78)
     print("MESURE D'EXÉCUTION — ce que le backtest ne pouvait pas savoir")
@@ -83,7 +83,7 @@ def _afficher(executions, sigma: float) -> None:
           f"Échelle du mouvement sur l'échéance : {sigma:.6f}")
     print(f"Le seuil à battre est 52,08 % : un coût de plus de 2,08 points "
           f"rend\ntout avantage inatteignable, quelle que soit la stratégie.\n")
-    for constat in rapport(executions, sigma):
+    for constat in rapport(executions, sigma, expiration_sec):
         print(constat.resume())
         print()
 
@@ -115,7 +115,7 @@ def main(argv=None) -> int:
             if not executions:
                 print("Journal vide : lancez d'abord une session de mesure.")
                 return 1
-            _afficher(executions, _echelle(a.expiration))
+            _afficher(executions, _echelle(a.expiration), a.expiration)
             return 0
 
         charger_env_local()
@@ -143,7 +143,7 @@ def main(argv=None) -> int:
             print(f"\nREFUSÉ — aucun ordre n'est parti.\n{refus}")
             return 2
 
-        _afficher(journal.toutes(), _echelle(a.expiration))
+        _afficher(journal.toutes(), _echelle(a.expiration), a.expiration)
     return 0
 
 

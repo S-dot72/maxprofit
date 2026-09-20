@@ -170,7 +170,12 @@ def e3_latence(executions: Sequence[Execution]) -> Constat:
 
 
 def e4_expiration(executions: Sequence[Execution]) -> Constat:
-    """L'expiration tombe-t-elle à la seconde demandée ?"""
+    """L'expiration tombe-t-elle à la seconde demandée ?
+
+    Les deux bornes viennent de l'horloge du broker — voir
+    `Execution.ecart_expiration_sec`, dont la première version comparait deux
+    horloges différentes et annonçait +7202 s sur un contrat de 60 s.
+    """
     ecarts = [e.ecart_expiration_sec for e in executions
               if e.ecart_expiration_sec is not None]
     if not ecarts:
@@ -184,6 +189,50 @@ def e4_expiration(executions: Sequence[Execution]) -> Constat:
         f"pas sur un grand nombre de trades")
     return Constat("E4 durée réelle vs demandée", moyenne, "s", len(ecarts),
                    ecart, None, verdict)
+
+
+def e5_attente_ouverture(executions: Sequence[Execution],
+                         sigma_horizon: float,
+                         expiration_sec: int) -> Constat:
+    """Entre « le broker accepte » et « l'option commence ».
+
+    ⚠ Cette mesure n'était pas prévue. Elle vient du tout premier ordre passé,
+    dont l'`openTimestamp` tombait **2,3 s après** l'acceptation. Ce n'est ni
+    la latence réseau (E3, 205 ms) ni le glissement (E2, nul) : c'est un
+    troisième délai, et il ne se voit dans aucune donnée historique.
+
+    Son coût n'est pas le temps lui-même mais le prix qui bouge pendant. On le
+    traduit donc comme E2, en points de taux de réussite : pendant `t`
+    secondes, le prix dérive d'un écart-type de `sigma × √(t / échéance)`, et
+    l'entrée se fait à ce prix-là au lieu de celui qu'on visait.
+
+    Sur une échéance de 30 s, 2,3 s d'attente valent 8 % du contrat écoulé
+    avant d'être entré.
+    """
+    attentes = [e.attente_ouverture_sec for e in executions
+                if e.attente_ouverture_sec is not None]
+    if not attentes:
+        return Constat("E5 attente avant ouverture", 0.0, "s", 0, 0.0, None,
+                       "décalage d'horloge inconnu : indéterminé")
+    moyenne, ecart = _moyenne_et_ecart(attentes)
+    if moyenne <= 0 or expiration_sec <= 0:
+        return Constat("E5 attente avant ouverture", moyenne, "s",
+                       len(attentes), ecart, 0.0,
+                       "l'option commence sans attendre")
+    # L'écart-type du mouvement sur `moyenne` secondes, ramené à l'échelle
+    # fournie pour l'échéance : le prix diffuse en racine du temps.
+    derive = sigma_horizon * math.sqrt(moyenne / expiration_sec)
+    # Cette dérive n'a pas de sens privilégié : c'est une dispersion, pas un
+    # biais. On la compte comme un coût, parce qu'elle éloigne l'entrée du
+    # prix sur lequel la décision a été prise.
+    cout = points_de_taux(-derive, sigma_horizon)
+    verdict = (
+        f"{moyenne:.2f} s avant que le contrat ne commence, soit "
+        f"{100 * moyenne / expiration_sec:.0f} % d'une échéance de "
+        f"{expiration_sec} s. Le prix d'entrée s'en écarte de l'équivalent de "
+        f"{abs(cout):.2f} point(s) de taux de réussite")
+    return Constat("E5 attente avant ouverture", moyenne, "s", len(attentes),
+                   ecart, cout, verdict)
 
 
 def taux_de_refus(executions: Sequence[Execution]) -> Constat:
@@ -205,13 +254,19 @@ def taux_de_refus(executions: Sequence[Execution]) -> Constat:
                    verdict)
 
 
-def rapport(executions: Sequence[Execution],
-            sigma_horizon: float) -> list[Constat]:
-    """Les cinq constats, dans l'ordre où ils se lisent."""
+def rapport(executions: Sequence[Execution], sigma_horizon: float,
+            expiration_sec: int) -> list[Constat]:
+    """Les six constats, dans l'ordre où ils se lisent.
+
+    Six et non cinq : E5 a été ajoutée par le premier ordre réellement passé,
+    qui a révélé un délai que je n'avais pas prévu entre l'acceptation et
+    l'ouverture du contrat. C'est ce que cette phase est censée produire.
+    """
     return [
         taux_de_refus(executions),
         e1_payout(executions),
         e2_glissement(executions, sigma_horizon),
         e3_latence(executions),
         e4_expiration(executions),
+        e5_attente_ouverture(executions, sigma_horizon, expiration_sec),
     ]

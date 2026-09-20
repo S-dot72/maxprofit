@@ -226,7 +226,35 @@ class CourtierDemo:
         execution.prix_entree = _flottant(execution.brut, "openPrice", "open")
         execution.payout_broker_pct = _flottant(
             execution.brut, "percentProfit", "profit_percent")
+        ouverture = _flottant(execution.brut, "openTimestamp")
+        if ouverture is not None:
+            execution.ouverture_ts_ms = int(ouverture * 1000)
+        execution.decalage_broker_ms = self._decalage_ms()
         return execution
+
+    def _decalage_ms(self) -> int | None:
+        """De combien l'horloge du broker avance sur la nôtre, maintenant.
+
+        Mesuré à chaque ordre, et non une fois pour toutes : c'est la seule
+        façon de comparer `openTimestamp` (horloge broker) à notre horodatage
+        d'acceptation. Sans lui, le premier ordre passé annonçait « +7202 s
+        d'écart d'expiration » sur un contrat de 60 s — l'horloge du broker
+        avance de deux heures.
+
+        `None` si la bibliothèque ne le donne pas : une valeur devinée ferait
+        passer un décalage d'horloge pour un délai d'exécution.
+        """
+        try:
+            serveur = self._client.get_server_timestamp()
+        except Exception as erreur:          # noqa: BLE001
+            log.debug("Horodatage serveur indisponible : %r", erreur)
+            return None
+        if serveur is None:
+            return None
+        try:
+            return int(float(serveur) * 1000) - maintenant_ms()
+        except (TypeError, ValueError):
+            return None
 
     def denouer(self, execution: Execution) -> Execution:
         """Attend le dénouement et complète l'enregistrement.
@@ -245,6 +273,12 @@ class CourtierDemo:
         execution.profit = None if profit is None else float(profit)
 
         deal = None
+        # ⚠ `check_win` et le détail de l'ordre ne parlent pas de la même
+        # chose. Mesuré au premier ordre perdu : `check_win` a rendu 0, le
+        # détail portait -1. Le premier est ce que la position RAPPORTE
+        # (rien), le second ce qu'elle a COÛTÉ net (la mise). Le second est
+        # celui qu'on veut — il se somme directement en variation de solde —
+        # et il écrase le premier quelques lignes plus bas.
         try:
             deal = self._client.get_async_order(execution.order_id)
         except Exception as erreur:          # noqa: BLE001
@@ -256,11 +290,17 @@ class CourtierDemo:
                 execution.prix_entree = _flottant(deal, "openPrice", "open")
             if execution.payout_broker_pct is None:
                 execution.payout_broker_pct = _flottant(deal, "percentProfit")
-            ferme = _flottant(deal, "closeTimestamp", "closeTime")
+            net = _flottant(deal, "profit")
+            if net is not None:
+                execution.profit = net
+            ferme = _flottant(deal, "closeTimestamp")
             if ferme is not None:
                 # La bibliothèque parle en secondes ; on stocke en ms, et le
-                # suffixe du champ le dit (§5).
+                # suffixe du champ le dit (§5). Horloge BROKER.
                 execution.expiration_ts_ms = int(ferme * 1000)
+            ouverture = _flottant(deal, "openTimestamp")
+            if ouverture is not None and execution.ouverture_ts_ms is None:
+                execution.ouverture_ts_ms = int(ouverture * 1000)
         return execution
 
     # --- gardes -------------------------------------------------------------

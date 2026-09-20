@@ -48,7 +48,11 @@ def _ex(**kw) -> Execution:
         prix_attendu=1.08231, payout_flux_pct=92.0, expiration_sec=60,
         clic_ts_ms=T0_MS + 120, accepte_ts_ms=T0_MS + 380, accepte=True,
         prix_entree=1.08231, payout_broker_pct=92.0,
-        expiration_ts_ms=T0_MS + 380 + 60_000, resultat="win", profit=0.92)
+        # Horloge BROKER pour ces deux-là, décalée de deux heures, et le
+        # décalage qui permet de les rapporter à la nôtre.
+        ouverture_ts_ms=T0_MS + 7_200_000 + 380,
+        expiration_ts_ms=T0_MS + 7_200_000 + 380 + 60_000,
+        decalage_broker_ms=7_200_000, resultat="win", profit=0.92)
     return Execution(**{**defauts, **kw})
 
 
@@ -153,11 +157,44 @@ def test_la_latence_se_compte_depuis_le_SIGNAL_pas_depuis_le_clic():
     assert ex.latence_ms == 800
 
 
-def test_l_ecart_d_expiration_se_compte_depuis_l_acceptation():
-    """L'horloge du contrat part quand le broker accepte, pas quand on clique."""
+def test_l_ecart_d_expiration_ne_melange_pas_deux_horloges():
+    """LE bug que le premier ordre réel a révélé.
+
+    `openTimestamp` et `closeTimestamp` viennent de l'horloge du BROKER, qui
+    avance de deux heures sur l'UTC. La première version les comparait à notre
+    horodatage local et annonçait +7202 s sur un contrat qui avait duré 60 s
+    exactement.
+
+    Le décalage est ici volontairement énorme — deux heures — et le résultat
+    doit rester +3 s : une différence entre deux instants de la MÊME horloge
+    est immunisée contre son décalage, quel qu'il soit.
+    """
+    decalage = 7_200_000
     ex = _ex(accepte_ts_ms=T0_MS + 500,
-             expiration_ts_ms=T0_MS + 500 + 63_000, expiration_sec=60)
+             ouverture_ts_ms=T0_MS + decalage + 2_800,
+             expiration_ts_ms=T0_MS + decalage + 2_800 + 63_000,
+             decalage_broker_ms=decalage, expiration_sec=60)
     assert ex.ecart_expiration_sec == pytest.approx(3.0)
+
+
+def test_l_attente_avant_ouverture_traverse_les_deux_horloges():
+    """La seule mesure qui doit franchir les deux mondes, d'où le décalage.
+
+    Mesurée au premier ordre réel : le contrat s'est ouvert 2,3 s APRÈS
+    l'acceptation. Ni latence réseau, ni glissement — un troisième délai.
+    """
+    decalage = 7_200_000
+    ex = _ex(accepte_ts_ms=T0_MS + 500,
+             ouverture_ts_ms=T0_MS + decalage + 2_800,
+             decalage_broker_ms=decalage)
+    assert ex.attente_ouverture_sec == pytest.approx(2.3)
+
+
+def test_sans_decalage_connu_l_attente_est_indeterminee():
+    """Une valeur devinée ferait passer un décalage d'horloge pour un délai
+    d'exécution — exactement l'erreur qu'on vient de corriger."""
+    ex = _ex(ouverture_ts_ms=T0_MS + 2_800, decalage_broker_ms=None)
+    assert ex.attente_ouverture_sec is None
 
 
 # --------------------------------------------------------------------------- #
@@ -165,7 +202,7 @@ def test_l_ecart_d_expiration_se_compte_depuis_l_acceptation():
 # --------------------------------------------------------------------------- #
 
 def test_une_execution_propre_ne_coute_rien():
-    constats = {c.nom: c for c in rapport([_ex() for _ in range(30)], SIGMA_60S)}
+    constats = {c.nom: c for c in rapport([_ex() for _ in range(30)], SIGMA_60S, 60)}
     assert constats["E2 glissement à l'entrée"].cout_points == pytest.approx(0)
     assert "là où le backtest la place" in constats["E2 glissement à l'entrée"].verdict
     assert "durée demandée est la durée tenue" in constats["E4 durée réelle vs demandée"].verdict
@@ -200,7 +237,8 @@ def test_les_refus_comptent_dans_le_nombre_de_trades():
     par construction, ce qui est la définition d'une mesure impossible."""
     lot = [_ex() for _ in range(18)] + [
         _ex(accepte=False, accepte_ts_ms=None, prix_entree=None,
-            payout_broker_pct=None, expiration_ts_ms=None, resultat=None,
+            payout_broker_pct=None, ouverture_ts_ms=None,
+            expiration_ts_ms=None, resultat=None,
             profit=None, refus="asset closed") for _ in range(2)]
     c = taux_de_refus(lot)
     assert c.valeur == pytest.approx(10.0)
@@ -210,7 +248,8 @@ def test_les_refus_comptent_dans_le_nombre_de_trades():
 def test_une_mesure_sans_donnee_dit_indetermine_et_non_zero():
     """Rendre zéro laisserait croire à une exécution parfaite."""
     orphelin = _ex(accepte=False, accepte_ts_ms=None, prix_entree=None,
-                   payout_broker_pct=None, expiration_ts_ms=None)
+                   payout_broker_pct=None, ouverture_ts_ms=None,
+                   expiration_ts_ms=None)
     for constat in (e1_payout([orphelin]), e2_glissement([orphelin], SIGMA_60S),
                     e3_latence([orphelin]), e4_expiration([orphelin])):
         assert "indéterminé" in constat.verdict
@@ -234,7 +273,8 @@ def test_le_journal_garde_la_charge_utile_telle_quelle(tmp_path):
 def test_un_ordre_refuse_est_enregistre_lui_aussi(tmp_path):
     with JournalExecution(tmp_path / "exec.db", campagne="e1") as j:
         j.ecrire(_ex(accepte=False, accepte_ts_ms=None, prix_entree=None,
-                     payout_broker_pct=None, expiration_ts_ms=None,
+                     payout_broker_pct=None, ouverture_ts_ms=None,
+                     expiration_ts_ms=None,
                      resultat=None, profit=None, refus="asset closed"))
         relu = j.toutes()
     assert len(relu) == 1
