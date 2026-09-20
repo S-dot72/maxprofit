@@ -105,6 +105,29 @@ class Session:
             self.etat = EtatSession.PERDUE
         return self.etat
 
+    def engager_sans_resoudre(self, mise: float) -> None:
+        """Note une mise PARTIE dont le résultat n'est jamais revenu.
+
+        Le cas existe et il coûte de l'argent : le broker accepte l'ordre puis
+        ne rend rien d'exploitable — `check_win` répond « unknown ». La mise a
+        quitté le compte, mais `enregistrer()` ne peut pas être appelée, faute
+        de savoir si c'est gagné ou perdu.
+
+        Sans cette méthode, `engagees` restait vide et la session interrompue
+        rendait un montant de ZÉRO : l'argent partait sans laisser de trace
+        dans le solde. Une erreur de comptabilité qui ne lève jamais et qu'on
+        ne découvre qu'en comparant au relevé du broker.
+
+        On note donc la mise comme engagée, sans la résoudre. La session doit
+        être interrompue juste après : ce pas ne se rejoue pas.
+        """
+        if self.etat.terminee:
+            raise BotError(
+                f"Session {self.etat} : elle ne peut plus engager de mise.")
+        if mise <= 0:
+            raise BotError(f"mise doit être positive : {mise}")
+        self.engagees.append(mise)
+
     def interrompre(self) -> EtatSession:
         """Arrête une session en cours, sans la compter comme perdue."""
         if self.etat.terminee:

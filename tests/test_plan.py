@@ -600,3 +600,38 @@ def test_le_reancrage_recule_quand_le_solde_recule():
     haut = jour_le_plus_proche(p, lignes[19].solde)
     apres_perte = jour_le_plus_proche(p, lignes[19].solde * 0.85)
     assert apres_perte < haut
+
+
+def test_une_mise_partie_sans_resultat_est_quand_meme_comptee():
+    """Le trou trouvé en testant l'enchaînement : le broker accepte l'ordre
+    puis ne rend rien d'exploitable. La mise a quitté le compte, mais
+    `enregistrer()` est impossible faute de savoir si c'est gagné ou perdu.
+
+    Sans `engager_sans_resoudre`, `engagees` restait vide et la session
+    interrompue rendait ZÉRO : l'argent sortait sans trace dans le solde.
+    """
+    from maxprofit.plan import Echelle, EtatSession, Session
+
+    s = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46))
+    mise = s.mise_courante()
+    s.engager_sans_resoudre(mise)
+    assert s.interrompre() is EtatSession.INTERROMPUE
+    assert s.engage == pytest.approx(mise)
+    assert s.montant == pytest.approx(-mise)
+
+
+def test_on_n_engage_pas_sur_une_session_terminee():
+    from maxprofit.plan import Echelle, Session
+
+    s = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46))
+    s.enregistrer(True)
+    with pytest.raises(BotError, match="ne peut plus engager"):
+        s.engager_sans_resoudre(1.0)
+
+
+def test_une_mise_engagee_doit_etre_positive():
+    from maxprofit.plan import Echelle, Session
+
+    s = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46))
+    with pytest.raises(BotError, match="positive"):
+        s.engager_sans_resoudre(0.0)

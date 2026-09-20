@@ -217,7 +217,7 @@ class ZoneH1(Strategy):
 
         aligne = (sens != 0 and hausse is not None
                   and ((sens > 0) == hausse))
-        direction = (Direction.UP if sens > 0 else Direction.DOWN) \
+        direction = (Direction.CALL if sens > 0 else Direction.PUT) \
             if sens != 0 else None
 
         conditions = (

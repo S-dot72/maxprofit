@@ -173,7 +173,7 @@ class CoursePlanDemo:
         session = self.etat.session
         mise = session.mise_courante()
 
-        sens = "call" if signal.direction is Direction.UP else "put"
+        sens = "call" if signal.direction is Direction.CALL else "put"
         execution = self.courtier.placer(
             signal.pair, sens, self.strategie.p.expiry_sec)
         if not execution.accepte:
@@ -186,8 +186,13 @@ class CoursePlanDemo:
         self.journal.ecrire(execution)
 
         if execution.resultat not in ("win", "loose", "draw"):
-            log.error("Dénouement inconnu (%s) : session INTERROMPUE plutôt "
-                      "que comptée au hasard.", execution.resultat)
+            log.error("Dénouement inconnu (%s) : mise %.2f $ notée comme "
+                      "engagée, session INTERROMPUE plutôt que comptée au "
+                      "hasard.", execution.resultat, mise)
+            # La mise est PARTIE. Interrompre sans la noter la ferait
+            # disparaître du solde : l'argent serait sorti du compte sans
+            # laisser de trace dans le plan.
+            session.engager_sans_resoudre(mise)
             session.interrompre()
             self._cloturer_session()
             return
@@ -205,8 +210,12 @@ class CoursePlanDemo:
         if session is None:
             return
         montant = session.montant
-        self.etat.solde += montant
-        self.etat.journee.enregistrer(montant)
+        # UNE seule voie de mise à jour du solde. `Journee` tient le sien ;
+        # en incrémenter un second ici ferait deux vérités qui divergeraient
+        # au premier arrondi, et le plan serait jugé sur le mauvais.
+        self.etat.journee.enregistrer(
+            session.etat is EtatSession.GAGNEE, montant)
+        self.etat.solde = self.etat.journee.solde
         if session.etat is EtatSession.PERDUE:
             self.etat.sessions_perdues_daffilee += 1
             log.warning(
