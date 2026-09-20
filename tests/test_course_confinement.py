@@ -168,3 +168,73 @@ def test_le_defaut_est_INACTIF(monkeypatch):
     assert course_activee() is False
     monkeypatch.setenv("PLAN_DEMO", "1")
     assert course_activee() is True
+
+
+# --------------------------------------------------------------------------- #
+# Le départ programmé — pour que le lancement ne dépende pas d'un geste
+# --------------------------------------------------------------------------- #
+
+def test_une_course_armee_ne_place_rien_avant_l_heure():
+    """La première version obligeait à venir basculer une variable le bon
+    jour. Faire dépendre un départ d'un geste humain à une date précise,
+    c'est le manquer."""
+    c = CourseFactice()
+    s = SuperviseurCourse(lambda: c, pause_sec=0.01,
+                          debut_ts_sec=int(time.time()) + 3600)
+    s.demarrer()
+    time.sleep(0.2)
+    assert c.tours == 0, "aucun tour ne doit être joué avant l'heure"
+    assert s.en_attente()
+    assert "armée" in s.resume() and "aucun ordre" in s.resume()
+    s.arreter()
+
+
+def test_l_heure_atteinte_la_course_part():
+    c = CourseFactice()
+    s = SuperviseurCourse(lambda: c, pause_sec=0.01,
+                          debut_ts_sec=int(time.time()) - 1)
+    s.demarrer()
+    assert _attendre(lambda: c.tours > 0)
+    assert not s.en_attente()
+    s.arreter()
+
+
+def test_une_course_armee_s_arrete_sans_attendre_l_heure():
+    """Un redéploiement ne doit pas rester bloqué une journée entière."""
+    s = SuperviseurCourse(lambda: CourseFactice(), pause_sec=0.01,
+                          debut_ts_sec=int(time.time()) + 86400)
+    s.demarrer()
+    time.sleep(0.1)
+    s.arreter()
+    s._thread.join(timeout=3.0)
+    assert not s._thread.is_alive()
+
+
+def test_une_date_illisible_leve_au_lieu_d_etre_ignoree(monkeypatch):
+    """Ignorer une date mal tapée ferait partir la course AUJOURD'HUI —
+    exactement ce qu'on cherchait à éviter en la réglant."""
+    from maxprofit.hosting.course import date_de_depart
+
+    monkeypatch.setenv("PLAN_DEBUT", "22/09/2026")
+    with pytest.raises(ValueError, match="illisible"):
+        date_de_depart()
+
+
+def test_sans_date_la_course_part_tout_de_suite(monkeypatch):
+    from maxprofit.hosting.course import date_de_depart
+
+    monkeypatch.delenv("PLAN_DEBUT", raising=False)
+    assert date_de_depart() is None
+    monkeypatch.setenv("PLAN_DEBUT", "  ")
+    assert date_de_depart() is None
+
+
+def test_une_date_se_lit_en_UTC(monkeypatch):
+    """Sans fuseau explicite, c'est l'UTC — comme tout le reste du projet."""
+    from datetime import datetime, timezone
+
+    from maxprofit.hosting.course import date_de_depart
+
+    monkeypatch.setenv("PLAN_DEBUT", "2026-09-22")
+    attendu = int(datetime(2026, 9, 22, tzinfo=timezone.utc).timestamp())
+    assert date_de_depart() == attendu

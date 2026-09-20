@@ -54,10 +54,19 @@ class SuperviseurCourse:
     module reste testable sans broker ni base.
     """
 
-    def __init__(self, fabriquer, *, alerter=None, pause_sec: float = 20.0):
+    def __init__(self, fabriquer, *, alerter=None, pause_sec: float = 20.0,
+                 debut_ts_sec: int | None = None):
         self._fabriquer = fabriquer
         self._alerter = alerter
         self.pause_sec = pause_sec
+        #: Instant avant lequel la course ATTEND, sans rien placer.
+        #:
+        #: Elle existe parce que la première version obligeait l'opérateur à
+        #: venir basculer une variable le bon jour. Faire dépendre le départ
+        #: d'un geste humain à une date précise, c'est le manquer — et une
+        #: course lancée trop tôt passerait des ordres pendant que la collecte
+        #: joue encore son critère de quatorze jours.
+        self.debut_ts_sec = debut_ts_sec
         self._thread: threading.Thread | None = None
         self._arret = threading.Event()
         self.active = False
@@ -84,7 +93,27 @@ class SuperviseurCourse:
 
     # --- la boucle, et son confinement --------------------------------------
 
+    def en_attente(self) -> bool:
+        return (self.debut_ts_sec is not None
+                and time.time() < self.debut_ts_sec)
+
+    def _patienter_jusqu_au_depart(self) -> None:
+        """Attend l'heure dite, par petits pas pour rester interruptible."""
+        if self.debut_ts_sec is None:
+            return
+        restant = self.debut_ts_sec - time.time()
+        if restant <= 0:
+            return
+        log.info("Course du plan : départ programmé dans %.1f h.",
+                 restant / 3600)
+        while not self._arret.is_set() and time.time() < self.debut_ts_sec:
+            self._arret.wait(min(60.0, self.debut_ts_sec - time.time()))
+        if not self._arret.is_set():
+            log.info("Course du plan : l'heure de départ est atteinte.")
+            self._prevenir("🟢 Course du plan : démarrage programmé atteint.")
+
     def _boucle(self) -> None:
+        self._patienter_jusqu_au_depart()
         attente = BACKOFF_SEC
         while not self._arret.is_set() and not self.abandonnee:
             try:
@@ -140,6 +169,10 @@ class SuperviseurCourse:
                     f"{self.derniere_erreur}")
         if not self.active:
             return "⏸ course du plan désactivée (PLAN_DEMO=0)"
+        if self.en_attente():
+            restant = self.debut_ts_sec - time.time()
+            return (f"⏳ course armée — départ dans "
+                    f"{restant / 3600:.1f} h, aucun ordre d'ici là")
         if self.echecs_consecutifs:
             return (f"🟠 course en reprise ({self.echecs_consecutifs}/"
                     f"{ECHECS_MAX}) — {self.derniere_erreur}")
@@ -156,3 +189,32 @@ def course_activee() -> bool:
     """
     import os
     return os.environ.get("PLAN_DEMO", "0").strip() == "1"
+
+
+def date_de_depart() -> int | None:
+    """`PLAN_DEBUT` -> instant epoch, ou `None` pour « tout de suite ».
+
+    Accepte `2026-09-22`, `2026-09-22T14:00`, ou un epoch en secondes. Une
+    valeur illisible LÈVE plutôt que d'être ignorée : une date mal tapée
+    silencieusement ignorée ferait partir la course le jour même, c'est-à-dire
+    exactement ce qu'on cherchait à éviter en la réglant.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    brut = os.environ.get("PLAN_DEBUT", "").strip()
+    if not brut:
+        return None
+    if brut.isdigit():
+        return int(brut)
+    try:
+        quand = datetime.fromisoformat(brut)
+    except ValueError as erreur:
+        raise ValueError(
+            f"PLAN_DEBUT={brut!r} illisible. Attendu : 2026-09-22, "
+            f"2026-09-22T14:00, ou un epoch en secondes. Ignorer cette "
+            f"valeur ferait partir la course aujourd'hui."
+        ) from erreur
+    if quand.tzinfo is None:
+        quand = quand.replace(tzinfo=timezone.utc)
+    return int(quand.timestamp())

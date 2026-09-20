@@ -48,7 +48,8 @@ from maxprofit.hosting.operateurs import Annuaire, DepotBase, chemin_annuaire
 from maxprofit.hosting import version as version_deployee
 from maxprofit.store import postgres
 from maxprofit.collect.pocketoption import resoudre_ssid
-from maxprofit.hosting.course import SuperviseurCourse, course_activee
+from maxprofit.hosting.course import (
+    SuperviseurCourse, course_activee, date_de_depart)
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.live.plan_demo import fabriquer_course
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
@@ -199,6 +200,9 @@ async def _servir(args) -> int:
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
                 paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT),
             alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
+            # Le départ est une DATE, pas un geste. Faire dépendre le
+            # lancement d'une bascule manuelle le bon jour, c'est le manquer.
+            debut_ts_sec=date_de_depart(),
         )
         _course["sup"] = course
         if course_activee():
@@ -206,6 +210,9 @@ async def _servir(args) -> int:
         else:
             log.info("Course du plan : INACTIVE (PLAN_DEMO=0). Le code est "
                      "déployé et éprouvé, aucun ordre ne part.")
+        if course.en_attente():
+            log.info("Course du plan ARMÉE : départ programmé, %s",
+                     course.resume())
 
         # Le superviseur commande : quand il rend la main, le processus s'arrête.
         # Le bot n'est qu'un canal ; le laisser maintenir le processus en vie

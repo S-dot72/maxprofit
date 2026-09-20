@@ -111,8 +111,20 @@ services:
       # code est déployé AVANT d'être utilisé, pour que ses imports et son
       # démarrage soient éprouvés en production sans qu'un seul ordre ne
       # parte. Passer à "1" démarre la course de dix jours.
+      # `sync: false` VOLONTAIREMENT : la valeur se règle dans le tableau de
+      # bord et rien ne la réécrit. Une valeur en dur ici serait réimposée à
+      # la prochaine synchronisation du blueprint et ARRÊTERAIT une course en
+      # train de tourner — c'est exactement ce qui est arrivé à
+      # STOCKER_TICKS, dans l'autre sens.
+      #
+      # Absente = inactive. Mettre "1".
       - key: PLAN_DEMO
-        value: "0"
+        sync: false
+      # Date de DÉPART, format 2026-09-22 (UTC) ou epoch. La course démarre
+      # toute seule à cette heure-là : le lancement ne dépend pas d'un geste
+      # fait le bon jour. Absente = départ immédiat.
+      - key: PLAN_DEBUT
+        sync: false
       - key: PLAN_CAPITAL
         value: "250"
       # 18 sessions/jour est un PLAFOND, pas un objectif : l'hypothèse produit
