@@ -311,3 +311,47 @@ def test_les_campagnes_ne_se_melangent_pas(tmp_path):
 def test_une_campagne_sans_nom_est_refusee(tmp_path):
     with pytest.raises(BotError, match="sans nom"):
         Registre(tmp_path / "research.db", campagne="  ")
+
+
+# --------------------------------------------------------------------------- #
+# Le payout appliqué — mesuré sur des ordres réels
+# --------------------------------------------------------------------------- #
+
+def test_la_regle_du_payout_reproduit_les_26_ordres_mesures():
+    """La table relevée en démo, sans une exception.
+
+    Ce n'est pas une régression ajustée : c'est une fonction, et le test la
+    tient valeur par valeur. Si le broker change sa règle, ce test tombe — et
+    `execution.mesure.e1_payout` le verra sur le premier ordre suivant.
+    """
+    from maxprofit.research import payout_applique_pct
+
+    releve = {71: 79, 74: 82, 75: 83, 77: 85, 80: 88,
+              84: 92, 85: 92, 88: 92, 89: 92, 90: 92, 91: 92, 92: 92}
+    for flux, applique in releve.items():
+        assert payout_applique_pct(flux) == applique, f"flux {flux}"
+
+
+def test_le_plafond_s_atteint_des_84_pour_cent_de_flux():
+    """LE point pratique. « payout >= 92 » est un filtre vrai mais trop
+    strict : il écarte 42 % d'occasions qui paient exactement pareil."""
+    from maxprofit.research import au_plafond, payout_applique_pct
+
+    assert au_plafond(84) and payout_applique_pct(84) == 92
+    assert not au_plafond(83) and payout_applique_pct(83) == 91
+
+
+def test_la_correction_ne_change_rien_la_ou_l_on_trade():
+    """Et c'est ce qui sauve les conclusions précédentes.
+
+    À un flux de 92 l'appliqué vaut 92 : le palier qui décide est inchangé, et
+    l'espérance mesurée de -0,030 $/$ n'est pas révisée.
+    """
+    from maxprofit.research import payout_applique_pct, seuil_de_rentabilite_pct
+
+    assert payout_applique_pct(92) == 92
+    assert seuil_de_rentabilite_pct(payout_applique_pct(92)) == \
+        pytest.approx(52.0833, abs=1e-4)
+    # En revanche, sous 84, l'écart de seuil est important.
+    assert seuil_de_rentabilite_pct(71) - \
+        seuil_de_rentabilite_pct(payout_applique_pct(71)) > 2.5

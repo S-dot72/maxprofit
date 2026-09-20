@@ -46,19 +46,31 @@ from maxprofit.research.metriques import (
     seuil_de_rentabilite_pct,
     signaux_pour_etablir,
 )
+from maxprofit.research.payout import (
+    BONUS_PCT,
+    FLUX_POUR_LE_PLAFOND,
+    PLAFOND_PCT,
+    au_plafond,
+    payout_applique_pct,
+)
 from maxprofit.research.registre import Experience, Registre
 from maxprofit.research.univers import Univers, est_otc
 
 __all__ = [
+    "BONUS_PCT",
     "Decoupage",
     "Experience",
     "Periode",
     "Registre",
     "Resultat",
+    "FLUX_POUR_LE_PLAFOND",
+    "PLAFOND_PCT",
     "Univers",
+    "au_plafond",
     "benjamini_hochberg",
     "esperance",
     "est_otc",
+    "payout_applique_pct",
     "seuil_de_rentabilite_pct",
     "signaux_pour_etablir",
 ]
