@@ -45,6 +45,12 @@ ALLOWED: dict[str, set[str]] = {
     "indicators": {"core"},
     # Le seul lieu de la logique de décision.
     "strategies": {"core", "indicators"},
+    # Gestion de capital et de risque — le mode PLAN. Il ne connaît AUCUNE
+    # stratégie, et c'est la frontière qui compte : un dimensionnement capable
+    # d'influencer un signal ferait mesurer au backtest la stratégie *plus* la
+    # mise, sans moyen de séparer les deux. Il ne connaît pas non plus `store`
+    # — c'est un calcul pur, que le backtest et le live appellent tous deux.
+    "plan": {"core"},
     # Les deux moteurs importent LA MÊME stratégie. Ils ne se connaissent pas
     # l'un l'autre et ne passent pas par la couche Collecte : ils lisent les
     # données via `store`, sur un descripteur en lecture seule.
