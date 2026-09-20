@@ -92,13 +92,33 @@ def _config(tmp_path: Path, **kw) -> Config:
 
 
 def _ticks(n: int) -> list[Tick]:
-    return [Tick("EURUSD_otc", T0_MS + i * 250, 1.1 + i / 10_000) for i in range(n)]
+    # `round` et non `1.1 + i / 10_000` : cette somme produit des
+    # doubles legerement hors de la grille decimale (1.1011000000000002),
+    # que le broker n'envoie jamais et que l'encodage recale. La
+    # normalisation est testee pour elle-meme dans
+    # tests/test_chemin_ticks.py ; ici elle ne ferait que brouiller.
+    return [Tick("EURUSD_otc", T0_MS + i * 250, round(1.1 + i / 10_000, 5))
+            for i in range(n)]
 
 
 def _lire(tmp_path: Path) -> dict:
     reader = MarketReader(open_read_only(tmp_path / "market.db"))
     try:
         return reader.counts()
+    finally:
+        reader.close()
+
+
+def _ticks_en_base(tmp_path: Path, pair: str = "EURUSD_otc") -> list[Tick]:
+    """Les ticks réellement persistés, relus et décompressés.
+
+    Vaut mieux qu'un compteur : ça vérifie du même coup que le chemin écrit par
+    le collecteur se relit à l'identique. Le compte seul laisserait passer un
+    encodage qui écrit le bon NOMBRE de mauvais prix.
+    """
+    reader = MarketReader(open_read_only(tmp_path / "market.db"))
+    try:
+        return reader.ticks(pair, 0, 4_000_000_000)
     finally:
         reader.close()
 
@@ -130,7 +150,7 @@ def test_ouvre_sa_base_dans_le_thread_qui_l_utilise(tmp_path):
 
     assert not thread.is_alive(), "le collecteur ne s'est pas arrêté"
     assert not erreurs, f"exception dans le thread : {erreurs}"
-    assert _lire(tmp_path)["ticks"] == 20
+    assert _ticks_en_base(tmp_path) == _ticks(20)
 
 
 def test_une_erreur_de_programmation_n_est_pas_reessayee(tmp_path):
@@ -159,7 +179,7 @@ def test_une_perte_de_connexion_est_bien_reessayee(tmp_path):
     collecteur.run()
 
     assert source.connexions == 3, "le collecteur n'a pas retenté"
-    assert _lire(tmp_path)["ticks"] == 10
+    assert _ticks_en_base(tmp_path) == _ticks(10)
 
 
 def test_les_ticks_recus_avant_une_panne_sont_conserves(tmp_path):
@@ -171,7 +191,7 @@ def test_les_ticks_recus_avant_une_panne_sont_conserves(tmp_path):
     with pytest.raises(BotError):
         collecteur.run()
 
-    assert _lire(tmp_path)["ticks"] == 15
+    assert _ticks_en_base(tmp_path) == _ticks(15)
 
 
 # --------------------------------------------------------------------------- #
@@ -436,8 +456,8 @@ def test_un_none_n_est_pas_pris_pour_un_tick(tmp_path):
     src.collecteur = collecteur = Collector(src, _config(tmp_path))
     collecteur.run()
 
-    assert collecteur.buf == []
-    assert _lire(tmp_path)["ticks"] == 0
+    assert _ticks_en_base(tmp_path) == []
+    assert _lire(tmp_path)["tick_paths"] == 0
 
 
 def test_une_panne_de_la_base_n_est_pas_imputee_au_broker(tmp_path):

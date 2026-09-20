@@ -167,10 +167,56 @@ def _v3_operateurs(conn) -> None:
         conn.execute(instruction)
 
 
+def _v4_chemins_de_ticks(conn) -> None:
+    """Les ticks reviennent — une ligne par MINUTE, plus une par tick.
+
+    Les ticks avaient été coupés, et la mesure justifiait le choix :
+
+        620 003 ticks/jour, 8 680 038 lignes sur quatorze jours
+        ~1 Go en PostgreSQL index compris, contre 0,5 Go de quota
+
+    Ce qui a changé n'est pas le quota, c'est la question posée aux données.
+    Tout ce qui a été cherché à la résolution d'une minute est revenu vide —
+    46 hypothèses, 1 402 conjonctions sous test de permutation, un modèle en
+    validation glissante. La minute est un RÉSUMÉ de soixante secondes d'un
+    processus qui bat à la seconde : on jetait environ soixante fois
+    l'information avant de conclure qu'il n'y avait rien dedans.
+
+    Une minute de ticks delta-encodée et compressée tient dans quelques
+    centaines d'octets (mesuré, et tenu par un test) :
+
+        ~70 000 lignes et ~20 Mo sur quatorze jours, SANS PERTE
+
+    La table `ticks` de la v1 reste en place et vide : une migration ne
+    détruit rien. Elle coûte 24 ko.
+
+    `n_ticks` et `echelle` sont des colonnes à part plutôt que des entêtes
+    dans le bloc : ils se lisent alors sans décompresser, ce qui rend un
+    inventaire de la couverture possible sans toucher aux octets.
+    """
+    for instruction in _decouper(
+        """
+        CREATE TABLE IF NOT EXISTS tick_paths (
+            pair        TEXT    NOT NULL,
+            minute_sec  INTEGER NOT NULL,  -- DÉBUT de minute, secondes UTC
+            n_ticks     INTEGER NOT NULL,
+            echelle     INTEGER NOT NULL,  -- puissance de 10 des prix entiers
+            chemin      BLOB    NOT NULL,  -- écarts successifs, compressés
+            PRIMARY KEY (pair, minute_sec)
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS idx_tick_paths_minute
+            ON tick_paths(minute_sec);
+        """
+    ):
+        conn.execute(instruction)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
     Migration(3, "annuaire des opérateurs", _v3_operateurs),
+    Migration(4, "chemins de ticks compressés", _v4_chemins_de_ticks),
 )
 
 #: Version de schéma que ce code sait produire.

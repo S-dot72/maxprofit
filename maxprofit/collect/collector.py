@@ -44,6 +44,7 @@ from maxprofit.collect.sources import (
 )
 from maxprofit.store import etat_broker, turso
 from maxprofit.store.backup import sauvegarder_et_purger
+from maxprofit.store.chemin_ticks import encoder
 from maxprofit.store.db import open_read_write
 from maxprofit.store.market import MarketWriter
 
@@ -75,10 +76,22 @@ class CandleAggregator:
     vaut une donnée étiquetée douteuse qu'une donnée manquante silencieusement.
     """
 
-    def __init__(self, tf_sec: int = TF_SEC):
+    def __init__(self, tf_sec: int = TF_SEC, garder_ticks: bool = False):
         self.tf_sec = tf_sec
+        #: Conserver les ticks de la minute en cours, pour que le collecteur
+        #: puisse en écrire le chemin compressé.
+        #:
+        #: C'est l'agrégateur qui les garde, et non le collecteur, pour une
+        #: raison précise : c'est ICI qu'on sait quelle minute est close, et
+        #: ici qu'un tick en retard est écarté. Un second compteur ailleurs
+        #: finirait par diverger de celui-ci, et l'on aurait une bougie
+        #: annonçant 125 ticks à côté d'un chemin qui en contient 124 sans que
+        #: personne puisse dire lequel ment.
+        self.garder_ticks = garder_ticks
         self._cur: Dict[str, _EnCours] = {}
         self._closed: List[Candle] = []
+        self._ticks: Dict[str, List[Tick]] = {}
+        self._ticks_closed: List[List[Tick]] = []
 
     def add(self, tick: Tick) -> None:
         bucket = bucket_of_ms(tick.ts_ms, self.tf_sec)
@@ -86,11 +99,17 @@ class CandleAggregator:
         if b is None:
             self._cur[tick.pair] = _EnCours(bucket, tick.price, tick.price,
                                             tick.price, tick.price)
+            self._commencer_ticks(tick)
             return
         if bucket > b.ts_sec:
             self._closed.append(self._candle(tick.pair, b, complete=True))
             self._cur[tick.pair] = _EnCours(bucket, tick.price, tick.price,
                                             tick.price, tick.price)
+            if self.garder_ticks:
+                precedents = self._ticks.get(tick.pair)
+                if precedents:
+                    self._ticks_closed.append(precedents)
+            self._commencer_ticks(tick)
             return
         if bucket < b.ts_sec:
             return  # tick en retard sur une bougie déjà fermée : ignoré
@@ -98,6 +117,12 @@ class CandleAggregator:
         b.low = min(b.low, tick.price)
         b.close = tick.price
         b.n += 1
+        if self.garder_ticks:
+            self._ticks[tick.pair].append(tick)
+
+    def _commencer_ticks(self, tick: Tick) -> None:
+        if self.garder_ticks:
+            self._ticks[tick.pair] = [tick]
 
     def _candle(self, pair: str, b: _EnCours, *, complete: bool) -> Candle:
         return Candle(
@@ -110,12 +135,31 @@ class CandleAggregator:
         rows, self._closed = self._closed, []
         return rows
 
+    def drain_ticks(self) -> List[List[Tick]]:
+        """Les ticks des minutes CLOSES, un paquet par (paire, minute).
+
+        Rendus bruts, non encodés : l'agrégateur agrège, il n'écrit pas. Le
+        format compressé appartient à `store.chemin_ticks`, et l'y laisser
+        permet d'en changer sans toucher à la construction des bougies.
+        """
+        paquets, self._ticks_closed = self._ticks_closed, []
+        return paquets
+
     def drain_all(self) -> List[Candle]:
         """Sur arrêt ou déconnexion : on écrit aussi les bougies en cours,
-        marquées incomplètes."""
+        marquées incomplètes.
+
+        Les ticks de ces minutes partielles sont poussés eux aussi. Une minute
+        partielle écrite maintenant sera remplacée par la minute complète si la
+        collecte reprend à temps : `insert_tick_paths` garde le chemin le plus
+        fourni. Les jeter serait le seul choix irréversible des trois.
+        """
         rows = self.drain_closed()
         rows += [self._candle(p, b, complete=False) for p, b in self._cur.items()]
         self._cur.clear()
+        if self.garder_ticks:
+            self._ticks_closed.extend(p for p in self._ticks.values() if p)
+            self._ticks.clear()
         return rows
 
 
@@ -240,8 +284,7 @@ class Collector:
         # maxprofit/hosting/service.py). Elle est donc ouverte par run().
         self.conn: sqlite3.Connection | None = None
         self.store: MarketWriter | None = None
-        self.agg = CandleAggregator()
-        self.buf: List[Tick] = []
+        self.agg = CandleAggregator(garder_ticks=cfg.stocker_ticks)
         self.subscribed: List[str] = []
         self.running = True
         # Les minuteurs partent à `now` et non à 0 : sinon le premier passage
@@ -339,15 +382,34 @@ class Collector:
     # --- écriture -----------------------------------------------------------
 
     def flush(self) -> None:
-        n_t = self.store.insert_ticks(self.buf) if self.cfg.stocker_ticks else 0
+        n_t = self._ecrire_les_chemins()
         n_c = self.store.upsert_candles(self.agg.drain_closed())
-        self.buf.clear()
         # Valider explicitement : `libsql` tient une transaction implicite et
         # accumulerait sans fin sans jamais rien pousser vers Turso. En sqlite3
         # autocommit, c'est sans effet.
         valider(self.conn)
         if n_t or n_c:
-            log.debug("flush: %d ticks, %d bougies", n_t, n_c)
+            log.debug("flush: %d minute(s) de ticks, %d bougies", n_t, n_c)
+
+    def _ecrire_les_chemins(self) -> int:
+        """Les minutes closes, encodées puis écrites. Zéro si on ne garde pas.
+
+        Un paquet inencodable ne fait PAS tomber la collecte : `encoder()` lève
+        quand aucune puissance de dix ne rend les prix entiers, ce qui veut
+        dire que la paire cote autrement qu'on le croyait. C'est une nouvelle
+        intéressante, pas une raison de perdre les bougies de tout le monde —
+        on la journalise en ERROR et on garde le reste.
+        """
+        if not self.cfg.stocker_ticks:
+            return 0
+        chemins = []
+        for paquet in self.agg.drain_ticks():
+            try:
+                chemins.append(encoder(paquet))
+            except BotError as erreur:
+                log.error("Chemin de ticks non encodable (%s, %d ticks) : %s",
+                          paquet[0].pair, len(paquet), erreur)
+        return self.store.insert_tick_paths(chemins)
 
     def backup(self) -> None:
         """§1.4. Une sauvegarde ratée ne doit pas tuer la collecte : perdre six
@@ -542,7 +604,11 @@ class Collector:
         if self.store is None:
             return
         try:
-            self.store.upsert_candles(self.agg.drain_all())
+            # `drain_all` d'abord : il pousse les minutes partielles dans la
+            # file des chemins, que `_ecrire_les_chemins` ramasse ensuite.
+            candles = self.agg.drain_all()
+            self._ecrire_les_chemins()
+            self.store.upsert_candles(candles)
             # Pas de `synchroniser()` ici. Cette fonction est appelée à CHAQUE
             # sortie de boucle, donc à chaque reconnexion — c'était le premier
             # consommateur de quota, pour un geste qui ne pousse aucune donnée.
@@ -567,11 +633,11 @@ class Collector:
             if not self.running:
                 return
             if tick is not None:
-                # Le tick alimente TOUJOURS l'agrégateur : c'est lui qui produit
-                # la bougie et son `tick_count`. Seule son écriture individuelle
-                # est optionnelle.
-                if self.cfg.stocker_ticks:
-                    self.buf.append(tick)
+                # Le tick va UNIQUEMENT à l'agrégateur. C'est lui qui produit
+                # la bougie, son `tick_count`, et — si `stocker_ticks` — le
+                # paquet de la minute d'où sortira le chemin compressé. Un
+                # second tampon ici pourrait diverger du sien sans que rien ne
+                # le signale.
                 self.agg.add(tick)
                 self._t_dernier_tick = time.time()
             self._taches_periodiques()

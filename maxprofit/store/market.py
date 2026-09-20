@@ -17,6 +17,7 @@ import logging
 
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle, PairInfo, Tick
+from maxprofit.store.chemin_ticks import CheminTicks, decoder
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +102,41 @@ class MarketWriter:
 
     # --- écritures groupées --------------------------------------------------
 
+    def insert_tick_paths(self, chemins: Sequence[CheminTicks]) -> int:
+        """Une ligne par MINUTE, pas une par tick. Voir `chemin_ticks`.
+
+        En cas de conflit, le chemin le PLUS FOURNI gagne. C'est le même esprit
+        que le `MAX` sur `complete` des bougies : une minute réécrite par un
+        tick en retard ne doit pas remplacer les cent vingt-cinq déjà écrits
+        par le seul retardataire. On ne fusionne pas les deux — fusionner
+        demanderait de décompresser à l'écriture, et le cas est assez rare pour
+        que perdre un tick isolé vaille mieux que ralentir chaque flush.
+        """
+        if not chemins:
+            return 0
+        rows = [(c.pair, c.minute_sec, c.n_ticks, c.echelle, c.octets)
+                for c in chemins]
+        return _inserer_en_lot(
+            self.conn,
+            "INSERT INTO tick_paths (pair, minute_sec, n_ticks, echelle, chemin)",
+            """ON CONFLICT(pair, minute_sec) DO UPDATE SET
+                   n_ticks = excluded.n_ticks,
+                   echelle = excluded.echelle,
+                   chemin  = excluded.chemin
+               WHERE excluded.n_ticks > tick_paths.n_ticks""",
+            rows,
+        )
+
     def insert_ticks(self, ticks: Sequence[Tick]) -> int:
+        """Une ligne par tick — la table `ticks` de la v1.
+
+        ⚠ **Le collecteur ne l'appelle plus.** Mesuré : 8,7 millions de lignes
+        sur quatorze jours, ~1 Go pour 0,5 Go de quota. `insert_tick_paths`
+        écrit la même information sans perte pour un quarantième du volume.
+
+        La méthode reste parce que la table reste (une migration ne détruit
+        rien) et qu'elle sert aux outils qui veulent des lignes plates.
+        """
         if not ticks:
             return 0
         rows = [(t.pair, t.ts_ms, t.price) for t in ticks]
@@ -316,6 +351,42 @@ class MarketReader:
             for r in rows
         ]
 
+    def tick_paths(self, pair: str, start_sec: int,
+                   end_sec: int) -> list[CheminTicks]:
+        """Les chemins de `[start_sec, end_sec)`, ordonnés, non décompressés.
+
+        Rendus compressés volontairement : un appelant qui veut seulement
+        savoir COMBIEN de ticks couvrent une période lit `n_ticks` sans payer
+        la décompression, et celui qui veut les ticks appelle `ticks()`.
+        """
+        if start_sec > end_sec:
+            raise BotError(f"Fenêtre inversée : {start_sec} > {end_sec}")
+        rows = self.conn.execute(
+            """SELECT pair, minute_sec, n_ticks, echelle, chemin
+               FROM tick_paths
+               WHERE pair = ? AND minute_sec >= ? AND minute_sec < ?
+               ORDER BY minute_sec""",
+            (pair, start_sec, end_sec),
+        ).fetchall()
+        return [
+            CheminTicks(pair=r[0], minute_sec=int(r[1]), n_ticks=int(r[2]),
+                        echelle=int(r[3]), octets=bytes(r[4]))
+            for r in rows
+        ]
+
+    def ticks(self, pair: str, start_sec: int, end_sec: int) -> list[Tick]:
+        """Les ticks de la période, décompressés et remis bout à bout.
+
+        Les minutes MANQUANTES ne sont pas comblées : une minute sans ligne est
+        une minute non collectée, et la distinguer d'un marché immobile est
+        tout l'intérêt de ne jamais écrire de chemin vide. L'appelant qui a
+        besoin de continuité compare `tick_paths()` à la grille des minutes.
+        """
+        sortie: list[Tick] = []
+        for chemin in self.tick_paths(pair, start_sec, end_sec):
+            sortie.extend(decoder(chemin))
+        return sortie
+
     def last_candle_ts_sec(self) -> int | None:
         row = self.conn.execute("SELECT MAX(ts_sec) FROM candles").fetchone()
         return None if row is None or row[0] is None else int(row[0])
@@ -331,5 +402,5 @@ class MarketReader:
 def _counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {
         table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-        for table in ("ticks", "candles", "payouts", "uptime")
+        for table in ("ticks", "tick_paths", "candles", "payouts", "uptime")
     }

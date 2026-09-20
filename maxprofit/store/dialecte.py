@@ -24,6 +24,8 @@ deux moteurs acceptent, et ce module n'a pas à les connaître.
     ?                  -> %s               (marqueurs de paramètres)
     REAL               -> DOUBLE PRECISION (REAL est SIMPLE précision en PG :
                                             un prix y perdrait des décimales)
+    BLOB               -> BYTEA            (PG n'a pas de BLOB — il REFUSE le
+                                            mot, ce qui est une bonne nouvelle)
     WITHOUT ROWID      -> retiré           (optimisation propre à SQLite)
     MAX(a, b)          -> GREATEST(a, b)   (en PG, MAX est un agrégat)
     MIN(a, b)          -> LEAST(a, b)
@@ -53,6 +55,11 @@ _APPEL = re.compile(r"\b(MAX|MIN)\s*\(", re.IGNORECASE)
 
 _SANS_ROWID = re.compile(r"\s+WITHOUT\s+ROWID", re.IGNORECASE)
 _REAL = re.compile(r"\bREAL\b", re.IGNORECASE)
+#: `BLOB` est le seul de ces mots dont l'oubli se voit tout de suite :
+#: PostgreSQL ne le connaît pas et refuse la table. Contrairement au `REAL`,
+#: qui passe et dégrade en silence, celui-ci ne peut pas faire de dégât
+#: discret — il est traduit pour que la table existe, pas pour éviter un piège.
+_BLOB = re.compile(r"\bBLOB\b", re.IGNORECASE)
 _PRAGMA = re.compile(r"^\s*PRAGMA\b", re.IGNORECASE)
 
 
@@ -138,4 +145,5 @@ def vers_postgres(sql: str) -> str:
     """La traduction complète d'une instruction."""
     sql = _SANS_ROWID.sub("", sql)
     sql = _REAL.sub("DOUBLE PRECISION", sql)
+    sql = _BLOB.sub("BYTEA", sql)
     return marqueurs(_traduire_extrema(sql))

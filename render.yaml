@@ -34,13 +34,26 @@ services:
       # PostgreSQL plutôt que de retomber en silence sur le disque local.
       - key: DATABASE_URL
         sync: false
-      # Ne PAS écrire les ticks bruts : mesurés à 97,6 % du volume, soit 9,9
-      # millions de lignes sur quatorze jours contre 238 000 pour tout le
-      # reste. Le backtest du §2 travaille sur les bougies M1, dont le
-      # `tick_count` est calculé depuis les ticks avant écriture : il n'y perd
-      # rien. Ce qu'on abandonne est l'analyse sous la minute.
+      # Les ticks REVIENNENT, sous une autre forme. Ce qui a été coupé le
+      # 10 septembre, c'est UNE LIGNE PAR TICK : 620 003 ticks/jour, 8,7
+      # millions de lignes sur quatorze jours, ~1 Go pour 0,5 Go de quota. La
+      # mesure était bonne et la décision l'était aussi.
+      #
+      # Ce qui a changé n'est pas le quota, c'est ce qu'on sait. Tout ce qui a
+      # été cherché à la résolution d'une minute est revenu vide : 46
+      # hypothèses simples, 1 402 conjonctions sous test de permutation, un
+      # modèle en validation glissante dont la précision BAISSE quand sa
+      # confiance monte. Or la minute est un résumé de soixante secondes d'un
+      # processus qui bat à la seconde : on jetait environ soixante fois
+      # l'information avant de conclure qu'il n'y avait rien dedans.
+      #
+      # `tick_paths` (schéma v4) écrit une ligne par MINUTE, delta-encodée et
+      # compressée. Mesuré contre la base Neon, minute réelle de 118 ticks :
+      # 265 octets. Soit ~21 Mo sur quatorze jours au lieu de ~1 Go, SANS
+      # PERTE — et les résolutions 1 s / 5 s / 15 s / 30 s redeviennent
+      # calculables.
       - key: STOCKER_TICKS
-        value: "0"
+        value: "1"
       - key: MIN_PAYOUT_PCT
         value: "92"
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
