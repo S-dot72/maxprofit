@@ -55,7 +55,20 @@ ALLOWED: dict[str, set[str]] = {
     # l'un l'autre et ne passent pas par la couche Collecte : ils lisent les
     # données via `store`, sur un descripteur en lecture seule.
     "backtest": {"core", "store", "strategies", "indicators"},
-    "live": {"core", "store", "strategies", "indicators"},
+    # `live` est la RACINE DE COMPOSITION : le seul endroit où la stratégie,
+    # le dimensionnement et le passage d'ordre se rencontrent. Il faut bien
+    # que ce soit quelque part, et le mettre ici le rend visible.
+    #
+    # Ce qui compte est que la dépendance aille dans CE sens. `plan` ne
+    # connaît aucune stratégie, `strategies` ne connaît aucune mise, et
+    # `execution` ne connaît ni l'une ni l'autre — chacun reste testable seul,
+    # et aucun ne peut influencer les autres. `live` les assemble sans qu'ils
+    # se voient entre eux.
+    #
+    # `backtest` n'a PAS ces droits, et c'est volontaire : lui donner `plan`
+    # lui ferait mesurer la stratégie *plus* la mise, sans moyen de séparer
+    # les deux. Le backtest juge un signal ; `live` l'exécute.
+    "live": {"core", "store", "strategies", "indicators", "plan", "execution"},
     # Le protocole de recherche. Il LIT les données et JUGE des hypothèses ;
     # il n'en produit aucune et ne place aucun ordre.
     #
