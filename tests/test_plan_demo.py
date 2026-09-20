@@ -273,3 +273,94 @@ def test_un_nouveau_jour_repart_du_solde_reel(course):
 def test_les_paires_sont_suivies_a_la_construction(course):
     c = course(["win"])
     assert c.courtier.suivies == ["EURUSD_otc"]
+
+
+# --------------------------------------------------------------------------- #
+# La reprise après redémarrage
+# --------------------------------------------------------------------------- #
+
+def _base(tmp_path):
+    """Une base au schéma RÉEL, migrations comprises.
+
+    Pas un `CREATE TABLE` écrit dans le test : la migration est ce qui
+    tournera en production, et un schéma recopié à la main diverge du jour où
+    quelqu'un ajoute une colonne à l'une des deux.
+    """
+    from maxprofit.store.db import open_read_write
+    return open_read_write(tmp_path / "market.db")
+
+
+def test_une_course_interrompue_se_reprend_au_meme_pas(course, tmp_path):
+    """Le cas qui décide si dix jours survivent à un redémarrage.
+
+    L'hébergeur redéploie, met en veille, redémarre. Sans reprise de la
+    session EN COURS, la martingale repartirait au pas 1 : les mises déjà
+    engagées auraient quitté le compte sans que le plan les connaisse, et
+    l'échelle se serait réarmée toute seule.
+    """
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["loose", "loose", "win"], plan=_plan(sessions=10))
+    c.tour()
+    c.tour()                                   # deux pas perdus, session ouverte
+    assert c.etat.session is not None and c.etat.session.pas_joues == 2
+    mise_du_pas_3 = c.etat.session.mise_courante()
+    engagees = list(c.etat.session.engagees)
+
+    sauver_etat(conn, "essai", c.etat, jour_utc_courant=20_000)
+
+    repris, jour_utc = charger_etat(conn, "essai", c.etat.plan)
+    assert jour_utc == 20_000
+    assert repris.solde == pytest.approx(c.etat.solde)
+    assert repris.jour == c.etat.jour
+    assert repris.journee.sessions_jouees == c.etat.journee.sessions_jouees
+    assert repris.session is not None
+    assert repris.session.pas_joues == 2
+    assert repris.session.engagees == pytest.approx(engagees)
+    assert repris.session.mise_courante() == pytest.approx(mise_du_pas_3), (
+        "la reprise doit replacer la MÊME mise, pas recommencer au pas 1")
+    conn.close()
+
+
+def test_sans_course_enregistree_le_chargement_rend_None(tmp_path):
+    from maxprofit.live.plan_demo import charger_etat
+
+    conn = _base(tmp_path)
+    assert charger_etat(conn, "jamais-lancee", _plan()) is None
+    conn.close()
+
+
+def test_l_etat_s_ecrase_au_lieu_de_s_empiler(course, tmp_path):
+    """Une campagne = une ligne. Deux voudraient dire deux courses qui se
+    marchent dessus sur le même compte."""
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["win", "win"], plan=_plan(sessions=10))
+    c.tour()
+    sauver_etat(conn, "essai", c.etat, 20_000)
+    c.tour()
+    sauver_etat(conn, "essai", c.etat, 20_001)
+
+    n = conn.execute(
+        "SELECT COUNT(*) FROM plan_etat WHERE campagne = ?", ("essai",)
+    ).fetchone()[0]
+    assert n == 1
+    repris, jour_utc = charger_etat(conn, "essai", c.etat.plan)
+    assert jour_utc == 20_001
+    assert repris.journee.sessions_jouees == 2
+    conn.close()
+
+
+def test_une_session_close_ne_laisse_rien_a_reprendre(course, tmp_path):
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["win"], plan=_plan(sessions=10))
+    c.tour()
+    assert c.etat.session is None
+    sauver_etat(conn, "essai", c.etat, 20_000)
+    repris, _ = charger_etat(conn, "essai", c.etat.plan)
+    assert repris.session is None
+    conn.close()

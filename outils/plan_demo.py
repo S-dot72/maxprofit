@@ -35,9 +35,10 @@ from maxprofit.core.config import charger_env_local                # noqa: E402
 from maxprofit.execution.courtier import CourtierDemo              # noqa: E402
 from maxprofit.execution.garde import CompteRefuse, Plafonds       # noqa: E402
 from maxprofit.execution.journal import JournalExecution           # noqa: E402
-from maxprofit.live.plan_demo import CoursePlanDemo, nouveau_jour  # noqa: E402
+from maxprofit.live.plan_demo import (                             # noqa: E402
+    CoursePlanDemo, charger_etat, nouveau_jour, sauver_etat)
 from maxprofit.plan import PlanCapital, Risque, projeter           # noqa: E402
-from maxprofit.store.db import open_read_only                      # noqa: E402
+from maxprofit.store.db import open_read_only, open_read_write     # noqa: E402
 from maxprofit.store.market import MarketReader                    # noqa: E402
 from maxprofit.strategies.zone_h1 import ZoneH1                    # noqa: E402
 
@@ -49,7 +50,10 @@ SIGNAUX_PAR_JOUR = 317 / 12
 def construire(capital: float, sessions: int, jours: int) -> PlanCapital:
     return PlanCapital.depuis_risque(
         capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
-        sessions_par_jour=sessions, jours=jours)
+        sessions_par_jour=sessions, jours=jours,
+        # DEUX et non le défaut 3 : c'est la règle fixée. Deux sessions
+        # perdues d'affilée ferment la journée ET déclenchent le réancrage.
+        sessions_perdues_max=2)
 
 
 def apercu(plan: PlanCapital) -> None:
@@ -133,21 +137,39 @@ def main(argv=None) -> int:
     plafonds = Plafonds(mise=round(pire * 1.5, 2), ordres_max=2000,
                         duree_max_sec=11 * 86400)
 
+    journal_log = logging.getLogger("plan_demo")
+    # Deux connexions, et c'est voulu. La lecture du marché passe par un
+    # descripteur en LECTURE SEULE : la course ne doit pas pouvoir écrire dans
+    # les tables de marché, même par accident. Son propre journal passe par
+    # l'autre.
     lecteur = MarketReader(open_read_only(Path("lecture")))
+    ecriture = open_read_write(Path("ecriture"))
     try:
-        with JournalExecution(a.journal, campagne=a.campagne) as journal, \
+        with JournalExecution(ecriture, campagne=a.campagne) as journal, \
                 CourtierDemo(ssid, plafonds) as courtier:
             course = CoursePlanDemo(lecteur, courtier, journal, plan,
                                     paires, ZoneH1())
-            jour_courant = int(time.time()) // 86400
+            repris = charger_etat(ecriture, a.campagne, plan)
+            if repris is not None:
+                course.etat, jour_courant = repris
+                journal_log.info("Course REPRISE : %s", course.resume())
+            else:
+                jour_courant = int(time.time()) // 86400
+                journal_log.info("Nouvelle course : %s", course.resume())
             print("\nCourse démarrée. Ctrl+C pour arrêter.\n")
             while course.etat.jour <= plan.jours:
                 if int(time.time()) // 86400 != jour_courant:
                     jour_courant = int(time.time()) // 86400
                     nouveau_jour(course.etat)
-                    log = logging.getLogger(__name__)
-                    log.info("=== %s", course.resume())
-                if not course.tour():
+                    journal_log.info("=== %s", course.resume())
+                    sauver_etat(ecriture, a.campagne, course.etat, jour_courant)
+                if course.tour():
+                    # Après CHAQUE pas, et pas de temps en temps : le
+                    # processus peut mourir à n'importe quel moment, et un
+                    # état sauvé par intermittence rejouerait des ordres déjà
+                    # passés ou en oublierait.
+                    sauver_etat(ecriture, a.campagne, course.etat, jour_courant)
+                else:
                     time.sleep(a.pause)
     except CompteRefuse as refus:
         print(f"\nREFUSÉ — aucun ordre n'est parti.\n{refus}")
@@ -156,6 +178,7 @@ def main(argv=None) -> int:
         print("\nArrêt demandé.")
     finally:
         lecteur.close()
+        ecriture.close()
     return 0
 
 

@@ -90,3 +90,34 @@ services:
       # de détourner la collecte vers un autre compte.
       - key: ADMIN_SECRET
         sync: false
+
+  # --- La course du plan en DÉMO -----------------------------------------
+  #
+  # (!) TYPE `worker` = INSTANCE PAYANTE. Le plan gratuit de Render ne couvre
+  # que les services web ; un worker demande un instance type facturé. Ce bloc
+  # est écrit et prêt, mais il ne se déploiera pas tel quel sur le plan free.
+  #
+  # L'alternative gratuite est de faire tourner la course dans un THREAD du
+  # service web existant. Elle marche, mais elle couple la course à la
+  # collecte : un plantage de la course pourrait emporter le collecteur, et
+  # quatorze jours de série continue ne se rattrapent pas. C'est pourquoi la
+  # séparation est écrite ici plutôt que supposée.
+  #
+  # La course ne pose AUCUN fichier : son journal et son état vivent dans la
+  # base Neon (migration v5). Le disque éphémère ne peut donc rien lui faire —
+  # c'est exactement la leçon de la §1.1, appliquée avant d'en payer le prix
+  # une seconde fois.
+  - type: worker
+    name: maxprofit-plan-demo
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python outils/plan_demo.py
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      # Jeton DÉMO. La garde refuse de placer le moindre ordre si le jeton ne
+      # porte pas « isDemo: 1 » — un champ absent refuse au même titre qu'un
+      # champ à zéro.
+      - key: POCKET_OPTION_SSID
+        sync: false

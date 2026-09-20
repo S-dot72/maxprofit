@@ -40,6 +40,7 @@ qu'à PLACER les ordres.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ from maxprofit.plan import (
     Session,
     jour_le_plus_proche,
 )
+from maxprofit.store.db import valider
 from maxprofit.store.market import MarketReader
 from maxprofit.strategies.zone_h1 import ZoneH1
 
@@ -272,3 +274,85 @@ def nouveau_jour(etat: Etat) -> None:
 def jour_utc(ts_sec: int | None = None) -> int:
     ts = int(time.time()) if ts_sec is None else ts_sec
     return int(datetime.fromtimestamp(ts, timezone.utc).timestamp() // 86400)
+
+
+# --------------------------------------------------------------------------- #
+# La persistance — sans elle, un redémarrage efface dix jours
+# --------------------------------------------------------------------------- #
+
+def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
+    """Écrit l'état complet de la course, session en cours comprise.
+
+    ⚠ Appelée après CHAQUE pas, pas à la fin. Le processus peut mourir à
+    n'importe quel moment — l'hébergeur redéploie, met en veille, redémarre —
+    et un état sauvé « de temps en temps » rejouerait des ordres déjà passés
+    ou en oublierait.
+
+    La session en cours est incluse, et c'est le point délicat. Sans elle, un
+    redémarrage au milieu d'une martingale repartirait au pas 1 : les mises
+    déjà engagées auraient quitté le compte sans que le plan les connaisse.
+    """
+    session = etat.session
+    conn.execute(
+        """INSERT INTO plan_etat
+               (campagne, maj_ts_sec, jour, solde, solde_ouverture,
+                sessions_jouees, sessions_perdues_daffilee, jour_utc,
+                reancrages, derniere_bougie, session_pas_joues,
+                session_engagees, session_gain_vise)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(campagne) DO UPDATE SET
+               maj_ts_sec = excluded.maj_ts_sec,
+               jour = excluded.jour,
+               solde = excluded.solde,
+               solde_ouverture = excluded.solde_ouverture,
+               sessions_jouees = excluded.sessions_jouees,
+               sessions_perdues_daffilee = excluded.sessions_perdues_daffilee,
+               jour_utc = excluded.jour_utc,
+               reancrages = excluded.reancrages,
+               derniere_bougie = excluded.derniere_bougie,
+               session_pas_joues = excluded.session_pas_joues,
+               session_engagees = excluded.session_engagees,
+               session_gain_vise = excluded.session_gain_vise""",
+        (campagne, int(time.time()), etat.jour, etat.solde,
+         etat.journee.solde_ouverture, etat.journee.sessions_jouees,
+         etat.sessions_perdues_daffilee, jour_utc_courant,
+         json.dumps(etat.reancrages), json.dumps(etat.derniere_bougie),
+         session.pas_joues if session else 0,
+         json.dumps(session.engagees if session else []),
+         session.echelle.gain_vise if session else 0.0),
+    )
+    valider(conn)
+
+
+def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | None:
+    """Relit une course interrompue. `None` s'il n'y en a pas.
+
+    Rend aussi le jour UTC de la dernière écriture : c'est lui qui dit si la
+    journée doit repartir à zéro ou continuer. Le déduire de l'horloge seule
+    ferait repartir une journée entamée avec ses compteurs remis à neuf.
+    """
+    ligne = conn.execute(
+        """SELECT jour, solde, solde_ouverture, sessions_jouees,
+                  sessions_perdues_daffilee, jour_utc, reancrages,
+                  derniere_bougie, session_pas_joues, session_engagees,
+                  session_gain_vise
+           FROM plan_etat WHERE campagne = ?""", (campagne,)).fetchone()
+    if ligne is None:
+        return None
+    etat = Etat(plan=plan, solde=float(ligne[1]), jour=int(ligne[0]))
+    etat.journee = Journee(plan=plan, solde=float(ligne[2]))
+    etat.journee.solde = float(ligne[1])
+    etat.journee.sessions_jouees = int(ligne[3])
+    etat.sessions_perdues_daffilee = int(ligne[4])
+    etat.reancrages = [tuple(x) for x in json.loads(ligne[6])]
+    etat.derniere_bougie = {k: int(v) for k, v
+                            in json.loads(ligne[7]).items()}
+    pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
+    if pas or engagees:
+        # Une session était en cours. On la reconstruit telle quelle : même
+        # échelle, mêmes mises déjà engagées, même profondeur atteinte.
+        session = Session(echelle=Echelle(payout_pct=92, gain_vise=gain))
+        session.pas_joues = pas
+        session.engagees = [float(x) for x in engagees]
+        etat.session = session
+    return etat, int(ligne[5])

@@ -212,11 +212,88 @@ def _v4_chemins_de_ticks(conn) -> None:
         conn.execute(instruction)
 
 
+def _v5_course_du_plan(conn) -> None:
+    """Le journal des ordres et l'état de la course — en base, pas en fichier.
+
+    La course du plan devait d'abord vivre dans un SQLite local sauvegardé
+    avant chaque commit. Elle n'aurait pas tenu : sur le plan gratuit de
+    Render le disque est effacé à CHAQUE redémarrage et après chaque mise en
+    veille, pas seulement aux déploiements. Dix jours de course auraient
+    disparu au premier réveil, sans message d'erreur — le désastre de la §1.1,
+    une deuxième fois.
+
+    `executions` porte ce qu'un backtest ne peut pas savoir : le payout
+    réellement appliqué, le prix d'entrée retenu, la latence, la durée tenue.
+    `brut` garde la charge utile du broker telle quelle — cette API n'est pas
+    documentée, et une lecture fausse des noms de champs se répare alors sans
+    replacer un seul ordre.
+
+    `plan_etat` est une ligne UNIQUE par course (`CHECK (id = 1)` côté SQLite,
+    et la clé primaire ailleurs) : l'état est un singleton, et deux lignes
+    voudraient dire deux courses qui se marchent dessus.
+    """
+    for instruction in _decouper(
+        """
+        CREATE TABLE IF NOT EXISTS executions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            campagne           TEXT    NOT NULL,
+            pair               TEXT    NOT NULL,
+            sens               TEXT    NOT NULL,
+            mise               REAL    NOT NULL,
+            signal_ts_ms       INTEGER NOT NULL,
+            clic_ts_ms         INTEGER NOT NULL,
+            accepte_ts_ms      INTEGER,
+            prix_attendu       REAL    NOT NULL,
+            prix_entree        REAL,
+            prix_sortie        REAL,
+            payout_flux_pct    REAL    NOT NULL,
+            payout_broker_pct  REAL,
+            expiration_sec     INTEGER NOT NULL,
+            ouverture_ts_ms    INTEGER,
+            expiration_ts_ms   INTEGER,
+            decalage_broker_ms INTEGER,
+            accepte            INTEGER NOT NULL,
+            refus              TEXT,
+            resultat           TEXT,
+            profit             REAL,
+            order_id           TEXT,
+            brut               TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_exec_campagne ON executions(campagne);
+
+        CREATE TABLE IF NOT EXISTS plan_etat (
+            campagne       TEXT PRIMARY KEY,
+            maj_ts_sec     INTEGER NOT NULL,
+            jour           INTEGER NOT NULL,
+            solde          REAL    NOT NULL,
+            solde_ouverture REAL   NOT NULL,
+            sessions_jouees INTEGER NOT NULL,
+            sessions_perdues_daffilee INTEGER NOT NULL,
+            jour_utc       INTEGER NOT NULL,
+            reancrages     TEXT    NOT NULL,
+            derniere_bougie TEXT   NOT NULL,
+            -- La session EN COURS, et c'est le point délicat. Sans elle, un
+            -- redémarrage au milieu d'une martingale repartirait au pas 1 :
+            -- les mises déjà engagées auraient quitté le compte sans que le
+            -- plan les connaisse, et l'échelle se serait réarmée toute seule.
+            -- `session_engagees` est la liste des mises réellement placées,
+            -- celle dont dépend le coût d'une session interrompue.
+            session_pas_joues INTEGER NOT NULL DEFAULT 0,
+            session_engagees  TEXT    NOT NULL DEFAULT '[]',
+            session_gain_vise REAL    NOT NULL DEFAULT 0
+        );
+        """
+    ):
+        conn.execute(instruction)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
     Migration(3, "annuaire des opérateurs", _v3_operateurs),
     Migration(4, "chemins de ticks compressés", _v4_chemins_de_ticks),
+    Migration(5, "course du plan : ordres et état", _v5_course_du_plan),
 )
 
 #: Version de schéma que ce code sait produire.

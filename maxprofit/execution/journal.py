@@ -195,14 +195,34 @@ class Execution:
 class JournalExecution:
     """Le journal durable. Une base SQLite locale, comme le registre."""
 
-    def __init__(self, chemin: Path | str, campagne: str):
+    def __init__(self, cible: "Path | str | object", campagne: str):
+        """`cible` : un CHEMIN (SQLite local) ou une CONNEXION déjà migrée.
+
+        Les deux existent pour une raison, pas par commodité :
+
+        - un chemin sert aux tests et aux outils locaux ; la table est créée
+          à la volée et le fichier se jette ;
+        - une connexion sert à la course réelle, qui écrit dans la base
+          PostgreSQL de production. Là, la table vient de la migration v5 :
+          la créer ici la ferait exister en deux endroits, et les deux
+          finiraient par diverger.
+
+        Le disque de l'hébergeur étant éphémère, un chemin en production
+        perdrait la course au premier redémarrage. Le choix n'est donc pas
+        « SQLite ou PostgreSQL » mais « jetable ou durable ».
+        """
         if not campagne or not campagne.strip():
             raise BotError("Une campagne d'exécution sans nom ne se relit pas.")
         self.campagne = campagne.strip()
-        self.conn = sqlite3.connect(str(chemin))
-        self.conn.executescript(SCHEMA)
-        self._ajouter_les_colonnes_manquantes()
-        self.conn.commit()
+        if isinstance(cible, (str, Path)):
+            self.conn = sqlite3.connect(str(cible))
+            self.conn.executescript(SCHEMA)
+            self._ajouter_les_colonnes_manquantes()
+            self.conn.commit()
+            self._proprietaire = True
+        else:
+            self.conn = cible
+            self._proprietaire = False
 
     def _ajouter_les_colonnes_manquantes(self) -> None:
         """`CREATE TABLE IF NOT EXISTS` n'ajoute rien à une table qui existe.
@@ -249,7 +269,10 @@ class JournalExecution:
              json.dumps(ex.brut, ensure_ascii=False, default=str)),
         )
         self.conn.commit()
-        return int(curseur.lastrowid)
+        # `lastrowid` est une notion SQLite : psycopg rend None. On ne s'en
+        # sert que pour tracer, jamais pour décider — rendre 0 plutôt que
+        # lever garde le journal utilisable sur les deux moteurs.
+        return int(getattr(curseur, "lastrowid", 0) or 0)
 
     def toutes(self) -> list[Execution]:
         lignes = self.conn.execute(
@@ -276,7 +299,11 @@ class JournalExecution:
         ]
 
     def close(self) -> None:
-        self.conn.close()
+        # On ne ferme que ce qu'on a ouvert. Fermer une connexion prêtée
+        # couperait la base sous les pieds de l'appelant — ici, le collecteur
+        # de la course, qui s'en sert encore.
+        if self._proprietaire:
+            self.conn.close()
 
     def __enter__(self) -> "JournalExecution":
         return self

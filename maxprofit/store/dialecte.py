@@ -26,6 +26,8 @@ deux moteurs acceptent, et ce module n'a pas à les connaître.
                                             un prix y perdrait des décimales)
     BLOB               -> BYTEA            (PG n'a pas de BLOB — il REFUSE le
                                             mot, ce qui est une bonne nouvelle)
+    INTEGER PRIMARY KEY AUTOINCREMENT
+                       -> BIGSERIAL PRIMARY KEY  (clé auto-incrémentée)
     WITHOUT ROWID      -> retiré           (optimisation propre à SQLite)
     MAX(a, b)          -> GREATEST(a, b)   (en PG, MAX est un agrégat)
     MIN(a, b)          -> LEAST(a, b)
@@ -60,6 +62,15 @@ _REAL = re.compile(r"\bREAL\b", re.IGNORECASE)
 #: qui passe et dégrade en silence, celui-ci ne peut pas faire de dégât
 #: discret — il est traduit pour que la table existe, pas pour éviter un piège.
 _BLOB = re.compile(r"\bBLOB\b", re.IGNORECASE)
+#: La clé auto-incrémentée, telle que SQLite l'écrit.
+#:
+#: ⚠ Les trois mots se traduisent ENSEMBLE, ou pas du tout. Ne remplacer que
+#: `AUTOINCREMENT` laisserait `INTEGER PRIMARY KEY`, que PostgreSQL accepte
+#: sans broncher — et qui ne génère RIEN. La table se créerait sans erreur et
+#: refuserait chaque insertion pour clé nulle, c'est-à-dire au premier ordre
+#: passé et pas avant.
+_CLE_AUTO = re.compile(
+    r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", re.IGNORECASE)
 _PRAGMA = re.compile(r"^\s*PRAGMA\b", re.IGNORECASE)
 
 
@@ -146,4 +157,5 @@ def vers_postgres(sql: str) -> str:
     sql = _SANS_ROWID.sub("", sql)
     sql = _REAL.sub("DOUBLE PRECISION", sql)
     sql = _BLOB.sub("BYTEA", sql)
+    sql = _CLE_AUTO.sub("BIGSERIAL PRIMARY KEY", sql)
     return marqueurs(_traduire_extrema(sql))
