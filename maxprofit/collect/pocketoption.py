@@ -302,6 +302,47 @@ def resoudre_ssid(demo: bool, explicite: str | None = None) -> str | None:
 LONGUEUR_MIN_SESSION = 10
 
 
+def installer_boucle_asyncio(boucle=None):
+    """Compatibilité Python 3.12+ : une boucle asyncio DANS CE THREAD.
+
+    `PocketOptionAPI.__init__` et `WebsocketClient.__init__` appellent
+    `asyncio.get_event_loop()`. Jusqu'à Python 3.10, cet appel CRÉAIT une
+    boucle quand le thread n'en avait pas. Depuis, il ne le fait plus, et
+    depuis 3.12 il lève `RuntimeError: There is no current event loop`. La
+    bibliothèque a été écrite avant ce changement.
+
+    ⚠ Le piège est qu'un thread SECONDAIRE n'en a jamais. Le collecteur
+    tourne dans son thread et appelle ceci ; le courtier ne le faisait pas, et
+    marchait en local parce que le thread principal en possède une. Déplacé
+    dans le thread « course-plan », il a levé au premier ordre — et la course
+    s'est abandonnée après cinq tentatives.
+
+    C'est pourquoi cette fonction est au niveau du MODULE et non une méthode :
+    deux appelants, une seule vérité. La dupliquer aurait laissé la copie
+    diverger le jour où l'une des deux est corrigée.
+
+    Une boucle DÉJÀ EN COURS dans ce thread est refusée plutôt que contournée :
+    cela signifierait qu'on appelle un `connect()` bloquant depuis une
+    coroutine, et remplacer la boucle en place casserait le serveur HTTP de
+    `maxprofit.hosting.service`.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass                      # cas normal : aucun événement en cours
+    else:
+        raise SourceIndisponible(
+            "connect() a été appelé depuis un thread où une boucle asyncio "
+            "tourne déjà. Le client bloquant doit tourner dans son propre "
+            "thread — c'est ce que fait maxprofit.hosting.service."
+        )
+
+    if boucle is None or boucle.is_closed():
+        boucle = asyncio.new_event_loop()
+    asyncio.set_event_loop(boucle)
+    return boucle
+
+
 def verifier_ssid(jeton: str) -> None:
     """Refuser un jeton qui ne peut pas authentifier. Lève `SessionExpiree`.
 
@@ -602,38 +643,8 @@ class PocketOptionSource:
         )
 
     def _installer_boucle_asyncio(self) -> None:
-        """Compatibilité Python 3.12+ : installer une boucle avant la construction.
-
-        `PocketOptionAPI.__init__` et `WebsocketClient.__init__` appellent
-        `asyncio.get_event_loop()`. Jusqu'à Python 3.10, cet appel CRÉAIT une
-        boucle quand le thread n'en avait pas. Depuis, il ne le fait plus, et
-        depuis 3.12 il lève `RuntimeError: There is no current event loop`. La
-        bibliothèque a été écrite avant ce changement.
-
-        On installe donc la boucle nous-mêmes, dans le thread qui va construire
-        le client. Le thread WebSocket que la bibliothèque démarre ensuite crée
-        correctement la sienne (`asyncio.new_event_loop()` dans api.py), donc il
-        n'y a rien à faire de ce côté.
-
-        Le cas d'une boucle DÉJÀ EN COURS dans ce thread est refusé plutôt que
-        contourné : cela signifierait qu'on appelle ce `connect()` bloquant
-        depuis une coroutine, et remplacer la boucle en place casserait le
-        serveur HTTP de `maxprofit.hosting.service`.
-        """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass                      # cas normal : aucun événement en cours
-        else:
-            raise SourceIndisponible(
-                "connect() a été appelé depuis un thread où une boucle asyncio "
-                "tourne déjà. Le collecteur doit tourner dans son propre thread "
-                "— c'est ce que fait maxprofit.hosting.service."
-            )
-
-        if self._boucle is None or self._boucle.is_closed():
-            self._boucle = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._boucle)
+        """Délègue à `installer_boucle_asyncio`, qui porte le raisonnement."""
+        self._boucle = installer_boucle_asyncio(self._boucle)
 
     def close(self) -> None:
         if self._client is not None:

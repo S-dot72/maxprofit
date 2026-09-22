@@ -40,6 +40,7 @@ from maxprofit.collect.pocketoption import (
     SessionExpiree,
     SourceIndisponible,
     _forcer_region,
+    installer_boucle_asyncio,
     verifier_ssid,
 )
 from maxprofit.execution.garde import Plafonds, exiger_un_compte_demo
@@ -72,6 +73,7 @@ class CourtierDemo:
         self.period_sec = period_sec
         self._client = None
         self._globals = None
+        self._boucle = None
         self.ordres_places = 0
         self._debut_sec = time.monotonic()
 
@@ -89,6 +91,13 @@ class CourtierDemo:
         from pocketoptionapi.stable_api import PocketOption
 
         self._globals = global_value
+        # ⚠ AVANT de construire le client. La bibliothèque appelle
+        # `asyncio.get_event_loop()` dans son constructeur, et un thread
+        # secondaire n'en a pas : sans cette ligne, « There is no current
+        # event loop in thread 'course-plan' ». En local ça passait, le thread
+        # principal en possédant une — c'est le déplacement dans un thread qui
+        # l'a révélé, en production.
+        self._boucle = installer_boucle_asyncio(getattr(self, "_boucle", None))
         _forcer_region(demo=True)
         # `demo=True` en dur : ce n'est pas un paramètre de cette classe.
         self._client = PocketOption(demo=True, ssid=self.ssid)

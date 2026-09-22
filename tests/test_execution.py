@@ -325,3 +325,55 @@ def test_le_plafond_absolu_se_releve_explicitement():
 def test_un_plafond_absolu_nul_est_refuse():
     with pytest.raises(BotError, match="mise_max_absolue"):
         Plafonds(mise=1.0, mise_max_absolue=0.0)
+
+
+def test_le_courtier_installe_une_boucle_dans_son_thread():
+    """Le bogue qui a arrêté la course une seconde fois.
+
+    La bibliothèque du broker appelle `asyncio.get_event_loop()` dans son
+    constructeur. Un thread SECONDAIRE n'en a pas : « There is no current
+    event loop in thread 'course-plan' ». En local tout passait, parce que le
+    thread principal en possède une — seul le déplacement dans un thread l'a
+    révélé, en production.
+    """
+    import asyncio
+    import threading
+
+    from maxprofit.collect.pocketoption import installer_boucle_asyncio
+
+    vu = {}
+
+    def dans_un_thread():
+        # `asyncio.get_event_loop()` est l'appel EXACT que fait la
+        # bibliothèque du broker. C'est lui qu'on veut voir échouer avant,
+        # réussir après — pas un équivalent qui pourrait se comporter
+        # autrement.
+        try:
+            asyncio.get_event_loop()
+            vu["avant"] = "une boucle existait déjà"
+        except RuntimeError:
+            vu["avant"] = None
+        boucle = installer_boucle_asyncio(None)
+        vu["apres"] = asyncio.get_event_loop()
+        vu["rendue"] = boucle
+        boucle.close()
+
+    t = threading.Thread(target=dans_un_thread)
+    t.start()
+    t.join(timeout=5)
+    assert vu["avant"] is None, "le test ne prouve rien si le thread en avait une"
+    assert vu["apres"] is vu["rendue"]
+
+
+def test_une_boucle_deja_en_cours_est_refusee_au_lieu_d_etre_remplacee():
+    """La remplacer casserait le serveur HTTP du service hébergé."""
+    import asyncio
+
+    from maxprofit.collect.pocketoption import (
+        SourceIndisponible, installer_boucle_asyncio)
+
+    async def depuis_une_coroutine():
+        with pytest.raises(SourceIndisponible, match="tourne déjà"):
+            installer_boucle_asyncio(None)
+
+    asyncio.run(depuis_une_coroutine())
