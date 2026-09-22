@@ -15,6 +15,8 @@ c'est la martingale ou la zone qui a dérapé.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from maxprofit.core.types import Direction, Signal
@@ -379,3 +381,25 @@ def test_une_session_close_ne_laisse_rien_a_reprendre(course, tmp_path):
     repris, _ = charger_etat(conn, "essai", c.etat.plan)
     assert repris.session is None
     conn.close()
+
+
+def test_une_course_sans_ordre_dit_si_elle_est_VIVANTE(course):
+    """« J'attends un signal » et « je suis cassé » se ressemblaient.
+
+    `/etat` affichait « pas encore démarrée » aussi bien pour une course qui
+    évalue 240 bougies par heure sans rien trouver que pour une course qui ne
+    lit plus la base du tout. Les deux étaient vertes, et seule la seconde
+    demandait une intervention.
+    """
+    c = course(["win"], plan=_plan(sessions=10))
+    assert "aucune bougie évaluée" in c.resume()
+    assert "LECTURE de la base" in c.resume(), (
+        "le résumé doit dire OÙ chercher si l'état dure")
+
+    # Une évaluation, sans signal : la course doit se déclarer vivante.
+    c.etat.bougies_evaluees = 240
+    c.etat.derniere_evaluation_ts = int(time.time())
+    resume = c.resume()
+    assert "240 bougies évaluées" in resume
+    assert "0 signal(aux)" in resume
+    assert "dernière lecture il y a 0 s" in resume

@@ -74,7 +74,7 @@ class SuperviseurCourse:
         self.echecs_consecutifs = 0
         self.derniere_erreur: str | None = None
         self.abandonnee = False
-        self._dernier_resume = "pas encore démarrée"
+        self._dernier_resume = "thread lancé, connexion au broker en cours"
 
     # --- cycle de vie -------------------------------------------------------
 
@@ -122,9 +122,14 @@ class SuperviseurCourse:
                 self.echecs_consecutifs = 0
                 attente = BACKOFF_SEC
                 while not self._arret.is_set():
-                    if course.tour():
-                        self._dernier_resume = course.resume()
-                    else:
+                    joue = course.tour()
+                    # Le résumé est rafraîchi à CHAQUE passage, pas seulement
+                    # quand un ordre part. Ne le mettre à jour qu'après un
+                    # trade laissait `/etat` afficher « pas encore démarrée »
+                    # pendant des heures sur une course parfaitement vivante
+                    # qui attendait simplement un signal.
+                    self._dernier_resume = course.resume()
+                    if not joue:
                         self._arret.wait(self.pause_sec)
                 return
             except BaseException as erreur:      # noqa: BLE001

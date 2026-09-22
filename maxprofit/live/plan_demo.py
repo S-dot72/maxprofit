@@ -83,6 +83,15 @@ class Etat:
     sessions_perdues_daffilee: int = 0
     reancrages: list[tuple[int, int, float]] = field(default_factory=list)
     derniere_bougie: dict[str, int] = field(default_factory=dict)
+    #: De quoi distinguer « j'attends un signal » de « je suis cassé ».
+    #:
+    #: Sans ces compteurs, `/etat` affichait « pas encore démarrée » aussi
+    #: bien pour une course qui évalue 240 bougies par heure sans rien trouver
+    #: que pour une course qui ne lit plus la base du tout. Les deux
+    #: ressemblaient à du vert.
+    bougies_evaluees: int = 0
+    signaux_trouves: int = 0
+    derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
         self.journee = Journee(plan=self.plan, solde=self.solde)
@@ -129,6 +138,8 @@ class CoursePlanDemo:
             if derniere.ts_sec <= self.etat.derniere_bougie.get(paire, 0):
                 continue          # déjà évaluée
             self.etat.derniere_bougie[paire] = derniere.ts_sec
+            self.etat.bougies_evaluees += 1
+            self.etat.derniere_evaluation_ts = maintenant
             # La bougie close à ts_sec couvre [ts_sec, ts_sec+60[. Le signal
             # est donc daté de sa FIN, et c'est de là qu'on compte la
             # fraîcheur — pas de son début.
@@ -137,6 +148,7 @@ class CoursePlanDemo:
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
             if signal is not None:
+                self.etat.signaux_trouves += 1
                 return signal
         return None
 
@@ -256,12 +268,20 @@ class CoursePlanDemo:
 
     def resume(self) -> str:
         j = self.etat.journee
-        return (
-            f"jour {self.etat.jour}/{self.etat.plan.jours}  "
-            f"solde {self.etat.solde:.2f} $  "
-            f"sessions {j.sessions_jouees}/{self.etat.plan.sessions_par_jour}  "
-            f"journée {j.resultat_pct:+.2f} %  "
-            f"réancrages {len(self.etat.reancrages)}")
+        e = self.etat
+        if e.bougies_evaluees == 0:
+            return ("connectée, aucune bougie évaluée pour l'instant — "
+                    "si ça dure, c'est la LECTURE de la base qui est en cause")
+        age = int(time.time()) - e.derniere_evaluation_ts
+        base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
+                f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour}  "
+                f"journée {j.resultat_pct:+.2f} %  "
+                f"réancrages {len(e.reancrages)}")
+        # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
+        # seul moyen de dire qu'une course sans ordre est vivante.
+        return (f"{base} | {e.bougies_evaluees} bougies évaluées, "
+                f"{e.signaux_trouves} signal(aux), dernière lecture il y a "
+                f"{age} s")
 
 
 def nouveau_jour(etat: Etat) -> None:
