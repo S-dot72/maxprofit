@@ -45,14 +45,25 @@ class CourtierFactice:
         self.resultats = list(resultats)
         self.places: list[tuple[str, str, float]] = []
         self.suivies: list[str] = []
+        self.mises_recues: list[float] = []
 
     def suivre(self, pair):
         self.suivies.append(pair)
 
-    def placer(self, pair, sens, expiration_sec):
+    def placer(self, pair, sens, expiration_sec, mise=None):
+        """⚠ La mise REÇUE est enregistrée, pas une constante.
+
+        La première version ignorait l'argument et posait 1.0. Le vrai
+        courtier, lui, misait toujours son plafond au lieu de la mise de
+        l'échelle : la martingale plaçait trois fois le même montant. Aucun
+        test ne l'a vu, parce que l'orchestrateur réécrivait `execution.mise`
+        APRÈS coup — les tests mesuraient donc l'intention, pas l'ordre.
+        """
         issue = self.resultats.pop(0) if self.resultats else "loose"
+        assert mise is not None, "l'orchestrateur doit passer une mise"
+        self.mises_recues.append(mise)
         ex = Execution(
-            pair=pair, sens=sens, mise=1.0, signal_ts_ms=T0_MS,
+            pair=pair, sens=sens, mise=mise, signal_ts_ms=T0_MS,
             prix_attendu=1.1, payout_flux_pct=84.0, expiration_sec=expiration_sec,
             clic_ts_ms=T0_MS + 10)
         if issue == "refus":
@@ -113,10 +124,14 @@ def test_les_mises_grossissent_a_chaque_pas_perdu(course):
     c = course(["loose", "loose", "win"])
     for _ in range(3):
         c.tour()
-    mises = [m for _, _, m in []] or [e.mise for e in c.journal.toutes()]
+    # Les mises REÇUES PAR LE COURTIER, pas celles écrites dans le journal :
+    # c'est la distinction qui a laissé passer le bogue de production.
+    mises = c.courtier.mises_recues
     assert len(mises) == 3
     assert mises[1] / mises[0] == pytest.approx(2.087, abs=0.01)
     assert mises[2] / mises[1] == pytest.approx(2.087, abs=0.01)
+    assert [e.mise for e in c.journal.toutes()] == pytest.approx(mises), (
+        "le journal doit refléter ce qui a été PLACÉ")
 
 
 def test_la_session_s_arrete_au_troisieme_pas_perdu(course):

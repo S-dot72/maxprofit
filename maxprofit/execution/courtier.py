@@ -177,7 +177,8 @@ class CourtierDemo:
 
     # --- l'ordre ------------------------------------------------------------
 
-    def placer(self, pair: str, sens: str, expiration_sec: int) -> Execution:
+    def placer(self, pair: str, sens: str, expiration_sec: int,
+               mise: float | None = None) -> Execution:
         """Passe un ordre et rend son enregistrement, abouti ou refusé.
 
         Les trois horodatages sont pris ici et nulle part ailleurs : c'est le
@@ -187,13 +188,27 @@ class CourtierDemo:
         """
         self._exiger_connecte()
         self._exiger_dans_les_plafonds()
+        # ⚠ La mise est un ARGUMENT, et son absence signifie « le plafond ».
+        #
+        # La première version misait TOUJOURS `plafonds.mise`. La sonde
+        # d'exécution, qui mise un montant fixe, n'y voyait rien ; la
+        # martingale, elle, plaçait trois fois le même montant et son échelle
+        # était purement décorative. Le bogue a abandonné une course en
+        # production sans que rien d'autre ne le signale.
+        mise = self.plafonds.mise if mise is None else float(mise)
+        if not (0 < mise <= self.plafonds.mise):
+            raise BotError(
+                f"mise hors ]0,{self.plafonds.mise}] : {mise}. Le plafond est "
+                f"calculé depuis le plan ; une mise au-dessus veut dire que "
+                f"le dimensionnement a dérapé, et mieux vaut refuser l'ordre "
+                f"que le placer.")
 
         signal_ts = maintenant_ms()
         prix_attendu = self.prix(pair)
         payout_flux = self.payout(pair)
 
         execution = Execution(
-            pair=pair, sens=sens, mise=self.plafonds.mise,
+            pair=pair, sens=sens, mise=mise,
             signal_ts_ms=signal_ts, prix_attendu=prix_attendu,
             payout_flux_pct=payout_flux, expiration_sec=expiration_sec,
         )
@@ -201,7 +216,7 @@ class CourtierDemo:
         execution.clic_ts_ms = maintenant_ms()
         try:
             abouti, order_id = self._client.buy(
-                self.plafonds.mise, pair, sens, expiration_sec)
+                mise, pair, sens, expiration_sec)
         except Exception as erreur:          # noqa: BLE001
             # La bibliothèque avale déjà presque tout ; ce qui remonte ici est
             # inattendu. On l'enregistre comme un refus plutôt que de perdre

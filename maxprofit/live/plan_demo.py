@@ -177,13 +177,12 @@ class CoursePlanDemo:
 
         sens = "call" if signal.direction is Direction.CALL else "put"
         execution = self.courtier.placer(
-            signal.pair, sens, self.strategie.p.expiry_sec)
+            signal.pair, sens, self.strategie.p.expiry_sec, mise=mise)
         if not execution.accepte:
             log.warning("Ordre refusé (%s) : le pas n'est pas joué.",
                         execution.refus)
             self.journal.ecrire(execution)
             return
-        execution.mise = mise
         execution = self.courtier.denouer(execution)
         self.journal.ecrire(execution)
 
@@ -377,7 +376,7 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     from maxprofit.execution.courtier import CourtierDemo
     from maxprofit.execution.garde import Plafonds
     from maxprofit.execution.journal import JournalExecution
-    from maxprofit.plan import Echelle, Risque
+    from maxprofit.plan import Echelle, Risque, solde_projete
     from maxprofit.store.db import open_read_only, open_read_write
     from maxprofit.store.market import MarketReader
     from maxprofit.strategies.zone_h1 import ZoneH1
@@ -386,13 +385,22 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
         sessions_par_jour=sessions_par_jour, jours=jours,
         sessions_perdues_max=2)
-    # Le plafond de mise est celui du 3e pas, majoré de moitié. Au-delà, le
-    # dimensionnement a dérapé et il vaut mieux qu'un ordre soit refusé qu'une
-    # mise inattendue placée.
+    # Le plafond est le 3e pas AU CAPITAL VISÉ, pas au capital initial.
+    #
+    # Les mises sont dimensionnées sur le solde COURANT : elles grandissent
+    # avec lui. Un plafond calculé sur les 250 $ de départ aurait refusé chaque
+    # ordre dès que le solde aurait dépassé ce niveau — silencieusement, en
+    # abandonnant la course au bout de cinq refus. C'est exactement ce qui est
+    # arrivé, à une nuance près : le plafond absolu de 10 $ a bloqué dès le
+    # premier ordre.
+    vise = solde_projete(plan, plan.jours)
     pire = Echelle(payout_pct=92,
-                   gain_vise=capital * plan.gain_par_session_pct / 100).mises()[-1]
-    plafonds = Plafonds(mise=round(pire * 1.5, 2), ordres_max=2000,
-                        duree_max_sec=11 * 86400)
+                   gain_vise=vise * plan.gain_par_session_pct / 100).mises()[-1]
+    plafond = round(pire * 1.1, 2)
+    plafonds = Plafonds(mise=plafond, mise_max_absolue=plafond,
+                        ordres_max=2000, duree_max_sec=11 * 86400)
+    log.info("Plafond de mise : %.2f $ (3e pas au capital visé de %.2f $)",
+             plafond, vise)
 
     lecteur = MarketReader(open_read_only(Path(chemin_lecture)))
     ecriture = open_read_write(Path(chemin_ecriture))

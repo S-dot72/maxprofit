@@ -95,16 +95,36 @@ class Plafonds:
     qu'ils bornent une DURÉE d'expérience et non un montant.
     """
 
+    #: La mise MAXIMALE par ordre, pas la mise de chaque ordre.
+    #:
+    #: La distinction a coûté une course : le courtier misait ce champ à
+    #: chaque fois au lieu de la mise que l'échelle lui donnait, et la
+    #: martingale plaçait trois fois le même montant. Un plafond n'est pas
+    #: une valeur par défaut.
     mise: float
     ordres_max: int = 200
     duree_max_sec: int = 6 * 3600
+    #: Le plafond au-dessus du plafond. Vaut `MISE_MAX_ABSOLUE` sauf si
+    #: l'appelant le RELÈVE explicitement, ce qui est un acte délibéré.
+    #:
+    #: Il a fallu le rendre réglable : une martingale dimensionnée sur le
+    #: solde grandit avec lui. Un plan de 250 $ qui vise 4 998 $ au jour 30
+    #: aura un 3e pas de ~138 $, et un plafond constant à 10 $ aurait refusé
+    #: chaque ordre à partir du troisième jour — silencieusement, en
+    #: abandonnant la course.
+    mise_max_absolue: float = MISE_MAX_ABSOLUE
 
     def __post_init__(self) -> None:
-        if not (0 < self.mise <= MISE_MAX_ABSOLUE):
+        if self.mise_max_absolue <= 0:
             raise BotError(
-                f"mise hors ]0,{MISE_MAX_ABSOLUE}] : {self.mise}. Le plafond "
-                f"absolu ne protège pas un compte démo — il rend impossible "
-                f"qu'un zéro de trop passe inaperçu si un jeton réel se glisse.")
+                f"mise_max_absolue invalide : {self.mise_max_absolue}")
+        if not (0 < self.mise <= self.mise_max_absolue):
+            raise BotError(
+                f"mise hors ]0,{self.mise_max_absolue}] : {self.mise}. Ce "
+                f"plafond ne protège pas un compte démo : il rend impossible "
+                f"qu'une mise sans proportion avec le plan parte sans qu'on "
+                f"l'ait décidé. Le relever est un acte délibéré, pas un "
+                f"réglage.")
         if not (1 <= self.ordres_max <= 2000):
             raise BotError(
                 f"ordres_max hors [1,2000] : {self.ordres_max}. Au-delà, le "

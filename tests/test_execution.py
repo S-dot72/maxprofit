@@ -290,3 +290,38 @@ def test_un_ordre_jamais_tente_n_est_pas_un_refus(tmp_path):
 def test_un_sens_inconnu_est_refuse():
     with pytest.raises(BotError, match="call"):
         _ex(sens="haut")
+
+
+# --------------------------------------------------------------------------- #
+# La mise est un ARGUMENT — le bogue qui a tué une course
+# --------------------------------------------------------------------------- #
+
+def test_le_plafond_n_est_pas_une_mise_par_defaut():
+    """Le bogue trouvé en production, et il est structurel.
+
+    `Plafonds.mise` est un PLAFOND. La première version du courtier le misait
+    à chaque ordre au lieu de la mise que l'échelle lui donnait : la
+    martingale plaçait trois fois le même montant, et son échelle était
+    purement décorative. Rien ne levait — les ordres partaient, les résultats
+    rentraient, le solde était simplement faux.
+    """
+    p = Plafonds(mise=10.0)
+    assert p.mise == 10.0
+    # Trois mises d'échelle distinctes doivent toutes tenir sous le plafond.
+    for mise in (1.59, 3.31, 6.90):
+        assert 0 < mise <= p.mise
+
+
+def test_le_plafond_absolu_se_releve_explicitement():
+    """Une martingale dimensionnée sur le solde GRANDIT avec lui. Un plafond
+    constant à 10 $ aurait refusé chaque ordre dès le troisième jour d'un plan
+    qui vise 4 998 $ — silencieusement, en abandonnant la course."""
+    with pytest.raises(BotError, match="hors"):
+        Plafonds(mise=138.0)
+    grand = Plafonds(mise=138.0, mise_max_absolue=140.0)
+    assert grand.mise == 138.0
+
+
+def test_un_plafond_absolu_nul_est_refuse():
+    with pytest.raises(BotError, match="mise_max_absolue"):
+        Plafonds(mise=1.0, mise_max_absolue=0.0)
