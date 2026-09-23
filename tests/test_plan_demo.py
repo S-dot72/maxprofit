@@ -56,6 +56,9 @@ class CourtierFactice:
     def paires_au_plafond(self):
         return ["EURUSD_otc"]
 
+    def prix(self, pair):
+        return 1.1
+
     def bougies(self, pair, count=300):
         # Aucune bougie : les tests d'enchaînement scriptent le signal et ne
         # passent jamais par la stratégie.
@@ -105,16 +108,33 @@ class LecteurFactice:
         return []
 
 
+#: Deux actifs, alternés par le signal scripté. La règle d'indépendance
+#: interdit de jouer le pas suivant sur le MÊME actif : un montage à une seule
+#: paire bloquerait chaque échelle au pas 1, et l'on ne testerait plus rien de
+#: la martingale.
+PAIRES_TEST = ("EURUSD_otc", "AUDCAD_otc")
+
+
 @pytest.fixture
-def course(tmp_path):
+def course(tmp_path, monkeypatch):
+    # Le délai est neutralisé : ces tests mesurent l'ENCHAÎNEMENT, pas
+    # l'horloge. La règle de délai a ses propres tests, plus bas.
+    monkeypatch.setattr("maxprofit.live.plan_demo.DELAI_INDEPENDANCE_SEC", 0)
+
     def fabriquer(resultats, plan=None):
         journal = JournalExecution(tmp_path / "exec.db", campagne="test")
         c = CoursePlanDemo(LecteurFactice(), CourtierFactice(resultats),
-                           journal, plan or _plan(), ("EURUSD_otc",))
-        c._signaux_scriptes = True
-        c.chercher_un_signal = lambda: Signal(
-            pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
-            expiry_sec=900, reason="script")
+                           journal, plan or _plan(), PAIRES_TEST)
+        compteur = {"n": 0}
+
+        def signal_scripte():
+            paire = PAIRES_TEST[compteur["n"] % len(PAIRES_TEST)]
+            compteur["n"] += 1
+            return Signal(pair=paire, direction=Direction.CALL,
+                          decided_at_ms=T0_MS, expiry_sec=900,
+                          reason="script")
+
+        c.chercher_un_signal = signal_scripte
         return c
     return fabriquer
 
@@ -317,7 +337,7 @@ def test_le_mode_epinglees_s_abonne_car_placer_a_besoin_du_PRIX(course):
     prix, que le broker ne sert que sur un actif souscrit. Sans abonnement,
     l'ordre échouerait — et seulement au moment de trader."""
     c = course(["win"])
-    assert c.courtier.suivies == ["EURUSD_otc"]
+    assert c.courtier.suivies == list(PAIRES_TEST)
 
 
 def test_le_mode_plafond_ne_s_abonne_pas_en_plus(tmp_path):
@@ -525,3 +545,114 @@ def test_la_taille_de_l_univers_est_affichee(tmp_path):
     c.etat.derniere_evaluation_ts = int(time.time())
     assert "0 actif(s) au plafond" in c.resume()
     c.journal.close()
+
+
+
+# --------------------------------------------------------------------------- #
+# La règle d'INDÉPENDANCE des pas — ce qui sépare -24 % de +68 %
+# --------------------------------------------------------------------------- #
+
+def test_le_pas_suivant_ne_se_joue_pas_sur_le_MEME_actif(tmp_path):
+    """Le défaut mesuré en rejouant le plan : la stratégie tire plusieurs
+    signaux d'affilée sur la MÊME zone, et le pas 2 rejoue le pari que le
+    pas 1 vient de perdre.
+
+    Sessions perdues : 15,3 % observées contre 8,5 % attendues à 56 % de
+    précision. Solde 250 $ -> 189,89 $ sans la règle, 420,09 $ avec.
+    """
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose", "win"]),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = lambda: Signal(
+        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+
+    assert c.tour() is True                      # pas 1, perdu
+    assert c.etat.session is not None and c.etat.session.pas_joues == 1
+    # Même actif, tout de suite : le pas 2 doit être REFUSÉ.
+    assert c.tour() is False
+    assert c.etat.pas_sautes_independance == 1
+    assert len(c.journal.toutes()) == 1, "aucun second ordre ne doit partir"
+    journal.close()
+
+
+def test_le_pas_suivant_ne_se_joue_pas_TROP_TOT(tmp_path, monkeypatch):
+    """Un autre actif ne suffit pas : deux signaux nés de la même minute de
+    marché restent corrélés."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose", "win"]),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    tour = {"n": 0}
+
+    def signal_scripte():
+        # Le pas 1 part sur AUDCAD, tout le reste sur EURUSD : l'actif DIFFÈRE
+        # à chaque fois, donc seul le délai peut encore bloquer.
+        tour["n"] += 1
+        paire = "AUDCAD_otc" if tour["n"] == 1 else "EURUSD_otc"
+        return Signal(pair=paire, direction=Direction.CALL,
+                      decided_at_ms=T0_MS, expiry_sec=900, reason="script")
+
+    c.chercher_un_signal = signal_scripte
+    c.tour()                                     # pas 1, perdu
+    assert c.tour() is False, "autre actif mais trop tôt : refusé"
+    assert c.etat.pas_sautes_independance == 1
+
+    # Le délai écoulé, le même signal passe.
+    monkeypatch.setattr("maxprofit.live.plan_demo.DELAI_INDEPENDANCE_SEC", 0)
+    assert c.tour() is True
+    assert len(c.journal.toutes()) == 2
+    journal.close()
+
+
+def test_le_PREMIER_pas_n_a_rien_a_respecter(course):
+    """Il ouvre le pari : c'est la martingale qui a besoin d'indépendance
+    entre ses pas, pas la stratégie entre ses signaux."""
+    c = course(["win", "win"], plan=_plan(sessions=10))
+    assert c.tour() is True
+    assert c.etat.session is None
+    # Deuxième session, même actif possible : rien ne l'interdit.
+    assert c.tour() is True
+    assert len(c.journal.toutes()) == 2
+
+
+def test_une_session_qui_attend_trop_longtemps_est_INTERROMPUE(tmp_path,
+                                                               monkeypatch):
+    """Sans cette borne, une session attendrait indéfiniment un pas éligible,
+    bloquant la journée — et ses mises déjà engagées resteraient hors des
+    comptes."""
+    # -1 et non 0 : le pas vient d'être joué, l'écoulé vaut zéro
+    # seconde, et « zéro > zéro » est faux.
+    monkeypatch.setattr("maxprofit.live.plan_demo.ATTENTE_MAX_PAS_SEC", -1)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose"]),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = lambda: Signal(
+        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+
+    c.tour()                                     # pas 1, perdu
+    engage = c.etat.session.engage
+    assert c.tour() is True, "l'interruption est un événement, pas un silence"
+    assert c.etat.session is None
+    assert c.etat.sessions_interrompues == 1
+    # La mise engagée est COMPTÉE : une session abandonnée dont les mises
+    # disparaîtraient ferait croire à un solde qu'on n'a pas.
+    assert c.etat.solde == pytest.approx(CAPITAL - engage)
+    journal.close()
+
+
+def test_le_dernier_trade_survit_a_un_redemarrage(course, tmp_path):
+    """Sans cette reprise, un redémarrage rendrait le pas suivant
+    immédiatement éligible — et l'on rejouerait exactement le pari corrélé
+    que la règle d'indépendance existe pour empêcher."""
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["loose", "win"], plan=_plan(sessions=10))
+    c.tour()
+    assert c.etat.dernier_trade is not None
+    sauver_etat(conn, "indep", c.etat, 20_000)
+
+    repris, _ = charger_etat(conn, "indep", c.etat.plan)
+    assert repris.dernier_trade == c.etat.dernier_trade
+    conn.close()

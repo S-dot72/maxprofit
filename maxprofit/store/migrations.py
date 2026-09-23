@@ -288,12 +288,41 @@ def _v5_course_du_plan(conn) -> None:
         conn.execute(instruction)
 
 
+def _v6_dernier_trade(conn) -> None:
+    """Le dernier pas joué : sur quel actif, et quand.
+
+    La règle d'indépendance en dépend — un pas de martingale ne se joue pas
+    sur le même actif que le précédent ni dans les minutes qui suivent. Sans
+    persistance, un redémarrage rendrait le pas suivant immédiatement
+    éligible, et l'on rejouerait exactement le pari corrélé que la règle
+    existe pour empêcher.
+
+    Deux colonnes ajoutées plutôt qu'une table : `plan_etat` porte déjà tout
+    l'état de la course, et le découper n'apporterait qu'une jointure.
+    """
+    for instruction in _decouper(
+        """
+        ALTER TABLE plan_etat ADD COLUMN dernier_trade_pair TEXT;
+        ALTER TABLE plan_etat ADD COLUMN dernier_trade_ts_sec INTEGER;
+        """
+    ):
+        try:
+            conn.execute(instruction)
+        except Exception:                        # noqa: BLE001
+            # `ADD COLUMN IF NOT EXISTS` n'existe pas en SQLite. Une colonne
+            # déjà présente n'est pas une panne : la migration doit pouvoir
+            # se rejouer sur une base qui l'a partiellement reçue.
+            pass
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
     Migration(3, "annuaire des opérateurs", _v3_operateurs),
     Migration(4, "chemins de ticks compressés", _v4_chemins_de_ticks),
     Migration(5, "course du plan : ordres et état", _v5_course_du_plan),
+    Migration(6, "dernier pas joué, pour la règle d'indépendance",
+              _v6_dernier_trade),
 )
 
 #: Version de schéma que ce code sait produire.

@@ -112,6 +112,31 @@ RAFRAICHIR_UNIVERS_SEC = 120
 #: Le défaut est EPINGLEES. Le test de la chaîne — signal, mise, ordre,
 #: solde, gardes — se fait de toute façon dès les premiers ordres, quel que
 #: soit l'univers : c'est un sous-produit, pas une campagne à part.
+#: ⚠ LA RÈGLE D'INDÉPENDANCE DES PAS — et elle n'est pas cosmétique.
+#:
+#: Une martingale suppose que ses pas sont des paris INDÉPENDANTS. Sans cette
+#: règle, ils ne le sont pas : la stratégie tire plusieurs signaux d'affilée
+#: sur la MÊME zone, à une minute d'intervalle, et le pas 2 rejoue le pari que
+#: le pas 1 vient de perdre.
+#:
+#: Mesuré en rejouant le plan sur les données collectées :
+#:
+#:     sans la règle   sessions perdues 15,3 %   250 $ -> 189,89 $  (-24,0 %)
+#:     avec la règle   sessions perdues  0,0 %   250 $ -> 420,09 $  (+68,0 %)
+#:
+#: À 56 % de précision, une session à trois pas devrait être perdue 8,5 % du
+#: temps. Les 15,3 % observés sont la signature de pas corrélés.
+#:
+#: ⚠ Le +68 % est MESURÉ EN ÉCHANTILLON, sur la période même où l'hypothèse a
+#: été trouvée, avec une règle choisie APRÈS avoir vu que les pertes se
+#: regroupent. Il ne vaut rien tant qu'il n'a pas tenu sur des données jamais
+#: vues — c'est ce que cette course doit trancher.
+DELAI_INDEPENDANCE_SEC = 900
+#: Au-delà, une session qui attend un pas éligible est INTERROMPUE. Sans cette
+#: borne elle attendrait indéfiniment, bloquant la journée entière, et ses
+#: mises déjà engagées resteraient hors des comptes.
+ATTENTE_MAX_PAS_SEC = 2 * 3600
+
 UNIVERS_EPINGLEES = "epinglees"
 UNIVERS_PLAFOND = "plafond"
 
@@ -145,6 +170,12 @@ class Etat:
     payouts_vus: dict[str, int] = field(default_factory=dict)
     #: Nombre d'actifs au plafond au dernier relevé du catalogue.
     univers_taille: int = 0
+    #: (actif, instant) du dernier pas RÉELLEMENT joué. Persisté : sans lui,
+    #: un redémarrage rendrait le pas suivant immédiatement éligible et l'on
+    #: rejouerait le pari corrélé que la règle existe pour empêcher.
+    dernier_trade: tuple[str, int] | None = None
+    pas_sautes_independance: int = 0
+    sessions_interrompues: int = 0
     derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
@@ -447,11 +478,63 @@ class CoursePlanDemo:
             arret = self.peut_ouvrir()
             if arret is not None:
                 return False
+        elif self._session_a_trop_attendu():
+            self._interrompre_la_session()
+            return True
         signal = self.chercher_un_signal()
         if signal is None:
             return False
+        if not self._pas_independant(signal):
+            self.etat.pas_sautes_independance += 1
+            return False
         self.jouer_un_pas(signal)
+        self.etat.dernier_trade = (signal.pair, int(time.time()))
         return True
+
+    def _pas_independant(self, signal) -> bool:
+        """Un pas de martingale se joue-t-il sur un pari VRAIMENT nouveau ?
+
+        Le premier pas d'une session n'a rien à respecter : il ouvre le pari.
+        Les suivants, si — sinon ils rejouent celui qui vient d'être perdu.
+        """
+        session = self.etat.session
+        if session is None or session.pas_joues == 0:
+            return True
+        dernier = self.etat.dernier_trade
+        if dernier is None:
+            return True
+        meme_actif = dernier[0] == signal.pair
+        trop_tot = int(time.time()) - dernier[1] < DELAI_INDEPENDANCE_SEC
+        if meme_actif or trop_tot:
+            log.info("Pas %d sauté sur %s : %s. La martingale a besoin d'un "
+                     "pari indépendant, pas du même une minute plus tard.",
+                     session.pas_joues + 1, signal.pair,
+                     "même actif" if meme_actif else "trop tôt")
+            return False
+        return True
+
+    def _session_a_trop_attendu(self) -> bool:
+        session = self.etat.session
+        dernier = self.etat.dernier_trade
+        if session is None or not session.pas_joues or dernier is None:
+            return False
+        return int(time.time()) - dernier[1] > ATTENTE_MAX_PAS_SEC
+
+    def _interrompre_la_session(self) -> None:
+        """Aucun pas éligible depuis trop longtemps : on solde et on repart.
+
+        Interrompue et non perdue : elle n'a coûté que les pas déjà joués.
+        Mais elle EST comptée — une session abandonnée dont les mises
+        disparaîtraient des comptes ferait croire à un solde qu'on n'a pas.
+        """
+        session = self.etat.session
+        log.warning(
+            "Session interrompue : aucun pas indépendant depuis %.0f min. "
+            "%d pas joué(s), %.2f $ engagé(s).",
+            ATTENTE_MAX_PAS_SEC / 60, session.pas_joues, session.engage)
+        session.interrompre()
+        self.etat.sessions_interrompues += 1
+        self._cloturer_session()
 
     def _payouts_lisibles(self) -> str:
         return " ".join(
@@ -480,8 +563,9 @@ class CoursePlanDemo:
         # seul moyen de dire qu'une course sans ordre est vivante.
         return (f"{base} | {e.univers_taille} actif(s) au plafond, "
                 f"{e.bougies_evaluees} bougies évaluées, "
-                f"{e.signaux_trouves} signal(aux), dernière lecture il y a "
-                f"{age} s")
+                f"{e.signaux_trouves} signal(aux), {e.pas_sautes_independance} "
+                f"pas sauté(s) pour indépendance, {e.sessions_interrompues} "
+                f"session(s) interrompue(s), dernière lecture il y a {age} s")
 
 
 def nouveau_jour(etat: Etat) -> None:
@@ -517,8 +601,9 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                (campagne, maj_ts_sec, jour, solde, solde_ouverture,
                 sessions_jouees, sessions_perdues_daffilee, jour_utc,
                 reancrages, derniere_bougie, session_pas_joues,
-                session_engagees, session_gain_vise)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                session_engagees, session_gain_vise,
+                dernier_trade_pair, dernier_trade_ts_sec)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(campagne) DO UPDATE SET
                maj_ts_sec = excluded.maj_ts_sec,
                jour = excluded.jour,
@@ -531,14 +616,18 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                derniere_bougie = excluded.derniere_bougie,
                session_pas_joues = excluded.session_pas_joues,
                session_engagees = excluded.session_engagees,
-               session_gain_vise = excluded.session_gain_vise""",
+               session_gain_vise = excluded.session_gain_vise,
+               dernier_trade_pair = excluded.dernier_trade_pair,
+               dernier_trade_ts_sec = excluded.dernier_trade_ts_sec""",
         (campagne, int(time.time()), etat.jour, etat.solde,
          etat.journee.solde_ouverture, etat.journee.sessions_jouees,
          etat.sessions_perdues_daffilee, jour_utc_courant,
          json.dumps(etat.reancrages), json.dumps(etat.derniere_bougie),
          session.pas_joues if session else 0,
          json.dumps(session.engagees if session else []),
-         session.echelle.gain_vise if session else 0.0),
+         session.echelle.gain_vise if session else 0.0,
+         etat.dernier_trade[0] if etat.dernier_trade else None,
+         etat.dernier_trade[1] if etat.dernier_trade else None),
     )
     valider(conn)
 
@@ -554,7 +643,8 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         """SELECT jour, solde, solde_ouverture, sessions_jouees,
                   sessions_perdues_daffilee, jour_utc, reancrages,
                   derniere_bougie, session_pas_joues, session_engagees,
-                  session_gain_vise
+                  session_gain_vise, dernier_trade_pair,
+                  dernier_trade_ts_sec
            FROM plan_etat WHERE campagne = ?""", (campagne,)).fetchone()
     if ligne is None:
         return None
@@ -566,6 +656,11 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     etat.reancrages = [tuple(x) for x in json.loads(ligne[6])]
     etat.derniere_bougie = {k: int(v) for k, v
                             in json.loads(ligne[7]).items()}
+    if ligne[11] is not None and ligne[12] is not None:
+        # Sans cette reprise, un redémarrage rendrait le pas suivant
+        # immédiatement éligible et l'on rejouerait le pari corrélé que la
+        # règle d'indépendance existe pour empêcher.
+        etat.dernier_trade = (str(ligne[11]), int(ligne[12]))
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même
