@@ -315,6 +315,43 @@ def _v6_dernier_trade(conn) -> None:
             pass
 
 
+def _v7_entiers_64_bits(conn) -> None:
+    """Les colonnes en MILLISECONDES débordaient d'`INTEGER` en PostgreSQL.
+
+    `INTEGER` vaut 64 bits en SQLite et 32 en PostgreSQL — maximum
+    2 147 483 647. Un horodatage en secondes y tient (1,79 × 10⁹) ; un
+    horodatage en MILLISECONDES vaut 1,79 × 10¹² et le dépasse d'un facteur
+    mille. PostgreSQL a refusé l'écriture avec « integer out of range », et
+    la course s'est arrêtée dès le premier ordre.
+
+    En local, sur SQLite, tout passait. C'est exactement le piège du `REAL`,
+    que ce projet documente depuis des semaines — je l'ai reproduit sur un
+    autre type.
+
+    Les `ALTER` sont enveloppés : SQLite ne sait pas changer le type d'une
+    colonne, et n'en a pas besoin. Une migration doit pouvoir tourner sur les
+    deux moteurs.
+    """
+    colonnes = [
+        ("executions", "signal_ts_ms"), ("executions", "clic_ts_ms"),
+        ("executions", "accepte_ts_ms"), ("executions", "ouverture_ts_ms"),
+        ("executions", "expiration_ts_ms"),
+        ("executions", "decalage_broker_ms"),
+        ("executions", "expiration_sec"),
+        ("plan_etat", "maj_ts_sec"), ("plan_etat", "jour_utc"),
+        ("plan_etat", "dernier_trade_ts_sec"),
+        ("ticks", "ts_ms"),
+    ]
+    for table, colonne in colonnes:
+        try:
+            conn.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {colonne} TYPE BIGINT")
+        except Exception:                        # noqa: BLE001
+            # SQLite : pas d'ALTER COLUMN, et pas besoin — son INTEGER est
+            # déjà en 64 bits.
+            pass
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
@@ -323,6 +360,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "course du plan : ordres et état", _v5_course_du_plan),
     Migration(6, "dernier pas joué, pour la règle d'indépendance",
               _v6_dernier_trade),
+    Migration(7, "entiers 64 bits pour les millisecondes",
+              _v7_entiers_64_bits),
 )
 
 #: Version de schéma que ce code sait produire.

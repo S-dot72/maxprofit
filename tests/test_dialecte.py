@@ -95,3 +95,38 @@ def test_le_sql_portable_traverse_sans_dommage():
     traduit = dialecte.vers_postgres(sql)
     assert "ON CONFLICT DO NOTHING" in traduit
     assert traduit.count("%s") == 3
+
+def test_INTEGER_devient_BIGINT_car_PG_est_en_32_bits():
+    """⚠ Le même piège que le `REAL`, et il a coûté une course.
+
+    `INTEGER` vaut 64 bits en SQLite et 32 en PostgreSQL — maximum
+    2 147 483 647. Un horodatage en SECONDES y tient (1,79 × 10⁹) ; un
+    horodatage en MILLISECONDES vaut 1,79 × 10¹², mille fois trop.
+    PostgreSQL a refusé l'écriture avec « integer out of range » au premier
+    ordre passé. En local, sur SQLite, tout passait.
+    """
+    traduit = dialecte.vers_postgres("CREATE TABLE t (ts_ms INTEGER NOT NULL)")
+    assert "BIGINT" in traduit
+    assert "INTEGER" not in traduit
+
+
+def test_la_cle_auto_est_traduite_AVANT_l_entier():
+    """L'ordre des deux règles n'est pas indifférent.
+
+    Si « INTEGER -> BIGINT » passait en premier, la clé deviendrait
+    « BIGINT PRIMARY KEY AUTOINCREMENT », que le motif de la clé auto ne
+    reconnaîtrait plus. La table naîtrait alors sans génération de clé et
+    refuserait chaque insertion — au premier ordre, et pas avant.
+    """
+    traduit = dialecte.vers_postgres(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)")
+    assert "BIGSERIAL PRIMARY KEY" in traduit
+    assert "AUTOINCREMENT" not in traduit
+    assert "n BIGINT" in traduit
+
+
+def test_un_horodatage_en_millisecondes_depasse_un_entier_32_bits():
+    """Le chiffre qui explique tout, pour qu'il ne soit pas à retrouver."""
+    max_int32 = 2_147_483_647
+    horodatage_ms = 1_790_127_801_040
+    assert horodatage_ms > max_int32 * 800

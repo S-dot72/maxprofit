@@ -26,6 +26,9 @@ deux moteurs acceptent, et ce module n'a pas à les connaître.
                                             un prix y perdrait des décimales)
     BLOB               -> BYTEA            (PG n'a pas de BLOB — il REFUSE le
                                             mot, ce qui est une bonne nouvelle)
+    INTEGER            -> BIGINT           (INTEGER est du 32 BITS en PG : un
+                                            horodatage en millisecondes y
+                                            déborde, et pas en SQLite)
     INTEGER PRIMARY KEY AUTOINCREMENT
                        -> BIGSERIAL PRIMARY KEY  (clé auto-incrémentée)
     WITHOUT ROWID      -> retiré           (optimisation propre à SQLite)
@@ -71,6 +74,22 @@ _BLOB = re.compile(r"\bBLOB\b", re.IGNORECASE)
 #: passé et pas avant.
 _CLE_AUTO = re.compile(
     r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", re.IGNORECASE)
+#: ⚠ LE MÊME PIÈGE QUE LE `REAL`, et il a coûté une course.
+#:
+#: `INTEGER` vaut 64 bits en SQLite et 32 en PostgreSQL. Un horodatage en
+#: SECONDES (1,79 × 10⁹) y tient encore — jusqu'en 2038. Un horodatage en
+#: MILLISECONDES (1,79 × 10¹²) le dépasse d'un facteur mille, et PostgreSQL
+#: refuse l'écriture : « integer out of range ». En local, sur SQLite, tout
+#: passait.
+#:
+#: La traduction est systématique plutôt que ciblée sur les colonnes `_ms` :
+#: `BIGINT` est un sur-ensemble d'`INTEGER`, il ne coûte rien, et viser
+#: juste ne protégerait pas de la prochaine colonne qu'on ajoutera.
+#:
+#: ⚠ Appliquée APRÈS `_CLE_AUTO` : sinon « INTEGER PRIMARY KEY AUTOINCREMENT »
+#: deviendrait « BIGINT PRIMARY KEY AUTOINCREMENT », que le motif de la clé
+#: auto ne reconnaîtrait plus — et la table naîtrait sans génération de clé.
+_ENTIER = re.compile(r"\bINTEGER\b", re.IGNORECASE)
 _PRAGMA = re.compile(r"^\s*PRAGMA\b", re.IGNORECASE)
 
 
@@ -158,4 +177,5 @@ def vers_postgres(sql: str) -> str:
     sql = _REAL.sub("DOUBLE PRECISION", sql)
     sql = _BLOB.sub("BYTEA", sql)
     sql = _CLE_AUTO.sub("BIGSERIAL PRIMARY KEY", sql)
+    sql = _ENTIER.sub("BIGINT", sql)
     return marqueurs(_traduire_extrema(sql))
