@@ -29,6 +29,16 @@ T0_MS = 1_789_000_000_000
 CAPITAL = 250.0
 
 
+def _ordre_en_vol(order_id="abc"):
+    """Un ordre ACCEPTÉ dont le sort n'est pas revenu — l'état exact d'un
+    ordre parti juste avant un redéploiement."""
+    return Execution(
+        pair="EURUSD_otc", sens="call", mise=1.59, signal_ts_ms=T0_MS,
+        prix_attendu=1.1, payout_flux_pct=92.0, expiration_sec=900,
+        clic_ts_ms=T0_MS + 10, accepte_ts_ms=T0_MS + 300, accepte=True,
+        order_id=order_id)
+
+
 def _plan(sessions: int = 18, jours: int = 30, **gardes) -> PlanCapital:
     defauts = dict(sessions_perdues_max=2)
     return PlanCapital.depuis_risque(
@@ -710,3 +720,78 @@ def test_une_alerte_qui_leve_ne_casse_pas_la_course(course):
     c._alerter = alerter
     assert c.tour() is True
     assert c.etat.solde > CAPITAL
+
+
+# --------------------------------------------------------------------------- #
+# L'ordre est journalisé AVANT d'attendre son sort
+# --------------------------------------------------------------------------- #
+
+def test_l_ordre_est_journalise_des_qu_il_part(tmp_path):
+    """Le trou trouvé en comparant le broker au journal : CINQ ordres
+    exécutés chez le broker, ZÉRO dans nos livres, solde de plan resté à
+    250 $ pendant que le compte réel bougeait.
+
+    La cause : on écrivait APRÈS le dénouement, c'est-à-dire un quart d'heure
+    après le départ. Un redéploiement dans cet intervalle et l'ordre
+    n'existait plus que chez le broker.
+    """
+    journal = JournalExecution(tmp_path / "e.db", campagne="vol")
+    vu = {"au_depart": None}
+
+    class CourtierLent(CourtierFactice):
+        def denouer(self, ex):
+            # À cet instant, l'ordre DOIT déjà être dans le journal : c'est
+            # pendant cette attente que le processus peut mourir.
+            vu["au_depart"] = len(journal.toutes())
+            return super().denouer(ex)
+
+    c = CoursePlanDemo(LecteurFactice(), CourtierLent(["win"]), journal,
+                       _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = lambda: Signal(
+        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    c.tour()
+    assert vu["au_depart"] == 1, (
+        "l'ordre doit être écrit AVANT l'attente, pas après")
+    assert len(journal.toutes()) == 1, "et pas écrit deux fois"
+    assert journal.toutes()[0].resultat == "win", "puis complété"
+    journal.close()
+
+
+def test_un_ordre_sans_reponse_est_retrouve_au_demarrage(tmp_path):
+    """Un ordre parti juste avant un arrêt s'est dénoué CHEZ LE BROKER
+    pendant qu'on était mort. Sans cette reprise, le compte réel et le plan
+    divergent définitivement."""
+    from maxprofit.live.plan_demo import _resoudre_les_ordres_en_vol
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="vol")
+    journal.ecrire(_ordre_en_vol())
+    assert len(journal.en_vol()) == 1
+
+    class CourtierQuiSeSouvient(CourtierFactice):
+        def denouer(self, e):
+            e.resultat = "win"
+            e.profit = 1.46
+            return e
+
+    _resoudre_les_ordres_en_vol(None, CourtierQuiSeSouvient([]), journal)
+    assert journal.en_vol() == []
+    assert journal.toutes()[0].resultat == "win"
+    journal.close()
+
+
+def test_un_ordre_introuvable_reste_EN_VOL_plutot_que_devine(tmp_path):
+    """Deviner un résultat serait pire que l'ignorer : on inscrirait dans le
+    solde un gain ou une perte qui n'a pas eu lieu."""
+    from maxprofit.live.plan_demo import _resoudre_les_ordres_en_vol
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="vol")
+    journal.ecrire(_ordre_en_vol())
+
+    class CourtierMuet(CourtierFactice):
+        def denouer(self, e):
+            raise ConnectionError("broker injoignable")
+
+    _resoudre_les_ordres_en_vol(None, CourtierMuet([]), journal)
+    assert len(journal.en_vol()) == 1, "il reste en vol, il n'est pas deviné"
+    journal.close()

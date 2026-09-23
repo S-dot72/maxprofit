@@ -274,6 +274,42 @@ class JournalExecution:
         # lever garde le journal utilisable sur les deux moteurs.
         return int(getattr(curseur, "lastrowid", 0) or 0)
 
+    def mettre_a_jour(self, ex: Execution) -> None:
+        """Complète un ordre DÉJÀ écrit, une fois son sort connu.
+
+        L'ordre est journalisé dès qu'il part, avant même son dénouement :
+        entre les deux il s'écoule un quart d'heure, et tout peut arriver —
+        un redéploiement, une mise en veille, une coupure. Un ordre exécuté
+        chez le broker et absent de nos livres est la pire des situations :
+        le solde réel et le solde du plan divergent en silence.
+        """
+        if ex.order_id is None:
+            raise BotError("Mise à jour sans order_id : rien à retrouver.")
+        self.conn.execute(
+            """UPDATE executions
+               SET accepte_ts_ms = ?, prix_entree = ?, prix_sortie = ?,
+                   payout_broker_pct = ?, ouverture_ts_ms = ?,
+                   expiration_ts_ms = ?, decalage_broker_ms = ?,
+                   resultat = ?, profit = ?, brut = ?
+               WHERE campagne = ? AND order_id = ?""",
+            (ex.accepte_ts_ms, ex.prix_entree, ex.prix_sortie,
+             ex.payout_broker_pct, ex.ouverture_ts_ms, ex.expiration_ts_ms,
+             ex.decalage_broker_ms, ex.resultat, ex.profit,
+             json.dumps(ex.brut, ensure_ascii=False, default=str),
+             self.campagne, ex.order_id),
+        )
+        self.conn.commit()
+
+    def en_vol(self) -> list[Execution]:
+        """Les ordres ACCEPTÉS dont on ne connaît pas encore le sort.
+
+        C'est ce qu'on relit au démarrage : un ordre parti juste avant un
+        redéploiement s'est dénoué chez le broker pendant qu'on était mort.
+        Sans cette relecture, il resterait hors des comptes pour toujours.
+        """
+        return [e for e in self.toutes()
+                if e.accepte and e.resultat is None]
+
     def toutes(self) -> list[Execution]:
         lignes = self.conn.execute(
             """SELECT pair, sens, mise, signal_ts_ms, prix_attendu,

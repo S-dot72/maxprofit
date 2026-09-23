@@ -202,6 +202,9 @@ class CoursePlanDemo:
         #: dire oblige à interroger `/etat` au hasard : on découvre un
         #: réancrage trois jours après, ou jamais.
         self._alerter = alerter
+        #: Appelé quand un état doit être figé sans attendre la fin du tour.
+        #: Posé par `fabriquer_course`, qui seul connaît la connexion.
+        self._sauver = None
         if mode_univers not in (UNIVERS_EPINGLEES, UNIVERS_PLAFOND):
             raise BotError(
                 f"mode_univers inconnu : {mode_univers!r}. Attendu "
@@ -435,8 +438,18 @@ class CoursePlanDemo:
             self.etat.trade_en_cours = None
             self.journal.ecrire(execution)
             return
-        execution = self.courtier.denouer(execution)
+        # ⚠ ÉCRIRE MAINTENANT, avant les quinze minutes d'attente.
+        #
+        # L'ordre est PARTI. Entre son départ et son dénouement il s'écoule
+        # un quart d'heure, et tout peut arriver : un redéploiement, une mise
+        # en veille, une coupure. La première version écrivait APRÈS le
+        # dénouement — cinq ordres exécutés chez le broker, zéro dans nos
+        # livres, et un solde de plan resté à 250 $ pendant que le compte
+        # réel bougeait.
         self.journal.ecrire(execution)
+        self._sauvegarder()
+        execution = self.courtier.denouer(execution)
+        self.journal.mettre_a_jour(execution)
 
         self.etat.trade_en_cours = None
         if execution.resultat not in ("win", "loose", "draw"):
@@ -521,6 +534,15 @@ class CoursePlanDemo:
         self.jouer_un_pas(signal)
         self.etat.dernier_trade = (signal.pair, int(time.time()))
         return True
+
+    def _sauvegarder(self) -> None:
+        """Fige l'état tout de suite. Ne doit jamais faire tomber la course."""
+        if self._sauver is None:
+            return
+        try:
+            self._sauver()
+        except Exception:                        # noqa: BLE001
+            log.exception("État non sauvegardé")
 
     def _prevenir(self, message: str) -> None:
         """Alerter ne doit jamais pouvoir faire tomber la course."""
@@ -720,6 +742,32 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     return etat, int(ligne[5])
 
 
+def _resoudre_les_ordres_en_vol(course, courtier, journal) -> None:
+    """Rattrape les ordres partis juste avant un arrêt.
+
+    Un ordre accepté puis laissé sans réponse s'est dénoué CHEZ LE BROKER
+    pendant qu'on était mort. Le compte réel a bougé ; le plan l'ignore. Sans
+    cette reprise, les deux divergent définitivement — et c'est exactement ce
+    qui s'est produit : cinq ordres gagnants chez le broker, un solde de plan
+    figé à 250 $.
+    """
+    en_vol = journal.en_vol()
+    if not en_vol:
+        return
+    log.warning("%d ordre(s) parti(s) sans réponse : on va chercher leur "
+                "sort chez le broker.", len(en_vol))
+    for execution in en_vol:
+        try:
+            resolu = courtier.denouer(execution)
+        except Exception as erreur:              # noqa: BLE001
+            log.error("Sort de l'ordre %s introuvable : %s. Il reste marqué "
+                      "en vol plutôt que deviné.", execution.order_id, erreur)
+            continue
+        journal.mettre_a_jour(resolu)
+        log.info("Ordre %s retrouvé : %s (%.2f $).", resolu.order_id,
+                 resolu.resultat, resolu.profit or 0.0)
+
+
 def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      sessions_par_jour: int, jours: int,
                      paires: tuple[str, ...], chemin_lecture="lecture",
@@ -784,6 +832,12 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         log.info("Course REPRISE depuis la base : %s", course.resume())
     else:
         log.info("Nouvelle course : %s", course.resume())
+
+    def sauver():
+        sauver_etat(ecriture, campagne, course.etat, jour_utc())
+
+    course._sauver = sauver
+    _resoudre_les_ordres_en_vol(course, courtier, journal)
 
     tour_nu = course.tour
 
