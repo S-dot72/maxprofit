@@ -82,15 +82,27 @@ log = logging.getLogger(__name__)
 
 #: Le signal est daté à la clôture de la bougie. Au-delà de ce retard, on ne
 #: le prend plus : la décision reposait sur un prix qui n'est plus le prix.
-#: Le plafond de débit MESURÉ sur les quatre paires épinglées, en sessions
-#: par jour. Affiché à côté du quota pour que l'écart se lise comme ce qu'il
-#: est — une limite du marché — et non comme un retard de la course.
+#: Le débit MESURÉ sur les quatre paires épinglées, en sessions par jour.
+#: Affiché à côté du quota pour que l'écart se lise comme ce qu'il est — une
+#: limite du marché — et non comme un retard de la course.
 #:
-#: 276 signaux éligibles en 10,2 jours de données collectées = 27,1 par jour ;
-#: une session consomme 1,68 pas en moyenne (1 + q + q² à q = 46,4 %) ; donc
-#: 16,1 sessions par jour.
+#: 276 signaux éligibles sur 12,3 jours calendaires = 22,4 par jour ; une
+#: session consomme 1,68 pas en moyenne (1 + q + q² à q = 46,4 %) ; donc
+#: 13,4 sessions par jour.
 #:
-#: ⚠ Le quota reste à 18 : c'est un PLAFOND, et le rabaisser n'ajouterait
+#: ⚠ Valait 16,1, et c'était surestimé : le calcul divisait par les jours
+#: OBSERVÉS (10,2, les trous de collecte retirés) au lieu des jours
+#: CALENDAIRES (12,3). Un trou de collecte ne produit pas de signaux, mais il
+#: ne suspend pas le calendrier pour autant.
+#:
+#: ⚠⚠ ET LA MOYENNE N'EST PAS LA BONNE GRANDEUR. Écart-type 6,5 sur 11 jours
+#: complets : pire jour 2,4 sessions, meilleur 23,8. Le quota de 16 n'est
+#: atteignable que 27 % des jours. Sur DOUZE heures — la question qui se pose
+#: en pratique — la moyenne tombe à 6,7 sessions et 16 n'est atteint que
+#: 4,2 % du temps. Les cinq sessions observées en douze heures de direct sont
+#: donc au milieu de la distribution, pas en dessous.
+#:
+#: Le quota reste à 18 : c'est un PLAFOND, et le rabaisser n'ajouterait
 #: aucune session. Ce qui manque n'est pas de l'autorisation, c'est des
 #: signaux — et ils dépendent de l'heure, très fortement : 1 pour 56 bougies
 #: à 3 h UTC, 1 pour 1 031 à 14 h. Attendre plus longtemps ne rattrape pas
@@ -100,7 +112,12 @@ log = logging.getLogger(__name__)
 #: quatre paires sont celles où l'hypothèse est PRÉ-INSCRITE (registre #58,
 #: #59), et une validation hors échantillon faite sur un autre univers que
 #: celui déclaré ne vaut rien.
-SESSIONS_PAR_JOUR_MESUREES = 16.1
+SESSIONS_PAR_JOUR_MESUREES = 13.4
+
+#: L'écart-type du débit journalier, en sessions. Affiché avec la moyenne :
+#: sans lui, « 13,4 » se lit comme une promesse alors que la moitié des jours
+#: en sont à plus de six sessions d'écart.
+ECART_DEBIT_PAR_JOUR = 6.5
 
 FRAICHEUR_MAX_SEC = 90
 
@@ -890,7 +907,8 @@ class CoursePlanDemo:
             par_jour = j.sessions_jouees / heures * 24
             pour = vues / e.signaux_bruts if e.signaux_bruts else 0
             debit = (f" | débit {par_jour:.1f} sessions/jour "
-                     f"(plafond mesuré {SESSIONS_PAR_JOUR_MESUREES}), "
+                     f"(mesuré {SESSIONS_PAR_JOUR_MESUREES} "
+                     f"± {ECART_DEBIT_PAR_JOUR}), "
                      f"1 signal pour "
                      f"{(f'{pour:.0f}' if pour else '—')} bougies, "
                      f"sur {heures:.1f} h")

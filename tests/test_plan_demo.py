@@ -968,7 +968,10 @@ def test_le_resume_annonce_le_DEBIT_et_son_plafond_mesure(course):
     c.etat.journee.sessions_jouees = 8
     resume = c.resume()
     assert "débit 16.0 sessions/jour" in resume, resume
-    assert f"plafond mesuré {SESSIONS_PAR_JOUR_MESUREES}" in resume
+    assert f"mesuré {SESSIONS_PAR_JOUR_MESUREES} ± " in resume, (
+        "l'écart-type accompagne la moyenne : 13,4 seul se lit comme une "
+        "promesse alors que le pire jour donne 2,4 sessions et le meilleur "
+        "23,8")
     assert "1 signal pour 298 bougies" in resume
     assert "sur 12.0 h" in resume
 
