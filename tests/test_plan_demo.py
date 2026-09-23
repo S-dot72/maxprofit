@@ -947,6 +947,45 @@ def test_on_ne_superpose_JAMAIS_deux_ordres(course):
     assert c.journal.toutes() == [], "aucun ordre ne doit partir par-dessus"
 
 
+def test_le_resume_annonce_le_DEBIT_et_son_plafond_mesure(course):
+    """« 5 sessions sur 18 » se lit comme un retard. Le plafond du marche est
+    a 16,1 sessions/jour sur ces quatre paires, et il est mesure, pas choisi.
+
+    Sans ce reperage on cherche une panne dans la course alors qu'elle tourne
+    a son maximum -- ce qui a coute une journee d'enquete.
+    """
+    import time as _t
+
+    from maxprofit.live.plan_demo import SESSIONS_PAR_JOUR_MESUREES
+    c = course(["win"], plan=_plan(sessions=18))
+    c.etat.univers_taille = 3
+    c.etat.paires_gratuites = 3
+    c.etat.bougies_evaluees = 2087
+    c.etat.signaux_bruts = 7
+    c.etat.derniere_evaluation_ts = int(_t.time())
+    # Douze heures de course, huit sessions jouees.
+    c.etat.demarre_ts = int(_t.time()) - 12 * 3600
+    c.etat.journee.sessions_jouees = 8
+    resume = c.resume()
+    assert "débit 16.0 sessions/jour" in resume, resume
+    assert f"plafond mesuré {SESSIONS_PAR_JOUR_MESUREES}" in resume
+    assert "1 signal pour 298 bougies" in resume
+    assert "sur 12.0 h" in resume
+
+
+def test_le_debit_se_taait_sous_une_heure_de_course(course):
+    """Une session dans les dix premieres minutes vaut 144 par jour, et ce
+    chiffre n'apprend rien. Mieux vaut ne rien dire que dire n'importe quoi."""
+    import time as _t
+    c = course(["win"], plan=_plan(sessions=18))
+    c.etat.univers_taille = 3
+    c.etat.bougies_evaluees = 30
+    c.etat.derniere_evaluation_ts = int(_t.time())
+    c.etat.demarre_ts = int(_t.time()) - 600
+    c.etat.journee.sessions_jouees = 1
+    assert "débit" not in c.resume()
+
+
 def test_les_compteurs_d_activite_survivent_a_un_redemarrage(tmp_path):
     """Une jauge qui se remet a zero plus souvent que le phenomene qu'elle
     mesure ne mesure rien.

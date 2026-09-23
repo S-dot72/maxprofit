@@ -82,6 +82,26 @@ log = logging.getLogger(__name__)
 
 #: Le signal est daté à la clôture de la bougie. Au-delà de ce retard, on ne
 #: le prend plus : la décision reposait sur un prix qui n'est plus le prix.
+#: Le plafond de débit MESURÉ sur les quatre paires épinglées, en sessions
+#: par jour. Affiché à côté du quota pour que l'écart se lise comme ce qu'il
+#: est — une limite du marché — et non comme un retard de la course.
+#:
+#: 276 signaux éligibles en 10,2 jours de données collectées = 27,1 par jour ;
+#: une session consomme 1,68 pas en moyenne (1 + q + q² à q = 46,4 %) ; donc
+#: 16,1 sessions par jour.
+#:
+#: ⚠ Le quota reste à 18 : c'est un PLAFOND, et le rabaisser n'ajouterait
+#: aucune session. Ce qui manque n'est pas de l'autorisation, c'est des
+#: signaux — et ils dépendent de l'heure, très fortement : 1 pour 56 bougies
+#: à 3 h UTC, 1 pour 1 031 à 14 h. Attendre plus longtemps ne rattrape pas
+#: une heure creuse.
+#:
+#: Le seul levier serait d'élargir la collecte. Écarté le 2026-09-23 : les
+#: quatre paires sont celles où l'hypothèse est PRÉ-INSCRITE (registre #58,
+#: #59), et une validation hors échantillon faite sur un autre univers que
+#: celui déclaré ne vaut rien.
+SESSIONS_PAR_JOUR_MESUREES = 16.1
+
 FRAICHEUR_MAX_SEC = 90
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
@@ -858,6 +878,22 @@ class CoursePlanDemo:
                    if e.signaux_trouves == 0 else "")
         broker = (f" (broker {e.solde_broker:.2f} $)"
                   if e.solde_broker is not None else "")
+        # Le DÉBIT RÉEL, maintenant que les compteurs survivent aux
+        # redémarrages. Sans lui, « 5/18 » se lit comme un retard alors que le
+        # plafond du marché est à 16,1 — et l'on cherche une panne qui n'existe
+        # pas. Avec lui, on voit tout de suite si la course est sous son
+        # plafond ou simplement dans une heure creuse.
+        heures = max(1e-9, (int(time.time()) - e.demarre_ts) / 3600) \
+            if e.demarre_ts else 0.0
+        debit = ""
+        if heures >= 1:
+            par_jour = j.sessions_jouees / heures * 24
+            pour = vues / e.signaux_bruts if e.signaux_bruts else 0
+            debit = (f" | débit {par_jour:.1f} sessions/jour "
+                     f"(plafond mesuré {SESSIONS_PAR_JOUR_MESUREES}), "
+                     f"1 signal pour "
+                     f"{(f'{pour:.0f}' if pour else '—')} bougies, "
+                     f"sur {heures:.1f} h")
         return (f"{base}{broker} | en route depuis {depuis} min | "
                 f"{e.univers_taille} actif(s) au plafond dont "
                 f"{e.paires_gratuites} en base, "
@@ -866,7 +902,8 @@ class CoursePlanDemo:
                 f"{e.signaux_bruts} signal(aux) bruts dont "
                 f"{e.signaux_trouves} retenu(s), {e.pas_sautes_independance} "
                 f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
-                f"lecture il y a {age} s{' | ' + attente if attente else ''}")
+                f"lecture il y a {age} s{debit}"
+                f"{' | ' + attente if attente else ''}")
 
 
 def nouveau_jour(etat: Etat) -> None:
