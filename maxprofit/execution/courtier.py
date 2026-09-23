@@ -473,6 +473,26 @@ class CourtierDemo:
             ouverture = _flottant(deal, "openTimestamp")
             if ouverture is not None and execution.ouverture_ts_ms is None:
                 execution.ouverture_ts_ms = int(ouverture * 1000)
+
+        # ⚠ LE DERNIER RECOURS, et il porte maintenant le solde du plan.
+        #
+        # Le commentaire ci-dessus note que `check_win` rend 0 sur un ordre
+        # perdu là où le détail porte -1. Tant que le détail répond, il écrase
+        # le 0 et tout va bien. Mais il peut ne pas répondre — c'est un appel
+        # réseau de plus, enveloppé dans un `except` qui le laisse passer.
+        #
+        # Tant que le solde venait du broker, cela ne coûtait qu'une ligne
+        # imprécise au journal. Depuis que le solde est LA SOMME DE CES
+        # PROFITS, une perte enregistrée à 0 rend le plan plus riche qu'il
+        # n'est — exactement le livre parallèle divergent qu'on a supprimé,
+        # revenu par une autre porte.
+        #
+        # La mise est connue, elle : une option binaire perdue coûte la mise
+        # entière, et rien d'autre.
+        if execution.resultat == "loose" and not execution.profit:
+            execution.profit = -execution.mise
+        elif execution.resultat == "draw" and execution.profit is None:
+            execution.profit = 0.0
         return execution
 
     def _attendre_l_echeance(self, execution: Execution) -> None:

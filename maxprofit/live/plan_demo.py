@@ -84,11 +84,32 @@ log = logging.getLogger(__name__)
 #: le prend plus : la décision reposait sur un prix qui n'est plus le prix.
 FRAICHEUR_MAX_SEC = 90
 
-#: Actifs examinés par passage. Chaque examen demande son historique au
-#: broker, ce qui le fait changer d'actif — et huit changements simultanés lui
+#: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
+#: paires que nous collectons ne comptent pas : leur historique est dans
+#: notre base, et le lire ne coûte rien.
+#:
+#: ⚠ CE CHIFFRE EST UN BUDGET DE TEMPS, et il a été mesuré, pas choisi.
+#:
+#: Valait 8, dans l'idée qu'examiner large valait mieux qu'examiner peu.
+#: Le direct a dit le contraire : 810 bougies en 401 minutes, soit 101
+#: passages de 238 secondes, soit **27 secondes pour l'historique d'une
+#: seule paire** (la borne de sécurité de `get_candles` est à 15 s, et
+#: elle était atteinte souvent). Huit paires par passage faisaient donc
+#: un passage de quatre minutes — alors qu'une bougie doit être traitée
+#: dans les 90 secondes qui suivent sa clôture.
+#:
+#: Chaque bougie était donc marquée « évaluée », puis jetée pour
+#: péremption avant d'atteindre la stratégie. Les compteurs montraient
+#: une course très active qui n'analysait presque rien : 810 bougies
+#: pour 1 signal, là où le taux mesuré sur les données collectées (1
+#: pour 95) en promettait 9.
+#:
+#: Élargir l'univers COÛTAIT donc des signaux au lieu d'en rapporter. À
+#: 1, le passage tient dans ~47 s et les paires collectées restent
+#: fraîches. Un changement d'actif de plus lui
 #: avaient fait fermer le socket. On en prend donc une poignée, en rotation,
 #: plutôt que la centaine d'un coup.
-PAIRES_MAX_PAR_PASSAGE = 8
+PAIRES_MAX_PAR_PASSAGE = 1
 
 #: Pause entre deux demandes d'historique, pour la même raison.
 DELAI_ENTRE_ACTIFS_SEC = 0.4
@@ -170,6 +191,15 @@ class Etat:
     payouts_vus: dict[str, int] = field(default_factory=dict)
     #: Nombre d'actifs au plafond au dernier relevé du catalogue.
     univers_taille: int = 0
+    #: Bougies jetées pour PÉREMPTION, c'est-à-dire lues trop tard pour être
+    #: jouées. `bougies_evaluees` les compte ; la stratégie ne les voit pas.
+    #: L'écart entre les deux est le rendement réel de la boucle.
+    bougies_perimees: int = 0
+    #: Signaux rendus par la stratégie, AVANT le filtre de payout.
+    signaux_bruts: int = 0
+    #: Paires lues dans notre base au dernier passage — celles qui ne coûtent
+    #: rien, et les seules qu'on puisse suivre bougie par bougie.
+    paires_gratuites: int = 0
     #: Quand la course a démarré. Affiché, parce que « rien ne bouge » et
     #: « ça tourne depuis trois minutes » se ressemblent trait pour trait à
     #: l'écran, et appellent des gestes opposés : chercher une panne, ou
@@ -177,16 +207,21 @@ class Etat:
     demarre_ts: int = 0
     #: Le solde du BROKER au démarrage de la course.
     #:
-    #: Le solde du plan en est DÉRIVÉ :
+    #: ⚠ N'ENTRE PLUS DANS LE CALCUL DU SOLDE. Il l'a fait, sous la forme
+    #: `solde_plan = capital_initial + (solde_broker - ancre)`, et cette
+    #: dérivation avait un défaut qu'on ne voit qu'en la mettant à l'épreuve
+    #: du compte réel : elle absorbe TOUT mouvement du compte, y compris ceux
+    #: qui ne sont pas de nous. L'ancre a été posée à 259,71 $ ; le compte a
+    #: ensuite été vidé à la main puis rechargé à 250 $ ; le plan a affiché
+    #: 241,69 $ quand le broker en montrait 251,40. L'écart n'était pas une
+    #: erreur de calcul — c'était le calcul qui faisait exactement ce qu'on
+    #: lui avait demandé.
     #:
-    #:     solde_plan = capital_initial + (solde_broker - ancre)
-    #:
-    #: La version précédente tenait un livre parallèle — chaque session close
-    #: ajoutait son montant à un solde maintenu en mémoire. Ce livre pouvait
-    #: diverger du compte réel, et il l'a fait : cinq ordres gagnants chez le
-    #: broker, un solde de plan resté à 250 $. Dériver rend la divergence
-    #: IMPOSSIBLE au lieu de la rattraper après coup.
+    #: Conservée pour mémoire du point de départ, et pour situer l'écart.
     solde_broker_ancre: float | None = None
+    #: Le solde du broker au dernier relevé. AFFICHÉ, jamais utilisé pour
+    #: décider : il sert de contre-vérification, pas de source.
+    solde_broker: float | None = None
     #: Le solde au moment où la session en cours s'est ouverte. Sert à dire
     #: ce qu'elle a RÉELLEMENT coûté ou rapporté — la différence de deux
     #: soldes venus du broker, et non un montant théorique.
@@ -238,31 +273,40 @@ class CoursePlanDemo:
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._rotation = 0
-        # ⚠ L'abonnement n'est PAS facultatif en mode épinglées.
+        # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
-        # Les bougies viennent de la base, mais `placer()` a besoin du dernier
-        # PRIX, que le broker ne sert que sur un actif souscrit. Sans cet
-        # abonnement, chaque ordre échouerait sur « aucun tick disponible » —
-        # et seulement au moment de trader, pas avant.
+        # Les bougies des paires collectées viennent de la base, mais
+        # `placer()` a besoin du dernier PRIX, que le broker ne sert que sur
+        # un actif souscrit. Sans cet abonnement, l'ordre échoue sur « aucun
+        # tick disponible » — au moment de trader, pas avant.
         #
-        # En mode plafond, l'abonnement se fait tout seul : demander un
-        # historique change déjà d'actif. En ajouter quatre de plus ne ferait
-        # qu'empiler des changements concurrents, ce qui est précisément ce
-        # qui fait fermer le socket.
-        if self.mode_univers == UNIVERS_EPINGLEES:
-            for p in paires:
-                self.courtier.suivre(p)
+        # La condition portait sur le mode, et c'était juste tant que le mode
+        # décidait de la source : en mode plafond, l'abonnement se faisait
+        # tout seul puisque demander un historique change déjà d'actif.
+        # Depuis que la source dépend de la PAIRE et non du mode, une paire
+        # épinglée n'est plus jamais demandée au broker — donc plus jamais
+        # souscrite — et c'est précisément celle sur laquelle on tradera le
+        # plus souvent.
+        #
+        # Quatre abonnements tiennent : c'est ce que le mode épinglées faisait
+        # déjà. C'est huit changements CONCURRENTS qui avaient fermé le
+        # socket, et le budget d'une paire par passage les exclut désormais.
+        for p in paires:
+            self.courtier.suivre(p)
 
     # --- le signal ---------------------------------------------------------
 
     def bougies_collectees(self, paire: str, n: int) -> list[Candle]:
         """Les bougies de NOTRE base — seulement pour les paires collectées.
 
-        Plus utilisée pour décider : la course lit désormais l'historique du
-        broker, seule source qui couvre les actifs qu'on ne collecte pas. Elle
-        reste pour le contrôle qui compte : comparer, sur les quatre paires
-        épinglées, ce que le broker rend à ce qu'on a enregistré. Une
-        divergence y rendrait le direct différent du backtest.
+        C'est de nouveau la source de décision sur ces paires-là, et pour une
+        raison qui se chiffre : la lire coûte une requête locale, quand
+        demander la même chose au broker coûte 27 secondes (voir
+        `PAIRES_MAX_PAR_PASSAGE`). À ce prix, les paires collectées sont les
+        seules qu'on puisse évaluer À CHAQUE bougie.
+
+        C'est aussi la source du backtest : sur ces paires, le direct
+        redevient comparable à l'hypothèse pré-inscrite.
         """
         fin = self.lecteur.last_candle_ts_sec()
         if fin is None:
@@ -273,16 +317,18 @@ class CoursePlanDemo:
     def _bougies_de(self, paire: str) -> list[Candle]:
         """La source dépend du MODE, et ce n'est pas un détail.
 
-        En mode épinglées, les bougies viennent de NOTRE base : même source
-        que le backtest, aucun appel au broker, aucun risque de blocage. C'est
-        ce qui rend cette campagne comparable à l'hypothèse pré-inscrite.
+        La source ne dépend plus du MODE mais de la PAIRE, et c'est la
+        correction : une paire que nous collectons est lue dans notre base,
+        même quand l'univers est ouvert à tous les actifs au plafond.
+        Instantané, même source que le backtest, aucun risque de blocage.
 
-        En mode plafond, il n'y a pas le choix : on ne collecte pas ces
-        actifs, seul le broker a leur historique. On y perd la comparabilité
-        avec le backtest, et l'on hérite d'une fonction de bibliothèque qui
-        boucle sans limite — bornée dans `CourtierDemo`.
+        Pour les autres, il n'y a pas le choix : on ne les collecte pas, seul
+        le broker a leur historique. On y perd la comparabilité avec le
+        backtest, on hérite d'une fonction de bibliothèque qui boucle sans
+        limite — bornée dans `CourtierDemo` — et l'on paie 27 secondes. D'où
+        le budget strict de `PAIRES_MAX_PAR_PASSAGE`.
         """
-        if self.mode_univers == UNIVERS_EPINGLEES:
+        if paire in self.paires:
             return self.bougies_collectees(paire, self.strategie.p.lookback)
         return self.courtier.bougies(paire, self.strategie.p.lookback)
 
@@ -330,25 +376,38 @@ class CoursePlanDemo:
         candidats = self.univers()
         if not candidats:
             return None
-        # Rotation : on reprend là où le passage précédent s'est arrêté.
-        depart = self._rotation % len(candidats)
-        ordre = candidats[depart:] + candidats[:depart]
+
+        # ⚠ DEUX FILES, PARCE QUE LES DEUX N'ONT PAS LE MÊME PRIX.
+        #
+        # Les paires que nous collectons sont lues dans notre base : gratuites
+        # et toujours fraîches, on les passe TOUTES à chaque passage. Les
+        # autres coûtent 27 secondes de broker chacune, et seul ce qui tient
+        # dans le budget est examiné — en rotation, pour que les dernières de
+        # la liste ne soient pas condamnées à ne jamais être vues.
+        gratuites = [p for p in candidats if p in self.paires]
+        payantes = [p for p in candidats if p not in self.paires]
+        if payantes:
+            depart = self._rotation % len(payantes)
+            payantes = payantes[depart:] + payantes[:depart]
+        self.etat.paires_gratuites = len(gratuites)
+
         examinees = 0
-        for paire in ordre:
-            if examinees >= PAIRES_MAX_PAR_PASSAGE:
+        for paire in gratuites + payantes:
+            payante = paire not in self.paires
+            if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
                 break
-            self._rotation += 1
             try:
                 bougies = self._bougies_de(paire)
             except BotError as erreur:
                 log.debug("Historique indisponible sur %s : %s", paire, erreur)
                 continue
-            examinees += 1
-            if self.mode_univers == UNIVERS_PLAFOND:
+            if payante:
+                self._rotation += 1
+                examinees += 1
                 # Le broker n'aime pas qu'on enchaîne les changements
                 # d'actif : huit abonnements simultanés lui avaient fait
-                # fermer le socket. Inutile en mode épinglées, qui ne lui
-                # demande rien.
+                # fermer le socket. Une paire lue dans notre base ne lui
+                # demande rien, et n'a donc rien à attendre.
                 time.sleep(DELAI_ENTRE_ACTIFS_SEC)
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 continue
@@ -361,12 +420,22 @@ class CoursePlanDemo:
             # La bougie close à ts_sec couvre [ts_sec, ts_sec+60[. Le signal
             # est donc daté de sa FIN, et c'est de là qu'on compte la
             # fraîcheur — pas de son début.
+            #
+            # ⚠ Une bougie jetée ICI n'a JAMAIS vu la stratégie, alors
+            # qu'elle vient d'être comptée « évaluée » juste au-dessus. Le
+            # compteur annonçait donc 810 quand la stratégie en avait vu une
+            # poignée — et l'on cherchait le défaut dans la stratégie.
             if maintenant - (derniere.ts_sec + 60) > FRAICHEUR_MAX_SEC:
+                self.etat.bougies_perimees += 1
                 continue
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
             if signal is None:
                 continue
+            # Compté AVANT la revérification du payout : sans cela, un signal
+            # écarté pour cause de payout retombé est indiscernable d'un
+            # signal jamais produit, et les deux appellent des gestes opposés.
+            self.etat.signaux_bruts += 1
             # Le payout est revérifié À L'INSTANT DU SIGNAL. Le catalogue peut
             # dater de quelques minutes, et entrer sur un payout périmé est
             # exactement ce que le filtre existe pour empêcher.
@@ -406,30 +475,65 @@ class CoursePlanDemo:
     # --- la session --------------------------------------------------------
 
     def rafraichir_le_solde(self) -> None:
-        """Relit le solde CHEZ LE BROKER et en dérive celui du plan.
+        """Le solde du plan vient du JOURNAL DE NOS ORDRES.
 
-        Appelée avant chaque décision. Si le broker ne répond pas, on garde
-        la dernière valeur connue plutôt que d'inventer — mais on ne trade
-        pas sur un solde inventé : `_echelle` s'en sert pour dimensionner.
+        ⚠ Troisième source essayée, et celle-ci est la bonne. Les deux
+        précédentes ont échoué pour des raisons opposées :
+
+        - un livre tenu EN MÉMOIRE divergeait du réel dès qu'un ordre se
+          perdait — cinq gagnants chez le broker, un solde figé à 250 $ ;
+        - le SOLDE BRUT DU BROKER, lui, ne divergeait jamais du compte… mais
+          absorbait tout ce qui n'était pas nous. Un trade passé à la main,
+          un rechargement, et le plan affichait 241,69 $ quand le compte
+          montrait 251,40 $.
+
+        Le journal n'a aucun de ces défauts : il est persisté en base (donc
+        il survit aux redémarrages) et il ne contient QUE nos ordres (donc
+        rien d'extérieur n'y entre).
+
+            solde = capital_initial + somme des profits journalisés
+
+        Le solde du broker reste lu, mais pour être AFFICHÉ à côté : un écart
+        entre les deux signale une activité manuelle sur le compte, et il vaut
+        mieux la voir que l'absorber.
         """
         try:
-            courant = self.courtier.solde()
-        except BotError as erreur:
-            log.warning("Solde du broker illisible : %s", erreur)
+            ordres = self.journal.toutes()
+        except Exception as erreur:              # noqa: BLE001
+            log.warning("Journal illisible : %s", erreur)
             return
-        if self.etat.solde_broker_ancre is None:
-            self.etat.solde_broker_ancre = courant
-            log.info("Ancre du solde posée à %.2f $ (broker). Le plan part "
-                     "de %.2f $.", courant, self.etat.plan.capital_initial)
-            # Figée TOUT DE SUITE : sans cela elle n'était persistée qu'au
-            # premier ordre, et chaque redémarrage sans trade la reposait
-            # ailleurs — le plan aurait perdu son point de départ.
-            self._sauvegarder()
-        solde = (self.etat.plan.capital_initial
-                 + courant - self.etat.solde_broker_ancre)
+        profits = 0.0
+        for e in ordres:
+            if not e.accepte:
+                # Refusé : rien n'est sorti du compte. Le compter coûterait
+                # une mise que le broker n'a jamais prise.
+                continue
+            if e.resultat in ("win", "loose", "draw"):
+                profits += e.profit or 0.0
+            else:
+                # ⚠ PLACÉ, PAS ENCORE DÉNOUÉ — ou dénoué en « unknown ».
+                #
+                # L'argent est SORTI du compte : le broker l'a débité au clic
+                # et ne le rendra qu'à l'échéance, augmenté ou pas. Ne rien
+                # compter ferait afficher un solde que le compte n'a pas
+                # pendant les quinze minutes de l'option, et indéfiniment
+                # pour un ordre dont le résultat ne revient jamais.
+                #
+                # On retire donc la mise. Un gagnant la rend au dénouement,
+                # avec son gain ; un « unknown » la laisse retirée, ce qui
+                # est la lecture prudente et la seule qui ne promette rien.
+                profits -= e.mise
+        solde = self.etat.plan.capital_initial + profits
         self.etat.solde = solde
         if self.etat.journee is not None:
             self.etat.journee.solde = solde
+        try:
+            self.etat.solde_broker = self.courtier.solde()
+        except BotError:
+            pass
+        if self.etat.solde_broker_ancre is None:
+            self.etat.solde_broker_ancre = self.etat.solde_broker
+            self._sauvegarder()
 
     def _echelle(self) -> Echelle:
         """L'échelle du moment, dimensionnée sur le SOLDE COURANT.
@@ -536,6 +640,15 @@ class CoursePlanDemo:
             return
 
         gagne = execution.resultat == "win"
+        pas = session.pas_joues + 1
+        self._prevenir(
+            f"{'✅' if gagne else '❌'} <b>{signal.pair}</b> "
+            f"{sens.upper()} {mise:.2f} $\n"
+            f"{datetime.now(timezone.utc):%H:%M:%S} UTC · "
+            f"{'pas ' + str(pas) + '/3 (MARTINGALE)' if pas > 1 else 'pas 1 (entrée)'}\n"
+            f"résultat <b>{'WIN' if gagne else 'LOSS'}</b> "
+            f"{execution.profit or 0:+.2f} $ · payout "
+            f"{execution.payout_broker_pct or 0:.0f} %")
         etat = session.enregistrer(gagne)
         log.info("pas %d/%d  %s %s  mise %.2f $  -> %s",
                  session.pas_joues, session.echelle.pas_max, signal.pair,
@@ -547,12 +660,12 @@ class CoursePlanDemo:
         session = self.etat.session
         if session is None:
             return
-        # ⚠ LE SOLDE VIENT DU BROKER, PAS DE NOUS.
+        # ⚠ LE SOLDE VIENT DU JOURNAL, PAS DE CE COMPTEUR.
         #
         # `Journee.enregistrer` fait deux choses : il avance les compteurs, et
         # il déplace son propre solde du montant qu'on lui passe. Le second
-        # geste est de trop ici — le solde reflète DÉJÀ chaque pas, puisqu'il
-        # est relu chez le broker. Lui passer le montant de la session le
+        # geste est de trop ici — le solde reflète DÉJÀ chaque pas, puisque
+        # chaque pas est journalisé. Lui passer le montant de la session le
         # comptait une seconde fois : une session perdue creusait le résultat
         # du jour de 6 % au lieu de 4,7 %, et la garde de perte journalière se
         # déclenchait à tort dès la première.
@@ -723,13 +836,19 @@ class CoursePlanDemo:
         # paires, soit un toutes les ~230 bougies évaluées. Sans ce repère,
         # « 8 bougies, 0 signal » ressemble à une panne alors que c'est
         # exactement ce qu'on attend au bout de trois minutes.
-        reste = max(0, 230 - e.bougies_evaluees % 230)
+        vues = e.bougies_evaluees - e.bougies_perimees
+        reste = max(0, 95 - vues % 95)
         attente = (f"~{reste} bougies avant le prochain signal attendu"
                    if e.signaux_trouves == 0 else "")
-        return (f"{base} | en route depuis {depuis} min | "
-                f"{e.univers_taille} actif(s) au plafond, "
-                f"{e.bougies_evaluees} bougies évaluées, "
-                f"{e.signaux_trouves} signal(aux), {e.pas_sautes_independance} "
+        broker = (f" (broker {e.solde_broker:.2f} $)"
+                  if e.solde_broker is not None else "")
+        return (f"{base}{broker} | en route depuis {depuis} min | "
+                f"{e.univers_taille} actif(s) au plafond dont "
+                f"{e.paires_gratuites} en base, "
+                f"{vues} bougies vues par la stratégie "
+                f"({e.bougies_perimees} périmées sur {e.bougies_evaluees}), "
+                f"{e.signaux_bruts} signal(aux) bruts dont "
+                f"{e.signaux_trouves} retenu(s), {e.pas_sautes_independance} "
                 f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
                 f"lecture il y a {age} s{' | ' + attente if attente else ''}")
 

@@ -15,6 +15,7 @@ c'est la martingale ou la zone qui a dérapé.
 
 from __future__ import annotations
 
+import itertools
 import time
 
 import pytest
@@ -142,8 +143,18 @@ def course(tmp_path, monkeypatch):
     # l'horloge. La règle de délai a ses propres tests, plus bas.
     monkeypatch.setattr("maxprofit.live.plan_demo.DELAI_INDEPENDANCE_SEC", 0)
 
+    # ⚠ UNE CAMPAGNE PAR COURSE, et ce n'est pas de la cosmétique.
+    #
+    # Le journal est lu par campagne, et le solde du plan est désormais LA
+    # SOMME DE SES PROFITS. Deux courses construites sous le même nom dans un
+    # même test partageaient donc leurs ordres : la seconde démarrait sur le
+    # bilan de la première. Un test qui compare deux scénarios comparait deux
+    # cumuls.
+    numero = itertools.count()
+
     def fabriquer(resultats, plan=None):
-        journal = JournalExecution(tmp_path / "exec.db", campagne="test")
+        journal = JournalExecution(tmp_path / "exec.db",
+                                   campagne=f"test-{next(numero)}")
         c = CoursePlanDemo(LecteurFactice(), CourtierFactice(resultats),
                            journal, plan or _plan(), PAIRES_TEST)
         compteur = {"n": 0}
@@ -361,15 +372,21 @@ def test_le_mode_epinglees_s_abonne_car_placer_a_besoin_du_PRIX(course):
     assert c.courtier.suivies == list(PAIRES_TEST)
 
 
-def test_le_mode_plafond_ne_s_abonne_pas_en_plus(tmp_path):
-    """Demander un historique change déjà d'actif. Empiler des abonnements
-    concurrents est ce qui fait fermer le socket."""
+def test_le_mode_plafond_S_ABONNE_AUSSI_aux_paires_collectees(tmp_path):
+    """La règle inverse était juste tant que le MODE décidait de la source.
+
+    En mode plafond, l'abonnement se faisait tout seul : demander un
+    historique change déjà d'actif. Depuis que la source dépend de la PAIRE,
+    une paire collectée n'est plus jamais demandée au broker — donc plus
+    jamais souscrite — et c'est celle sur laquelle on tradera le plus. La
+    panne n'apparaîtrait qu'au premier signal, sur « aucun tick disponible ».
+    """
     from maxprofit.live.plan_demo import UNIVERS_PLAFOND
 
     journal = JournalExecution(tmp_path / "e.db", campagne="t")
     c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
                        _plan(), ("EURUSD_otc",), mode_univers=UNIVERS_PLAFOND)
-    assert c.courtier.suivies == []
+    assert c.courtier.suivies == ["EURUSD_otc"]
     journal.close()
 
 
@@ -502,14 +519,54 @@ def test_une_course_sans_ordre_dit_si_elle_est_VIVANTE(course):
     c.etat.bougies_evaluees = 240
     c.etat.derniere_evaluation_ts = int(time.time())
     resume = c.resume()
-    assert "240 bougies évaluées" in resume
-    assert "0 signal(aux)" in resume
+    assert "240 bougies vues par la stratégie" in resume
+    assert "0 signal(aux) bruts" in resume
     assert "lecture il y a 0 s" in resume
     # Le repère qui distingue « ça démarre » de « c'est cassé » : sans lui,
     # « 8 bougies, 0 signal » ressemble à une panne alors que c'est
     # exactement ce qu'on attend au bout de trois minutes.
     assert "en route depuis" in resume
     assert "avant le prochain signal attendu" in resume
+
+
+def test_le_resume_distingue_une_bougie_VUE_d_une_bougie_PERIMEE(course):
+    """Les deux se comptaient ensemble, et c'est ce qui a masqué le défaut.
+
+    La boucle marquait une bougie « évaluée » puis la jetait pour péremption
+    sans que la stratégie l'ait vue. Le direct annonçait donc 810 bougies
+    pour 1 signal — un taux qui accusait la stratégie — quand la stratégie
+    n'en avait reçu qu'une fraction et se comportait normalement.
+    """
+    c = course(["win"], plan=_plan(sessions=10))
+    c.etat.univers_taille = 40
+    c.etat.paires_gratuites = 4
+    c.etat.bougies_evaluees = 810
+    c.etat.bougies_perimees = 715
+    c.etat.derniere_evaluation_ts = int(time.time())
+    resume = c.resume()
+    assert "95 bougies vues par la stratégie" in resume
+    assert "715 périmées sur 810" in resume
+    assert "40 actif(s) au plafond dont 4 en base" in resume
+
+
+def test_une_paire_collectee_ne_demande_RIEN_au_broker(course):
+    """Le prix d'une paire, mesuré : 27 s chez le broker, une requête locale
+    dans notre base. C'est ce qui décide combien de paires on peut suivre."""
+    c = course(["win"], plan=_plan(sessions=10))
+    c.courtier.bougies_demandees = []
+    vraie = c.courtier.bougies
+
+    def espionner(pair, count=300):
+        c.courtier.bougies_demandees.append(pair)
+        return vraie(pair, count)
+    c.courtier.bougies = espionner
+
+    c._bougies_de(PAIRES_TEST[0])
+    assert c.courtier.bougies_demandees == [], (
+        "une paire épinglée est dans NOTRE base : le broker n'a rien à dire")
+    c._bougies_de("XAUUSD_otc")
+    assert c.courtier.bougies_demandees == ["XAUUSD_otc"], (
+        "une paire non collectée n'a pas d'autre source que le broker")
 
 
 # --------------------------------------------------------------------------- #
@@ -712,9 +769,30 @@ def test_chaque_session_close_est_annoncee(course):
     c = course(["win"], plan=_plan(sessions=10))
     c._alerter = messages.append
     c.tour()
-    assert len(messages) == 1
-    assert "Session gagnée" in messages[0]
-    assert "solde" in messages[0]
+    assert len(messages) == 2, "un message par ORDRE, puis un par SESSION"
+    assert "Session gagnée" in messages[1]
+    assert "solde" in messages[1]
+
+
+def test_chaque_ordre_est_annonce_avec_de_quoi_le_retrouver(course):
+    """Le suivi demandé : l'heure, la paire, le montant, le rang dans
+    l'échelle et le résultat — de quoi rapprocher chaque ligne d'un ordre
+    chez le broker sans ouvrir la base."""
+    messages = []
+    c = course(["loose", "win"], plan=_plan(sessions=10))
+    c._alerter = messages.append
+    c.tour()
+    c.tour()
+    ordres = [m for m in messages if "Session" not in m]
+    assert len(ordres) == 2
+    assert "EURUSD_otc" in ordres[0] and "LOSS" in ordres[0]
+    assert "pas 1 (entrée)" in ordres[0], "le pas 1 n'est pas une martingale"
+    assert "UTC" in ordres[0] and "CALL" in ordres[0]
+    assert "MARTINGALE" in ordres[1], "le pas 2 en est une, et doit le dire"
+    assert "WIN" in ordres[1]
+    # Le montant annoncé est celui qui est PARTI chez le broker.
+    for message, mise in zip(ordres, c.courtier.mises_recues):
+        assert f"{mise:.2f} $" in message
 
 
 def test_un_reancrage_est_annonce(course):
