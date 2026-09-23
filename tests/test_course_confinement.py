@@ -25,6 +25,13 @@ from maxprofit.hosting.course import ECHECS_MAX, SuperviseurCourse
 
 
 class CourseFactice:
+    """⚠ La fabrique reçoit l'ALERTEUR en argument.
+
+    Elle n'en prenait aucun. Le contrat a changé le jour où la course a dû
+    prévenir sur Telegram à chaque session close : c'est elle qui sait quand
+    une session se termine, pas le superviseur.
+    """
+
     def __init__(self, lever=None, tours_avant=0):
         self.lever = lever
         self.tours_avant = tours_avant
@@ -66,7 +73,7 @@ def test_aucune_exception_ne_sort_du_thread(erreur):
     ancien = threading.excepthook
     threading.excepthook = lambda args: vu.append(args.exc_value)
     try:
-        s = SuperviseurCourse(lambda: CourseFactice(lever=erreur), pause_sec=0.01)
+        s = SuperviseurCourse(lambda _alerter=None: CourseFactice(lever=erreur), pause_sec=0.01)
         s.demarrer()
         assert _attendre(lambda: s.echecs_consecutifs >= 1)
         s.arreter()
@@ -78,7 +85,7 @@ def test_aucune_exception_ne_sort_du_thread(erreur):
 def test_une_fabrication_qui_echoue_est_contenue():
     """Le cas le plus probable en production : la base ou le broker ne
     répondent pas au moment de construire la course."""
-    def fabriquer():
+    def fabriquer(_alerter=None):
         raise ConnectionError("broker injoignable")
 
     s = SuperviseurCourse(fabriquer, pause_sec=0.01)
@@ -98,7 +105,7 @@ def test_la_course_abandonne_apres_trop_d_echecs(monkeypatch):
     monkeypatch.setattr("maxprofit.hosting.course.BACKOFF_SEC", 0.01)
     monkeypatch.setattr("maxprofit.hosting.course.BACKOFF_MAX_SEC", 0.01)
 
-    def fabriquer():
+    def fabriquer(_alerter=None):
         raise RuntimeError("toujours cassé")
 
     s = SuperviseurCourse(fabriquer, pause_sec=0.01)
@@ -115,7 +122,7 @@ def test_une_alerte_qui_echoue_ne_casse_pas_le_confinement():
     def alerter(message):
         raise OSError("Telegram injoignable")
 
-    s = SuperviseurCourse(lambda: CourseFactice(lever=BotError("x")),
+    s = SuperviseurCourse(lambda _alerter=None: CourseFactice(lever=BotError("x")),
                           alerter=alerter, pause_sec=0.01)
     s.demarrer()
     assert _attendre(lambda: s.echecs_consecutifs >= 1)
@@ -129,7 +136,7 @@ def test_une_alerte_qui_echoue_ne_casse_pas_le_confinement():
 def test_le_resume_distingue_desactivee_de_en_panne():
     """« Désactivée » et « en panne » sont deux états différents, et les
     confondre ferait croire à une course qui tourne alors qu'elle est morte."""
-    s = SuperviseurCourse(lambda: CourseFactice())
+    s = SuperviseurCourse(lambda _alerter=None: CourseFactice())
     assert "désactivée" in s.resume()
 
     s.demarrer()
@@ -138,14 +145,14 @@ def test_le_resume_distingue_desactivee_de_en_panne():
 
 
 def test_une_course_qui_tourne_affiche_son_avancement():
-    s = SuperviseurCourse(lambda: CourseFactice(), pause_sec=0.01)
+    s = SuperviseurCourse(lambda _alerter=None: CourseFactice(), pause_sec=0.01)
     s.demarrer()
     assert _attendre(lambda: "tour(s)" in s.resume())
     s.arreter()
 
 
 def test_le_thread_est_daemon_et_ne_retarde_pas_l_arret():
-    s = SuperviseurCourse(lambda: CourseFactice(), pause_sec=0.01)
+    s = SuperviseurCourse(lambda _alerter=None: CourseFactice(), pause_sec=0.01)
     s.demarrer()
     assert s._thread is not None and s._thread.daemon
     s.arreter()
@@ -179,7 +186,7 @@ def test_une_course_armee_ne_place_rien_avant_l_heure():
     jour. Faire dépendre un départ d'un geste humain à une date précise,
     c'est le manquer."""
     c = CourseFactice()
-    s = SuperviseurCourse(lambda: c, pause_sec=0.01,
+    s = SuperviseurCourse(lambda _alerter=None: c, pause_sec=0.01,
                           debut_ts_sec=int(time.time()) + 3600)
     s.demarrer()
     time.sleep(0.2)
@@ -191,7 +198,7 @@ def test_une_course_armee_ne_place_rien_avant_l_heure():
 
 def test_l_heure_atteinte_la_course_part():
     c = CourseFactice()
-    s = SuperviseurCourse(lambda: c, pause_sec=0.01,
+    s = SuperviseurCourse(lambda _alerter=None: c, pause_sec=0.01,
                           debut_ts_sec=int(time.time()) - 1)
     s.demarrer()
     assert _attendre(lambda: c.tours > 0)
@@ -201,7 +208,7 @@ def test_l_heure_atteinte_la_course_part():
 
 def test_une_course_armee_s_arrete_sans_attendre_l_heure():
     """Un redéploiement ne doit pas rester bloqué une journée entière."""
-    s = SuperviseurCourse(lambda: CourseFactice(), pause_sec=0.01,
+    s = SuperviseurCourse(lambda _alerter=None: CourseFactice(), pause_sec=0.01,
                           debut_ts_sec=int(time.time()) + 86400)
     s.demarrer()
     time.sleep(0.1)

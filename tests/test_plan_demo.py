@@ -656,3 +656,57 @@ def test_le_dernier_trade_survit_a_un_redemarrage(course, tmp_path):
     repris, _ = charger_etat(conn, "indep", c.etat.plan)
     assert repris.dernier_trade == c.etat.dernier_trade
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Le suivi — une course muette est une course qu'on ne surveille pas
+# --------------------------------------------------------------------------- #
+
+def test_un_ordre_en_cours_est_visible_pendant_qu_il_vit(course):
+    """Le défaut qui rendait /etat inutile.
+
+    `denouer` attend l'expiration, donc `tour()` bloque un quart d'heure. Le
+    superviseur ne rafraîchissait le résumé qu'APRÈS son retour : des ordres
+    partaient chez le broker et Telegram affichait encore « connexion au
+    broker en cours ».
+    """
+    c = course(["win"], plan=_plan(sessions=10))
+    c.etat.trade_en_cours = ("EURUSD_otc", "call", 1.59,
+                             int(time.time()) + 900)
+    resume = c.resume()
+    assert "ORDRE EN COURS" in resume
+    assert "EURUSD_otc CALL 1.59" in resume
+    assert "dénouement dans" in resume
+
+
+def test_chaque_session_close_est_annoncee(course):
+    """Une course qui tourne dix jours sans rien dire oblige à interroger
+    /etat au hasard : on découvre un réancrage trois jours après, ou jamais."""
+    messages = []
+    c = course(["win"], plan=_plan(sessions=10))
+    c._alerter = messages.append
+    c.tour()
+    assert len(messages) == 1
+    assert "Session gagnée" in messages[0]
+    assert "solde" in messages[0]
+
+
+def test_un_reancrage_est_annonce(course):
+    messages = []
+    c = course(["loose"] * 6, plan=_plan(sessions=10))
+    c._alerter = messages.append
+    for _ in range(6):
+        c.tour()
+    assert any("Réancrage" in m for m in messages)
+
+
+def test_une_alerte_qui_leve_ne_casse_pas_la_course(course):
+    """Le dernier maillon : prévenir ne doit jamais faire tomber ce qu'on
+    prévient."""
+    def alerter(_m):
+        raise OSError("Telegram injoignable")
+
+    c = course(["win"], plan=_plan(sessions=10))
+    c._alerter = alerter
+    assert c.tour() is True
+    assert c.etat.solde > CAPITAL

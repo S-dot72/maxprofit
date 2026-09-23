@@ -192,7 +192,7 @@ async def _servir(args) -> int:
         # plus que la course — quatorze jours de série continue ne se
         # rattrapent pas, dix jours de course si.
         course = SuperviseurCourse(
-            lambda: fabriquer_course(
+            lambda alerter: fabriquer_course(
                 resoudre_ssid(demo=True),
                 campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v1"),
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
@@ -200,7 +200,8 @@ async def _servir(args) -> int:
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
                 paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
                 mode_univers=os.environ.get(
-                    "PLAN_UNIVERS", "epinglees").strip() or "epinglees"),
+                    "PLAN_UNIVERS", "epinglees").strip() or "epinglees",
+                alerter=alerter),
             alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
             # Le départ est une DATE, pas un geste. Faire dépendre le
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.

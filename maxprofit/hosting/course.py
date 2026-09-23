@@ -49,9 +49,13 @@ BACKOFF_MAX_SEC = 1800
 class SuperviseurCourse:
     """Fait tourner la course du plan à côté de la collecte, sans l'exposer.
 
-    `fabriquer` est une fonction sans argument qui rend un objet possédant
-    `tour()` et `resume()`. Elle est passée plutôt qu'importée pour que ce
-    module reste testable sans broker ni base.
+    `fabriquer(alerter)` rend un objet possédant `tour()` et `resume()`. Elle
+    est passée plutôt qu'importée pour que ce module reste testable sans
+    broker ni base.
+
+    L'alerteur lui est transmis parce que c'est la COURSE qui sait quand une
+    session se clôt ou qu'un réancrage se déclenche — le superviseur, lui, ne
+    voit que des exceptions.
     """
 
     def __init__(self, fabriquer, *, alerter=None, pause_sec: float = 20.0,
@@ -75,6 +79,14 @@ class SuperviseurCourse:
         self.derniere_erreur: str | None = None
         self.abandonnee = False
         self._dernier_resume = "thread lancé, connexion au broker en cours"
+        #: La course elle-même, pour l'interroger PENDANT qu'elle travaille.
+        #:
+        #: Le résumé en cache ne se rafraîchissait qu'au retour de `tour()`,
+        #: or `tour()` bloque un quart d'heure en attendant l'expiration d'une
+        #: option. L'affichage restait donc figé pendant presque tout le temps
+        #: où quelque chose se passait — des ordres partaient chez le broker et
+        #: Telegram montrait encore « connexion en cours ».
+        self._course = None
 
     # --- cycle de vie -------------------------------------------------------
 
@@ -118,7 +130,10 @@ class SuperviseurCourse:
         while not self._arret.is_set() and not self.abandonnee:
             try:
                 self.demarrages += 1
-                course = self._fabriquer()
+                # L'alerteur est transmis a la course : c'est elle qui sait
+                # quand une session se clot ou qu'un reancrage se declenche.
+                course = self._fabriquer(self._alerter)
+                self._course = course
                 self.echecs_consecutifs = 0
                 attente = BACKOFF_SEC
                 while not self._arret.is_set():
@@ -181,6 +196,14 @@ class SuperviseurCourse:
         if self.echecs_consecutifs:
             return (f"🟠 course en reprise ({self.echecs_consecutifs}/"
                     f"{ECHECS_MAX}) — {self.derniere_erreur}")
+        # On interroge la course VIVANTE plutôt que le dernier résumé mis en
+        # cache : `resume()` ne fait que lire des champs, et c'est le seul
+        # moyen de voir ce qui se passe pendant qu'un ordre est en cours.
+        if self._course is not None:
+            try:
+                return f"🟢 {self._course.resume()}"
+            except Exception:                    # noqa: BLE001
+                log.debug("Résumé de course illisible", exc_info=True)
         return f"🟢 {self._dernier_resume}"
 
 

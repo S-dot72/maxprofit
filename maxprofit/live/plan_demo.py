@@ -176,6 +176,10 @@ class Etat:
     dernier_trade: tuple[str, int] | None = None
     pas_sautes_independance: int = 0
     sessions_interrompues: int = 0
+    #: L'ordre EN COURS, tant qu'il n'est pas dénoué. Affiché : sans lui,
+    #: `/etat` reste muet pendant le quart d'heure où l'option vit, c'est-à-dire
+    #: pendant presque tout le temps où il se passe quelque chose.
+    trade_en_cours: tuple[str, str, float, int] | None = None
     derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
@@ -188,12 +192,16 @@ class CoursePlanDemo:
     def __init__(self, lecteur: MarketReader, courtier: CourtierDemo,
                  journal: JournalExecution, plan: PlanCapital,
                  paires: tuple[str, ...], strategie: ZoneH1 | None = None,
-                 mode_univers: str = UNIVERS_EPINGLEES):
+                 mode_univers: str = UNIVERS_EPINGLEES, alerter=None):
         self.lecteur = lecteur
         self.courtier = courtier
         self.journal = journal
         self.paires = paires
         self.strategie = strategie or ZoneH1()
+        #: Prévenir l'opérateur. Une course qui tourne dix jours sans rien
+        #: dire oblige à interroger `/etat` au hasard : on découvre un
+        #: réancrage trois jours après, ou jamais.
+        self._alerter = alerter
         if mode_univers not in (UNIVERS_EPINGLEES, UNIVERS_PLAFOND):
             raise BotError(
                 f"mode_univers inconnu : {mode_univers!r}. Attendu "
@@ -397,6 +405,12 @@ class CoursePlanDemo:
             (self.etat.jour, nouveau, self.etat.solde))
         self.etat.jour = max(1, nouveau)
         self.etat.sessions_perdues_daffilee = 0
+        self._prevenir(
+            "⚠️ <b>Réancrage</b> — deux sessions perdues d'affilée.\n"
+            f"Jour {self.etat.reancrages[-1][0]} → jour {nouveau}, "
+            f"solde {self.etat.solde:.2f} $.\n"
+            "On ne court pas après le plan : les mises repartent du niveau "
+            "qu'on a vraiment.")
 
     def jouer_un_pas(self, signal) -> None:
         """Place l'ordre du pas courant et enregistre son dénouement."""
@@ -406,16 +420,25 @@ class CoursePlanDemo:
         mise = session.mise_courante()
 
         sens = "call" if signal.direction is Direction.CALL else "put"
-        execution = self.courtier.placer(
-            signal.pair, sens, self.strategie.p.expiry_sec, mise=mise)
+        self.etat.trade_en_cours = (
+            signal.pair, sens, mise,
+            int(time.time()) + self.strategie.p.expiry_sec)
+        try:
+            execution = self.courtier.placer(
+                signal.pair, sens, self.strategie.p.expiry_sec, mise=mise)
+        except BaseException:
+            self.etat.trade_en_cours = None
+            raise
         if not execution.accepte:
             log.warning("Ordre refusé (%s) : le pas n'est pas joué.",
                         execution.refus)
+            self.etat.trade_en_cours = None
             self.journal.ecrire(execution)
             return
         execution = self.courtier.denouer(execution)
         self.journal.ecrire(execution)
 
+        self.etat.trade_en_cours = None
         if execution.resultat not in ("win", "loose", "draw"):
             log.error("Dénouement inconnu (%s) : mise %.2f $ notée comme "
                       "engagée, session INTERROMPUE plutôt que comptée au "
@@ -460,6 +483,14 @@ class CoursePlanDemo:
         self.etat.session = None
         log.info("session %s  montant %+.2f $  solde %.2f $",
                  session.etat, montant, self.etat.solde)
+        self._prevenir(
+            f"{'🟢' if session.etat is EtatSession.GAGNEE else '🔴'} "
+            f"<b>Session {session.etat}</b> en {session.pas_joues} pas\n"
+            f"{montant:+.2f} $  →  solde <b>{self.etat.solde:.2f} $</b>\n"
+            f"jour {self.etat.jour}/{self.etat.plan.jours}, session "
+            f"{self.etat.journee.sessions_jouees}/"
+            f"{self.etat.plan.sessions_par_jour} de la journée "
+            f"({self.etat.journee.resultat_pct:+.2f} %)")
 
     # --- la boucle ---------------------------------------------------------
 
@@ -490,6 +521,15 @@ class CoursePlanDemo:
         self.jouer_un_pas(signal)
         self.etat.dernier_trade = (signal.pair, int(time.time()))
         return True
+
+    def _prevenir(self, message: str) -> None:
+        """Alerter ne doit jamais pouvoir faire tomber la course."""
+        if self._alerter is None:
+            return
+        try:
+            self._alerter(message)
+        except Exception:                        # noqa: BLE001
+            log.debug("Alerte de course non envoyée", exc_info=True)
 
     def _pas_independant(self, signal) -> bool:
         """Un pas de martingale se joue-t-il sur un pari VRAIMENT nouveau ?
@@ -544,6 +584,14 @@ class CoursePlanDemo:
     def resume(self) -> str:
         j = self.etat.journee
         e = self.etat
+        if e.trade_en_cours is not None:
+            paire, sens, mise, expire = e.trade_en_cours
+            reste = max(0, expire - int(time.time()))
+            pas = (e.session.pas_joues + 1) if e.session else 1
+            return (f"ORDRE EN COURS — {paire} {sens.upper()} {mise:.2f} $ "
+                    f"(pas {pas}/3), dénouement dans {reste} s | "
+                    f"jour {e.jour}/{e.plan.jours} solde {e.solde:.2f} $ "
+                    f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour}")
         if e.bougies_evaluees == 0:
             # Deux silences très différents, et il faut les distinguer : une
             # course qui n'analyse rien parce que rien ne paie 92 % attend ;
@@ -676,7 +724,7 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      sessions_par_jour: int, jours: int,
                      paires: tuple[str, ...], chemin_lecture="lecture",
                      chemin_ecriture="ecriture",
-                     mode_univers: str = UNIVERS_EPINGLEES):
+                     mode_univers: str = UNIVERS_EPINGLEES, alerter=None):
     """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
 
     ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
@@ -724,7 +772,8 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     courtier = CourtierDemo(ssid, plafonds)
     courtier.connecter()
     course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
-                            ZoneH1(), mode_univers=mode_univers)
+                            ZoneH1(), mode_univers=mode_univers,
+                            alerter=alerter)
     log.info("Univers : %s (%s)", mode_univers,
              ", ".join(paires) if mode_univers == UNIVERS_EPINGLEES
              else "tous les actifs au plafond")
