@@ -170,6 +170,22 @@ class Etat:
     payouts_vus: dict[str, int] = field(default_factory=dict)
     #: Nombre d'actifs au plafond au dernier relevé du catalogue.
     univers_taille: int = 0
+    #: Le solde du BROKER au démarrage de la course.
+    #:
+    #: Le solde du plan en est DÉRIVÉ :
+    #:
+    #:     solde_plan = capital_initial + (solde_broker - ancre)
+    #:
+    #: La version précédente tenait un livre parallèle — chaque session close
+    #: ajoutait son montant à un solde maintenu en mémoire. Ce livre pouvait
+    #: diverger du compte réel, et il l'a fait : cinq ordres gagnants chez le
+    #: broker, un solde de plan resté à 250 $. Dériver rend la divergence
+    #: IMPOSSIBLE au lieu de la rattraper après coup.
+    solde_broker_ancre: float | None = None
+    #: Le solde au moment où la session en cours s'est ouverte. Sert à dire
+    #: ce qu'elle a RÉELLEMENT coûté ou rapporté — la différence de deux
+    #: soldes venus du broker, et non un montant théorique.
+    solde_ouverture_session: float | None = None
     #: (actif, instant) du dernier pas RÉELLEMENT joué. Persisté : sans lui,
     #: un redémarrage rendrait le pas suivant immédiatement éligible et l'on
     #: rejouerait le pari corrélé que la règle existe pour empêcher.
@@ -383,6 +399,28 @@ class CoursePlanDemo:
 
     # --- la session --------------------------------------------------------
 
+    def rafraichir_le_solde(self) -> None:
+        """Relit le solde CHEZ LE BROKER et en dérive celui du plan.
+
+        Appelée avant chaque décision. Si le broker ne répond pas, on garde
+        la dernière valeur connue plutôt que d'inventer — mais on ne trade
+        pas sur un solde inventé : `_echelle` s'en sert pour dimensionner.
+        """
+        try:
+            courant = self.courtier.solde()
+        except BotError as erreur:
+            log.warning("Solde du broker illisible : %s", erreur)
+            return
+        if self.etat.solde_broker_ancre is None:
+            self.etat.solde_broker_ancre = courant
+            log.info("Ancre du solde posée à %.2f $ (broker). Le plan part "
+                     "de %.2f $.", courant, self.etat.plan.capital_initial)
+        solde = (self.etat.plan.capital_initial
+                 + courant - self.etat.solde_broker_ancre)
+        self.etat.solde = solde
+        if self.etat.journee is not None:
+            self.etat.journee.solde = solde
+
     def _echelle(self) -> Echelle:
         """L'échelle du moment, dimensionnée sur le SOLDE COURANT.
 
@@ -416,9 +454,32 @@ class CoursePlanDemo:
             "qu'on a vraiment.")
 
     def jouer_un_pas(self, signal) -> None:
-        """Place l'ordre du pas courant et enregistre son dénouement."""
+        """Place l'ordre du pas courant et enregistre son dénouement.
+
+        ⚠ UN SEUL ORDRE EN VOL À LA FOIS, et la garde est explicite.
+
+        Le plan est SÉQUENTIEL : une session descend son échelle un pas après
+        l'autre, et chaque pas attend de connaître son sort avant que le
+        suivant soit décidé. Deux ordres ouverts en même temps voudraient dire
+        que le pas 2 a été misé sans savoir si le pas 1 était perdu — la
+        martingale n'aurait plus de sens, et l'exposition d'une session ne
+        serait plus celle qu'on a calculée.
+
+        Le blocage de `denouer` suffit en théorie. La garde existe parce que
+        « en théorie » ne vaut rien ici : un thread relancé, une reprise
+        concurrente, et deux ordres partent. Elle rend le cas impossible au
+        lieu de le rendre improbable.
+        """
+        if self.etat.trade_en_cours is not None:
+            paire, sens, mise, expire = self.etat.trade_en_cours
+            log.error(
+                "Ordre déjà en vol (%s %s %.2f $, expire dans %d s) : on ne "
+                "superpose pas. Le plan est séquentiel.",
+                paire, sens, mise, max(0, expire - int(time.time())))
+            return
         if self.etat.session is None:
             self.etat.session = Session(echelle=self._echelle())
+            self.etat.solde_ouverture_session = self.etat.solde
         session = self.etat.session
         mise = session.mise_courante()
 
@@ -476,13 +537,28 @@ class CoursePlanDemo:
         session = self.etat.session
         if session is None:
             return
-        montant = session.montant
-        # UNE seule voie de mise à jour du solde. `Journee` tient le sien ;
-        # en incrémenter un second ici ferait deux vérités qui divergeraient
-        # au premier arrondi, et le plan serait jugé sur le mauvais.
+        # ⚠ LE SOLDE VIENT DU BROKER, PAS DE NOUS.
+        #
+        # `Journee.enregistrer` fait deux choses : il avance les compteurs, et
+        # il déplace son propre solde du montant qu'on lui passe. Le second
+        # geste est de trop ici — le solde reflète DÉJÀ chaque pas, puisqu'il
+        # est relu chez le broker. Lui passer le montant de la session le
+        # comptait une seconde fois : une session perdue creusait le résultat
+        # du jour de 6 % au lieu de 4,7 %, et la garde de perte journalière se
+        # déclenchait à tort dès la première.
+        #
+        # On lui passe donc zéro — les COMPTEURS viennent de nous, le SOLDE de
+        # la source — puis on lui réimpose la vérité et l'on recalcule sa
+        # garde dessus.
+        ouverture = self.etat.solde_ouverture_session
+        self.rafraichir_le_solde()
+        montant = (self.etat.solde - ouverture if ouverture is not None
+                   else session.montant)
         self.etat.journee.enregistrer(
-            session.etat is EtatSession.GAGNEE, montant)
-        self.etat.solde = self.etat.journee.solde
+            session.etat is EtatSession.GAGNEE, 0.0)
+        self.etat.journee.solde = self.etat.solde
+        self.etat.journee.arret = self.etat.journee.peut_ouvrir_une_session()
+        self.etat.solde_ouverture_session = None
         if session.etat is EtatSession.PERDUE:
             self.etat.sessions_perdues_daffilee += 1
             log.warning(
@@ -518,6 +594,7 @@ class CoursePlanDemo:
         avant qu'on en ouvre une autre, sinon deux échelles courent en même
         temps et l'exposition n'est plus celle qu'on a calculée.
         """
+        self.rafraichir_le_solde()
         if self.etat.session is None:
             arret = self.peut_ouvrir()
             if arret is not None:
@@ -672,8 +749,9 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                 sessions_jouees, sessions_perdues_daffilee, jour_utc,
                 reancrages, derniere_bougie, session_pas_joues,
                 session_engagees, session_gain_vise,
-                dernier_trade_pair, dernier_trade_ts_sec)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                dernier_trade_pair, dernier_trade_ts_sec,
+                solde_broker_ancre)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(campagne) DO UPDATE SET
                maj_ts_sec = excluded.maj_ts_sec,
                jour = excluded.jour,
@@ -688,7 +766,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                session_engagees = excluded.session_engagees,
                session_gain_vise = excluded.session_gain_vise,
                dernier_trade_pair = excluded.dernier_trade_pair,
-               dernier_trade_ts_sec = excluded.dernier_trade_ts_sec""",
+               dernier_trade_ts_sec = excluded.dernier_trade_ts_sec,
+               solde_broker_ancre = excluded.solde_broker_ancre""",
         (campagne, int(time.time()), etat.jour, etat.solde,
          etat.journee.solde_ouverture, etat.journee.sessions_jouees,
          etat.sessions_perdues_daffilee, jour_utc_courant,
@@ -697,7 +776,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
          json.dumps(session.engagees if session else []),
          session.echelle.gain_vise if session else 0.0,
          etat.dernier_trade[0] if etat.dernier_trade else None,
-         etat.dernier_trade[1] if etat.dernier_trade else None),
+         etat.dernier_trade[1] if etat.dernier_trade else None,
+         etat.solde_broker_ancre),
     )
     valider(conn)
 
@@ -714,7 +794,7 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
                   sessions_perdues_daffilee, jour_utc, reancrages,
                   derniere_bougie, session_pas_joues, session_engagees,
                   session_gain_vise, dernier_trade_pair,
-                  dernier_trade_ts_sec
+                  dernier_trade_ts_sec, solde_broker_ancre
            FROM plan_etat WHERE campagne = ?""", (campagne,)).fetchone()
     if ligne is None:
         return None
@@ -731,6 +811,8 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         # immédiatement éligible et l'on rejouerait le pari corrélé que la
         # règle d'indépendance existe pour empêcher.
         etat.dernier_trade = (str(ligne[11]), int(ligne[12]))
+    if ligne[13] is not None:
+        etat.solde_broker_ancre = float(ligne[13])
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même

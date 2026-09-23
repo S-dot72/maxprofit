@@ -59,6 +59,7 @@ class CourtierFactice:
         self.places: list[tuple[str, str, float]] = []
         self.suivies: list[str] = []
         self.mises_recues: list[float] = []
+        self.profits: list[float] = []
 
     def suivre(self, pair):
         self.suivies.append(pair)
@@ -68,6 +69,15 @@ class CourtierFactice:
 
     def prix(self, pair):
         return 1.1
+
+    def solde(self):
+        """Le solde du broker, simulé : l'ancre plus les profits encaissés.
+
+        C'est ainsi que le vrai compte se comporte — et tout l'intérêt de
+        dériver le solde du plan de celui-ci est qu'aucun livre parallèle ne
+        peut en diverger.
+        """
+        return 53170.0 + sum(self.profits)
 
     def bougies(self, pair, count=300):
         # Aucune bougie : les tests d'enchaînement scriptent le signal et ne
@@ -107,6 +117,7 @@ class CourtierFactice:
     def denouer(self, ex):
         ex.resultat = getattr(ex, "_issue", "loose")
         ex.profit = ex.mise * 0.92 if ex.resultat == "win" else -ex.mise
+        self.profits.append(ex.profit)
         return ex
 
 
@@ -795,3 +806,74 @@ def test_un_ordre_introuvable_reste_EN_VOL_plutot_que_devine(tmp_path):
     _resoudre_les_ordres_en_vol(None, CourtierMuet([]), journal)
     assert len(journal.en_vol()) == 1, "il reste en vol, il n'est pas deviné"
     journal.close()
+
+
+# --------------------------------------------------------------------------- #
+# Le solde vient du BROKER — plus de livre de comptes parallèle
+# --------------------------------------------------------------------------- #
+
+def test_le_solde_du_plan_est_DERIVE_de_celui_du_broker(course):
+    """Le plan tenait son propre livre : chaque session close ajoutait son
+    montant à un solde maintenu en mémoire. Ce livre pouvait diverger du
+    compte réel, et il l'a fait — cinq ordres gagnants chez le broker, un
+    solde de plan resté à 250 $.
+
+    Dériver rend la divergence IMPOSSIBLE au lieu de la rattraper après coup.
+    """
+    c = course(["win"], plan=_plan(sessions=10))
+    c.rafraichir_le_solde()
+    ancre = c.etat.solde_broker_ancre
+    assert ancre == 53170.0
+    assert c.etat.solde == CAPITAL
+
+    c.tour()
+    # Le broker a encaissé le gain ; le plan le lit, il ne le calcule pas.
+    delta = c.courtier.solde() - ancre
+    assert c.etat.solde == pytest.approx(CAPITAL + delta)
+
+
+def test_une_perte_n_est_pas_comptee_DEUX_FOIS(course):
+    """Le bogue qui fermait la journée dès la première session perdue.
+
+    `Journee.enregistrer` déplace son propre solde du montant qu'on lui
+    passe. Or le solde reflète déjà chaque pas, puisqu'il vient du broker.
+    Une session perdue creusait donc le résultat du jour de 6 % au lieu de
+    4,7 %, et la garde de perte journalière se déclenchait à tort.
+    """
+    c = course(["loose", "loose", "loose", "win"], plan=_plan(sessions=10))
+    for _ in range(3):
+        c.tour()
+    engage = sum(e.mise for e in c.journal.toutes())
+    assert c.etat.solde == pytest.approx(CAPITAL - engage)
+    assert c.etat.journee.resultat == pytest.approx(-engage)
+    assert c.peut_ouvrir() is None, (
+        "4,72 % de perte ne doit pas déclencher une garde réglée à 5 %")
+    assert c.tour() is True, "une nouvelle session doit pouvoir s'ouvrir"
+
+
+def test_on_ne_superpose_JAMAIS_deux_ordres(course):
+    """Le plan est SÉQUENTIEL : chaque pas attend de connaître son sort avant
+    que le suivant soit décidé. Deux ordres ouverts en même temps voudraient
+    dire que le pas 2 a été misé sans savoir si le pas 1 était perdu."""
+    c = course(["win", "win"], plan=_plan(sessions=10))
+    c.etat.trade_en_cours = ("EURUSD_otc", "call", 1.59,
+                             int(time.time()) + 900)
+    signal = Signal(pair="AUDCAD_otc", direction=Direction.CALL,
+                    decided_at_ms=T0_MS, expiry_sec=900, reason="script")
+    c.jouer_un_pas(signal)
+    assert c.journal.toutes() == [], "aucun ordre ne doit partir par-dessus"
+
+
+def test_l_ancre_survit_a_un_redemarrage(course, tmp_path):
+    """Sans elle, une course reprise recalculerait son solde depuis un
+    nouveau point de départ et perdrait tout l'historique du plan."""
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["win"], plan=_plan(sessions=10))
+    c.tour()
+    sauver_etat(conn, "ancre", c.etat, 20_000)
+
+    repris, _ = charger_etat(conn, "ancre", c.etat.plan)
+    assert repris.solde_broker_ancre == pytest.approx(53170.0)
+    conn.close()

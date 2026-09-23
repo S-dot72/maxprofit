@@ -190,6 +190,24 @@ class CourtierDemo:
                 f"fermé ou si la trame a échoué.")
         return float(valeur)
 
+    def solde(self) -> float:
+        """Le solde du compte, tel que le broker le connaît.
+
+        C'est LA vérité. Tenir un livre parallèle et le comparer ensuite
+        revient à entretenir deux comptabilités dont l'une finira par mentir.
+
+        Lève si le solde n'est pas connu : rendre zéro ferait croire à un
+        compte vidé, et rendre le dernier connu ferait passer une panne de
+        lecture pour un marché immobile.
+        """
+        self._exiger_connecte()
+        valeur = getattr(self._globals, "balance", None)
+        if valeur is None:
+            raise SourceIndisponible(
+                "Solde inconnu : le broker ne l'a pas encore envoyé, ou la "
+                "session n'est pas authentifiée.")
+        return float(valeur)
+
     # --- l'univers : TOUTES les paires au plafond ---------------------------
 
     def paires_au_plafond(self) -> list[str]:

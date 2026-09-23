@@ -352,6 +352,33 @@ def _v7_entiers_64_bits(conn) -> None:
             pass
 
 
+def _v8_ancre_du_solde(conn) -> None:
+    """Le solde du broker au DÉMARRAGE de la course.
+
+    Le plan tenait son propre livre de comptes : chaque session close
+    ajoutait ou retranchait un montant à un solde maintenu en mémoire puis
+    persisté. Ce livre pouvait diverger du compte réel, et il l'a fait —
+    cinq ordres gagnants chez le broker, un solde de plan resté à 250 $.
+
+    On inverse : le solde du plan est DÉRIVÉ du broker.
+
+        solde_plan = capital_initial + (solde_broker - ancre)
+
+    Une seule valeur à retenir, posée une fois. Tout trade exécuté chez le
+    broker se retrouve dans le solde du plan, y compris ceux dont on aurait
+    perdu la trace. La divergence devient impossible par construction, au
+    lieu d'être rattrapée après coup.
+
+    ⚠ Le revers : un trade passé À LA MAIN sur le même compte démo entre
+    dans le calcul. Le compte doit être réservé à la course.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE plan_etat ADD COLUMN solde_broker_ancre REAL")
+    except Exception:                            # noqa: BLE001
+        pass
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
@@ -362,6 +389,7 @@ MIGRATIONS: tuple[Migration, ...] = (
               _v6_dernier_trade),
     Migration(7, "entiers 64 bits pour les millisecondes",
               _v7_entiers_64_bits),
+    Migration(8, "ancre du solde broker", _v8_ancre_du_solde),
 )
 
 #: Version de schéma que ce code sait produire.
