@@ -200,10 +200,23 @@ class Etat:
     #: Paires lues dans notre base au dernier passage — celles qui ne coûtent
     #: rien, et les seules qu'on puisse suivre bougie par bougie.
     paires_gratuites: int = 0
+    #: Les compteurs d'activité, nommés une fois pour que la persistance
+    #: et la relecture ne puissent pas diverger.
+    COMPTEURS = ("bougies_evaluees", "bougies_perimees", "signaux_bruts",
+                 "signaux_trouves", "pas_sautes_independance",
+                 "sessions_interrompues")
+
     #: Quand la course a démarré. Affiché, parce que « rien ne bouge » et
     #: « ça tourne depuis trois minutes » se ressemblent trait pour trait à
     #: l'écran, et appellent des gestes opposés : chercher une panne, ou
     #: attendre.
+    #:
+    #: ⚠ PERSISTÉ, et il ne l'était pas. Il était posé sur l'état NEUF à la
+    #: construction, puis l'état rechargé de la base l'écrasait avec sa
+    #: valeur par défaut, 0. `/etat` annonçait donc « en route depuis 0 min »
+    #: en toutes circonstances — y compris sous 2 087 bougies évaluées, ce
+    #: qui rendait le débit impossible à calculer au moment précis où l'on
+    #: cherchait à savoir pourquoi il était bas.
     demarre_ts: int = 0
     #: Le solde du BROKER au démarrage de la course.
     #:
@@ -269,6 +282,9 @@ class CoursePlanDemo:
         self.mode_univers = mode_univers
         self.etat = Etat(plan=plan, solde=plan.capital_initial)
         self.etat.ouvrir_la_journee()
+        # Ne vaut que pour une course NEUVE : `fabriquer_course` remplace
+        # l'état par celui de la base juste après, et n'en repose une que si
+        # l'état rechargé n'en avait pas.
         self.etat.demarre_ts = int(time.time())
         self._univers: list[str] | None = None
         self._univers_ts = 0
@@ -888,8 +904,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                 reancrages, derniere_bougie, session_pas_joues,
                 session_engagees, session_gain_vise,
                 dernier_trade_pair, dernier_trade_ts_sec,
-                solde_broker_ancre)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                solde_broker_ancre, compteurs, demarre_ts)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(campagne) DO UPDATE SET
                maj_ts_sec = excluded.maj_ts_sec,
                jour = excluded.jour,
@@ -905,7 +921,9 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                session_gain_vise = excluded.session_gain_vise,
                dernier_trade_pair = excluded.dernier_trade_pair,
                dernier_trade_ts_sec = excluded.dernier_trade_ts_sec,
-               solde_broker_ancre = excluded.solde_broker_ancre""",
+               solde_broker_ancre = excluded.solde_broker_ancre,
+               compteurs = excluded.compteurs,
+               demarre_ts = excluded.demarre_ts""",
         (campagne, int(time.time()), etat.jour, etat.solde,
          etat.journee.solde_ouverture, etat.journee.sessions_jouees,
          etat.sessions_perdues_daffilee, jour_utc_courant,
@@ -915,7 +933,9 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
          session.echelle.gain_vise if session else 0.0,
          etat.dernier_trade[0] if etat.dernier_trade else None,
          etat.dernier_trade[1] if etat.dernier_trade else None,
-         etat.solde_broker_ancre),
+         etat.solde_broker_ancre,
+         json.dumps({n: getattr(etat, n) for n in Etat.COMPTEURS}),
+         etat.demarre_ts),
     )
     valider(conn)
 
@@ -932,7 +952,8 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
                   sessions_perdues_daffilee, jour_utc, reancrages,
                   derniere_bougie, session_pas_joues, session_engagees,
                   session_gain_vise, dernier_trade_pair,
-                  dernier_trade_ts_sec, solde_broker_ancre
+                  dernier_trade_ts_sec, solde_broker_ancre,
+                  compteurs, demarre_ts
            FROM plan_etat WHERE campagne = ?""", (campagne,)).fetchone()
     if ligne is None:
         return None
@@ -951,6 +972,13 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         etat.dernier_trade = (str(ligne[11]), int(ligne[12]))
     if ligne[13] is not None:
         etat.solde_broker_ancre = float(ligne[13])
+    # Les compteurs d'activité. Absents d'un état écrit avant la migration
+    # v9 : on repart de zéro plutôt que d'échouer — perdre une mesure est
+    # moins grave que refuser de reprendre un plan en cours.
+    for nom, valeur in json.loads(ligne[14] or "{}").items():
+        if nom in Etat.COMPTEURS:
+            setattr(etat, nom, int(valeur))
+    etat.demarre_ts = int(ligne[15] or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même
@@ -1052,6 +1080,14 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         log.info("Course REPRISE depuis la base : %s", course.resume())
     else:
         log.info("Nouvelle course : %s", course.resume())
+    # ⚠ L'état rechargé ÉCRASE celui que le constructeur vient de bâtir, y
+    # compris la date de départ qu'il y avait posée. Une course reprise garde
+    # donc la sienne — c'est le but — mais un état écrit avant la migration
+    # v9 n'en a aucune, et sans ce garde-fou `/etat` répondait « en route
+    # depuis 0 min » indéfiniment, au moment précis où l'on cherchait à
+    # mesurer un débit.
+    if not course.etat.demarre_ts:
+        course.etat.demarre_ts = int(time.time())
 
     def sauver():
         sauver_etat(ecriture, campagne, course.etat, jour_utc())

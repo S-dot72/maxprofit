@@ -947,6 +947,46 @@ def test_on_ne_superpose_JAMAIS_deux_ordres(course):
     assert c.journal.toutes() == [], "aucun ordre ne doit partir par-dessus"
 
 
+def test_les_compteurs_d_activite_survivent_a_un_redemarrage(tmp_path):
+    """Une jauge qui se remet a zero plus souvent que le phenomene qu'elle
+    mesure ne mesure rien.
+
+    `/etat` annoncait « en route depuis 0 min » sous 2 087 bougies evaluees :
+    la date de depart etait posee sur l'etat NEUF, puis l'etat recharge
+    l'ecrasait avec 0. Impossible d'en deduire un debit — au moment precis ou
+    l'on cherchait a savoir pourquoi il etait bas.
+    """
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=10)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.bougies_evaluees = 2087
+    c.etat.bougies_perimees = 715
+    c.etat.signaux_bruts = 7
+    c.etat.signaux_trouves = 7
+    c.etat.pas_sautes_independance = 2
+    c.etat.sessions_interrompues = 1
+    depart = c.etat.demarre_ts
+    assert depart > 0, "une course neuve pose sa date de depart"
+    sauver_etat(conn, "t", c.etat, 0)
+
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.bougies_evaluees == 2087
+    assert relu.bougies_perimees == 715
+    assert relu.signaux_bruts == 7
+    assert relu.signaux_trouves == 7
+    assert relu.pas_sautes_independance == 2
+    assert relu.sessions_interrompues == 1
+    assert relu.demarre_ts == depart, (
+        "la date de depart est celle du PLAN, pas du dernier redemarrage")
+    journal.close()
+    conn.close()
+
+
 def test_l_ancre_survit_a_un_redemarrage(course, tmp_path):
     """Sans elle, une course reprise recalculerait son solde depuis un
     nouveau point de départ et perdrait tout l'historique du plan."""

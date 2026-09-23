@@ -379,6 +379,31 @@ def _v8_ancre_du_solde(conn) -> None:
         pass
 
 
+def _v9_compteurs_d_activite(conn) -> None:
+    """Les compteurs d'activité, persistés — sinon ils ne mesurent rien.
+
+    `bougies_evaluees`, `signaux_bruts` et leurs voisins vivaient en mémoire.
+    Ils repartaient donc de zéro à chaque redémarrage, et `demarre_ts` avec
+    eux — sauf que `demarre_ts` était posé sur l'état NEUF puis écrasé par
+    l'état rechargé, où il valait 0. `/etat` annonçait « en route depuis 0
+    min » sous 2 087 bougies, c'est-à-dire un débit indéterminé.
+
+    C'est exactement la mesure dont on a besoin pour répondre à « pourquoi si
+    peu de sessions ». Une jauge qui se remet à zéro plus souvent que le
+    phénomène qu'elle mesure ne mesure rien.
+
+    Une seule colonne, en JSON : ces compteurs n'ont aucune vocation à être
+    interrogés en SQL, et une colonne par compteur ferait une migration à
+    chaque compteur qu'on ajoute.
+    """
+    for sql in ("ALTER TABLE plan_etat ADD COLUMN compteurs TEXT",
+                "ALTER TABLE plan_etat ADD COLUMN demarre_ts INTEGER"):
+        try:
+            conn.execute(sql)
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
@@ -390,6 +415,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "entiers 64 bits pour les millisecondes",
               _v7_entiers_64_bits),
     Migration(8, "ancre du solde broker", _v8_ancre_du_solde),
+    Migration(9, "compteurs d'activité persistés", _v9_compteurs_d_activite),
 )
 
 #: Version de schéma que ce code sait produire.
