@@ -28,6 +28,7 @@ socket ne s'ouvre sur un compte non démontré démo.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from types import TracebackType
 
@@ -57,6 +58,9 @@ DELAI_CONNEXION_SEC = 30.0
 DELAI_PREMIER_TICK_SEC = 20.0
 #: Marge accordée au dénouement, au-delà de l'échéance elle-même.
 MARGE_DENOUEMENT_SEC = 30.0
+
+#: Limite de temps imposée à `get_candles`, qui n'en a aucune.
+DELAI_HISTORIQUE_SEC = 15.0
 
 
 def maintenant_ms() -> int:
@@ -238,7 +242,7 @@ class CourtierDemo:
         du crédit à un résultat obtenu en direct.
         """
         self._exiger_connecte()
-        if not self._client.get_candles(pair, 60, count_request=1):
+        if not self._get_candles_borne(pair):
             raise SourceIndisponible(f"Historique refusé sur {pair}.")
         brut = (self._globals.pairs.get(pair) or {}).get("history") or []
         decalage = self._decalage_horaire_sec()
@@ -258,6 +262,46 @@ class CourtierDemo:
             except (KeyError, TypeError, ValueError):
                 continue
         return sorted(sortie, key=lambda c: c.ts_sec)
+
+    def _get_candles_borne(self, pair: str) -> bool:
+        """`get_candles` avec une limite de temps, parce qu'elle n'en a pas.
+
+        ⚠ La fonction de la bibliothèque contient un `while True` sans
+        condition de sortie : si l'historique n'arrive jamais, elle boucle
+        INDÉFINIMENT. Ce n'est pas une exception, c'est un blocage — le thread
+        appelant ne rend jamais la main, aucune erreur n'est levée, et un
+        superviseur bâti pour rattraper des exceptions ne voit rien du tout.
+
+        C'est arrivé en production : la course est restée verte, sans un seul
+        échec au compteur, figée sur son message de démarrage.
+
+        On l'exécute donc dans un thread sacrifiable. S'il ne rend pas la main
+        à temps, on abandonne cet actif et on passe au suivant. Le thread
+        resté dedans est un coût réel qu'on accepte faute de pouvoir
+        l'interrompre — mais il est `daemon`, et le nombre d'actifs est fini.
+        """
+        fini = threading.Event()
+        resultat: dict[str, bool] = {}
+
+        def travailler():
+            try:
+                resultat["ok"] = bool(
+                    self._client.get_candles(pair, 60, count_request=1))
+            except Exception as erreur:          # noqa: BLE001
+                log.debug("get_candles(%s) : %r", pair, erreur)
+                resultat["ok"] = False
+            finally:
+                fini.set()
+
+        threading.Thread(target=travailler, daemon=True,
+                         name=f"historique-{pair}").start()
+        if not fini.wait(DELAI_HISTORIQUE_SEC):
+            log.warning(
+                "Historique de %s non rendu en %.0f s : actif abandonné. La "
+                "fonction de la bibliothèque boucle sans limite, on ne peut "
+                "que la laisser derrière nous.", pair, DELAI_HISTORIQUE_SEC)
+            return False
+        return resultat.get("ok", False)
 
     # --- l'ordre ------------------------------------------------------------
 

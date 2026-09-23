@@ -98,6 +98,23 @@ DELAI_ENTRE_ACTIFS_SEC = 0.4
 #: coûterait une trame à chaque fois.
 RAFRAICHIR_UNIVERS_SEC = 120
 
+#: Les deux univers, et ils répondent à deux questions différentes.
+#:
+#:   EPINGLEES  les quatre paires sur lesquelles l'hypothèse a été
+#:              PRÉ-INSCRITE (registre #58, #59). C'est la seule campagne qui
+#:              puisse la valider hors échantillon — et une validation brûlée
+#:              ne se refait pas.
+#:   PLAFOND    tous les actifs au payout maximal, ~39 sur 146 ouverts. Dix
+#:              fois plus de signaux, mais sur un univers qui n'est pas celui
+#:              de l'hypothèse : des actions, du crypto, des devises
+#:              exotiques. Un solde qui monte n'y confirmerait RIEN de #58.
+#:
+#: Le défaut est EPINGLEES. Le test de la chaîne — signal, mise, ordre,
+#: solde, gardes — se fait de toute façon dès les premiers ordres, quel que
+#: soit l'univers : c'est un sous-produit, pas une campagne à part.
+UNIVERS_EPINGLEES = "epinglees"
+UNIVERS_PLAFOND = "plafond"
+
 
 @dataclass
 class Etat:
@@ -139,22 +156,38 @@ class CoursePlanDemo:
 
     def __init__(self, lecteur: MarketReader, courtier: CourtierDemo,
                  journal: JournalExecution, plan: PlanCapital,
-                 paires: tuple[str, ...], strategie: ZoneH1 | None = None):
+                 paires: tuple[str, ...], strategie: ZoneH1 | None = None,
+                 mode_univers: str = UNIVERS_EPINGLEES):
         self.lecteur = lecteur
         self.courtier = courtier
         self.journal = journal
         self.paires = paires
         self.strategie = strategie or ZoneH1()
+        if mode_univers not in (UNIVERS_EPINGLEES, UNIVERS_PLAFOND):
+            raise BotError(
+                f"mode_univers inconnu : {mode_univers!r}. Attendu "
+                f"{UNIVERS_EPINGLEES!r} (les paires pré-inscrites) ou "
+                f"{UNIVERS_PLAFOND!r} (tous les actifs au maximum).")
+        self.mode_univers = mode_univers
         self.etat = Etat(plan=plan, solde=plan.capital_initial)
         self.etat.ouvrir_la_journee()
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._rotation = 0
-        # ⚠ On n'appelle PLUS `suivre()` sur les paires épinglées. L'univers
-        # est découvert à chaque relevé du catalogue, et demander un
-        # historique change déjà d'actif : garder quatre abonnements en plus
-        # ne ferait qu'ajouter des changements de symbole concurrents, ce qui
-        # est précisément ce qui fait fermer le socket.
+        # ⚠ L'abonnement n'est PAS facultatif en mode épinglées.
+        #
+        # Les bougies viennent de la base, mais `placer()` a besoin du dernier
+        # PRIX, que le broker ne sert que sur un actif souscrit. Sans cet
+        # abonnement, chaque ordre échouerait sur « aucun tick disponible » —
+        # et seulement au moment de trader, pas avant.
+        #
+        # En mode plafond, l'abonnement se fait tout seul : demander un
+        # historique change déjà d'actif. En ajouter quatre de plus ne ferait
+        # qu'empiler des changements concurrents, ce qui est précisément ce
+        # qui fait fermer le socket.
+        if self.mode_univers == UNIVERS_EPINGLEES:
+            for p in paires:
+                self.courtier.suivre(p)
 
     # --- le signal ---------------------------------------------------------
 
@@ -172,6 +205,22 @@ class CoursePlanDemo:
             return []
         bougies = self.lecteur.candles(paire, 60, fin - n * 60, fin + 60)
         return [b for b in bougies if b.complete]
+
+    def _bougies_de(self, paire: str) -> list[Candle]:
+        """La source dépend du MODE, et ce n'est pas un détail.
+
+        En mode épinglées, les bougies viennent de NOTRE base : même source
+        que le backtest, aucun appel au broker, aucun risque de blocage. C'est
+        ce qui rend cette campagne comparable à l'hypothèse pré-inscrite.
+
+        En mode plafond, il n'y a pas le choix : on ne collecte pas ces
+        actifs, seul le broker a leur historique. On y perd la comparabilité
+        avec le backtest, et l'on hérite d'une fonction de bibliothèque qui
+        boucle sans limite — bornée dans `CourtierDemo`.
+        """
+        if self.mode_univers == UNIVERS_EPINGLEES:
+            return self.bougies_collectees(paire, self.strategie.p.lookback)
+        return self.courtier.bougies(paire, self.strategie.p.lookback)
 
     def univers(self) -> list[str]:
         """TOUS les actifs ouverts qui paient le maximum, pas seulement les
@@ -191,13 +240,18 @@ class CoursePlanDemo:
         if (self._univers is None
                 or maintenant - self._univers_ts >= RAFRAICHIR_UNIVERS_SEC):
             try:
-                self._univers = self.courtier.paires_au_plafond()
-                self._univers_ts = maintenant
-                self.etat.univers_taille = len(self._univers)
+                au_plafond_ = self.courtier.paires_au_plafond()
             except BotError as erreur:
                 log.warning("Catalogue des paires indisponible : %s", erreur)
-                if self._univers is None:
-                    return []
+                return self._univers or []
+            if self.mode_univers == UNIVERS_EPINGLEES:
+                # L'intersection, et pas les épinglées telles quelles : une
+                # paire épinglée qui ne paie pas le maximum reste écartée.
+                self._univers = [p for p in self.paires if p in au_plafond_]
+            else:
+                self._univers = au_plafond_
+            self._univers_ts = maintenant
+            self.etat.univers_taille = len(self._univers)
         return self._univers
 
     def chercher_un_signal(self):
@@ -221,15 +275,17 @@ class CoursePlanDemo:
                 break
             self._rotation += 1
             try:
-                bougies = self.courtier.bougies(
-                    paire, self.strategie.p.lookback)
+                bougies = self._bougies_de(paire)
             except BotError as erreur:
                 log.debug("Historique indisponible sur %s : %s", paire, erreur)
                 continue
             examinees += 1
-            # Le broker n'aime pas qu'on enchaîne les changements d'actif :
-            # huit abonnements simultanés lui avaient fait fermer le socket.
-            time.sleep(DELAI_ENTRE_ACTIFS_SEC)
+            if self.mode_univers == UNIVERS_PLAFOND:
+                # Le broker n'aime pas qu'on enchaîne les changements
+                # d'actif : huit abonnements simultanés lui avaient fait
+                # fermer le socket. Inutile en mode épinglées, qui ne lui
+                # demande rien.
+                time.sleep(DELAI_ENTRE_ACTIFS_SEC)
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 continue
             derniere = bougies[-1]
@@ -524,7 +580,8 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
 def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      sessions_par_jour: int, jours: int,
                      paires: tuple[str, ...], chemin_lecture="lecture",
-                     chemin_ecriture="ecriture"):
+                     chemin_ecriture="ecriture",
+                     mode_univers: str = UNIVERS_EPINGLEES):
     """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
 
     ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
@@ -571,7 +628,11 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     journal = JournalExecution(ecriture, campagne=campagne)
     courtier = CourtierDemo(ssid, plafonds)
     courtier.connecter()
-    course = CoursePlanDemo(lecteur, courtier, journal, plan, paires, ZoneH1())
+    course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
+                            ZoneH1(), mode_univers=mode_univers)
+    log.info("Univers : %s (%s)", mode_univers,
+             ", ".join(paires) if mode_univers == UNIVERS_EPINGLEES
+             else "tous les actifs au plafond")
 
     repris = charger_etat(ecriture, campagne, plan)
     if repris is not None:

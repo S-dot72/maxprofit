@@ -135,4 +135,21 @@ services:
         value: "18"
       - key: PLAN_JOURS
         value: "30"
+      # L'UNIVERS, et c'est la variable qui décide de ce que la course prouve.
+      #
+      #   epinglees  les quatre paires où l'hypothèse a été PRÉ-INSCRITE
+      #              (registre #58, #59). Seule campagne qui puisse la valider
+      #              hors échantillon — et une validation brûlée ne se refait
+      #              pas. Les bougies viennent de NOTRE base : même source que
+      #              le backtest, aucun appel au broker.
+      #   plafond    tous les actifs au payout maximal, ~39 sur 146 ouverts.
+      #              Dix fois plus de signaux, mais sur un univers qui n'est
+      #              pas celui de l'hypothèse — actions, crypto, devises
+      #              exotiques. Un solde qui monte n'y confirmerait RIEN.
+      #
+      # Le défaut est `epinglees`. Le test de la chaîne — signal, mise, ordre,
+      # solde, gardes — se fait de toute façon dès les premiers ordres : c'est
+      # un sous-produit, pas une campagne à part.
+      - key: PLAN_UNIVERS
+        sync: false
 

@@ -198,7 +198,9 @@ async def _servir(args) -> int:
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
                 sessions_par_jour=int(os.environ.get("PLAN_SESSIONS", "18")),
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
-                paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT),
+                paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
+                mode_univers=os.environ.get(
+                    "PLAN_UNIVERS", "epinglees").strip() or "epinglees"),
             alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
             # Le départ est une DATE, pas un geste. Faire dépendre le
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.

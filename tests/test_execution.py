@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from maxprofit.core.errors import BotError
+from maxprofit.execution.courtier import CourtierDemo
 from maxprofit.execution import (
     CompteRefuse,
     Execution,
@@ -377,3 +378,33 @@ def test_une_boucle_deja_en_cours_est_refusee_au_lieu_d_etre_remplacee():
             installer_boucle_asyncio(None)
 
     asyncio.run(depuis_une_coroutine())
+
+
+def test_un_historique_qui_ne_rend_jamais_la_main_est_abandonne(monkeypatch):
+    """Le blocage qui a figé la course en production.
+
+    `get_candles` de la bibliothèque contient un `while True` sans condition
+    de sortie. Si l'historique n'arrive jamais, elle boucle INDÉFINIMENT : ce
+    n'est pas une exception, c'est un blocage. Le thread appelant ne rend
+    jamais la main, rien ne lève, et un superviseur bâti pour rattraper des
+    exceptions ne voit rien — la course est restée verte, sans un seul échec
+    au compteur, figée sur son message de démarrage.
+    """
+    import threading
+
+    from maxprofit.execution import courtier as mod
+
+    monkeypatch.setattr(mod, "DELAI_HISTORIQUE_SEC", 0.2)
+
+    class ClientQuiBoucle:
+        def __init__(self):
+            self.entre = threading.Event()
+
+        def get_candles(self, *a, **k):
+            self.entre.set()
+            threading.Event().wait()      # ne rend JAMAIS la main
+
+    c = CourtierDemo.__new__(CourtierDemo)
+    c._client = ClientQuiBoucle()
+    assert c._get_candles_borne("EURUSD_otc") is False
+    assert c._client.entre.is_set(), "l'appel doit bien avoir été tenté"

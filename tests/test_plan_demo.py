@@ -308,11 +308,36 @@ def test_l_univers_n_est_PAS_limite_aux_paires_epinglees(course):
     du collecteur.
     """
     c = course(["win"])
-    assert c.courtier.suivies == [], (
-        "plus d'abonnement permanent : demander un historique change déjà "
-        "d'actif, et les changements concurrents ferment le socket")
     assert c.univers() == ["EURUSD_otc"]
     assert c.etat.univers_taille == 1
+
+
+def test_le_mode_epinglees_s_abonne_car_placer_a_besoin_du_PRIX(course):
+    """Les bougies viennent de la base, mais `placer()` a besoin du dernier
+    prix, que le broker ne sert que sur un actif souscrit. Sans abonnement,
+    l'ordre échouerait — et seulement au moment de trader."""
+    c = course(["win"])
+    assert c.courtier.suivies == ["EURUSD_otc"]
+
+
+def test_le_mode_plafond_ne_s_abonne_pas_en_plus(tmp_path):
+    """Demander un historique change déjà d'actif. Empiler des abonnements
+    concurrents est ce qui fait fermer le socket."""
+    from maxprofit.live.plan_demo import UNIVERS_PLAFOND
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(), ("EURUSD_otc",), mode_univers=UNIVERS_PLAFOND)
+    assert c.courtier.suivies == []
+    journal.close()
+
+
+def test_un_mode_d_univers_inconnu_est_refuse(tmp_path):
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    with pytest.raises(BotError, match="mode_univers"):
+        CoursePlanDemo(LecteurFactice(), CourtierFactice([]), journal,
+                       _plan(), ("EURUSD_otc",), mode_univers="tout")
+    journal.close()
 
 
 def test_le_catalogue_n_est_pas_relu_a_chaque_passage(course):
