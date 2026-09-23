@@ -53,6 +53,17 @@ class CourtierFactice:
     def suivre(self, pair):
         self.suivies.append(pair)
 
+    def paires_au_plafond(self):
+        return ["EURUSD_otc"]
+
+    def bougies(self, pair, count=300):
+        # Aucune bougie : les tests d'enchaînement scriptent le signal et ne
+        # passent jamais par la stratégie.
+        return []
+
+    def payout(self, pair):
+        return 92.0
+
     def placer(self, pair, sens, expiration_sec, mise=None):
         """⚠ La mise REÇUE est enregistrée, pas une constante.
 
@@ -288,9 +299,32 @@ def test_un_nouveau_jour_repart_du_solde_reel(course):
     assert c.peut_ouvrir() is None
 
 
-def test_les_paires_sont_suivies_a_la_construction(course):
+def test_l_univers_n_est_PAS_limite_aux_paires_epinglees(course):
+    """Les quatre épinglées sont une décision de COLLECTE.
+
+    S'y limiter pour chercher des signaux réduirait le champ à une poignée
+    d'actifs, alors qu'à la moitié du temps UNE SEULE des quatre paie le
+    maximum. L'univers vient du catalogue du broker, pas de la configuration
+    du collecteur.
+    """
     c = course(["win"])
-    assert c.courtier.suivies == ["EURUSD_otc"]
+    assert c.courtier.suivies == [], (
+        "plus d'abonnement permanent : demander un historique change déjà "
+        "d'actif, et les changements concurrents ferment le socket")
+    assert c.univers() == ["EURUSD_otc"]
+    assert c.etat.univers_taille == 1
+
+
+def test_le_catalogue_n_est_pas_relu_a_chaque_passage(course):
+    """Les payouts bougent en minutes. Relire le catalogue vingt fois par
+    minute n'apprendrait rien et coûterait une trame à chaque fois."""
+    c = course(["win"])
+    appels = []
+    c.courtier.paires_au_plafond = lambda: appels.append(1) or ["EURUSD_otc"]
+    c.univers()
+    c.univers()
+    c.univers()
+    assert len(appels) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -393,8 +427,9 @@ def test_une_course_sans_ordre_dit_si_elle_est_VIVANTE(course):
     demandait une intervention.
     """
     c = course(["win"], plan=_plan(sessions=10))
-    assert "aucune bougie évaluée" in c.resume()
-    assert "LECTURE de la base" in c.resume(), (
+    assert "AUCUN actif au plafond" in c.resume()
+    c.etat.univers_taille = 12
+    assert "HISTORIQUE demandé au broker" in c.resume(), (
         "le résumé doit dire OÙ chercher si l'état dure")
 
     # Une évaluation, sans signal : la course doit se déclarer vivante.
@@ -455,26 +490,13 @@ def test_on_n_entre_qu_au_payout_maximum(tmp_path, flux, accepte):
     c.journal.close()
 
 
-def test_les_payouts_vus_sont_affiches(tmp_path):
+def test_la_taille_de_l_univers_est_affichee(tmp_path):
     """Sinon une course qui n'analyse rien parce que rien ne paie 92 %
-    ressemble trait pour trait à une course qui ne trouve aucun signal — et
-    l'on ne sait pas s'il faut patienter ou intervenir."""
+    ressemble trait pour trait à une course qui ne trouve aucun signal."""
     c = _course_payout(tmp_path, ["win"], 71)
-    assert c._payout_au_maximum("EURUSD_otc") is False
-    resume = c.resume()
-    assert "aucune paire au payout maximal" in resume
-    assert "EURUSD:71" in resume and ">= 84" in resume
-    c.journal.close()
-
-
-def test_une_paire_sous_le_plafond_n_est_PAS_analysee(tmp_path):
-    """L'ordre des opérations compte : filtrer le payout APRÈS avoir évalué
-    la stratégie fait le travail pour rien sur les trois quarts des paires la
-    moitié du temps."""
-    c = _course_payout(tmp_path, ["win"], 71)
-    vues = []
-    c._bougies = lambda paire, n: vues.append(paire) or []
-    assert c.chercher_un_signal() is None
-    assert vues == [], "aucune bougie ne doit être lue sous le plafond"
-    assert c.etat.bougies_evaluees == 0
+    assert "AUCUN actif au plafond" in c.resume()
+    c.etat.univers_taille = 0
+    c.etat.bougies_evaluees = 5
+    c.etat.derniere_evaluation_ts = int(time.time())
+    assert "0 actif(s) au plafond" in c.resume()
     c.journal.close()

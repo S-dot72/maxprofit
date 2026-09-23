@@ -43,6 +43,8 @@ from maxprofit.collect.pocketoption import (
     installer_boucle_asyncio,
     verifier_ssid,
 )
+from maxprofit.core.payout import au_plafond
+from maxprofit.core.types import Candle
 from maxprofit.execution.garde import Plafonds, exiger_un_compte_demo
 from maxprofit.execution.journal import Execution
 
@@ -183,6 +185,79 @@ class CourtierDemo:
                 f"erreurs et rend None : impossible de dire si l'actif est "
                 f"fermé ou si la trame a échoué.")
         return float(valeur)
+
+    # --- l'univers : TOUTES les paires au plafond ---------------------------
+
+    def paires_au_plafond(self) -> list[str]:
+        """Les actifs OUVERTS qui paient le maximum, tous confondus.
+
+        ⚠ Les quatre paires épinglées sont une décision de COLLECTE, pas de
+        trading. S'y limiter pour chercher des signaux réduirait le champ à
+        une poignée d'actifs alors que la plateforme en cote près de deux
+        cents, dont plusieurs dizaines au plafond à tout instant.
+
+        `GetPairs` lit le catalogue des payouts — diffusé à tout le monde, sans
+        abonnement. Aucun coût réseau supplémentaire.
+        """
+        self._exiger_connecte()
+        catalogue = self._client.GetPairs()
+        if not catalogue:
+            raise SourceIndisponible(
+                "Catalogue des paires indisponible. La bibliothèque avale ses "
+                "erreurs et rend None : impossible de dire si le socket est "
+                "muet ou si la trame a échoué.")
+        return sorted(
+            nom for nom, info in catalogue.items()
+            if info.get("active") and au_plafond(float(info.get("payout", 0))))
+
+    def _decalage_horaire_sec(self) -> int:
+        """Le décalage du broker, ARRONDI À L'HEURE — même règle que la collecte.
+
+        Arrondir est ce qui rend la mesure robuste : un fuseau est un nombre
+        entier d'heures, la latence réseau se compte en secondes. Sans cet
+        arrondi, `get_server_timestamp()` traîne de ~3 s et l'on inscrirait ce
+        retard dans chaque horodatage de bougie.
+        """
+        decalage = self._decalage_ms()
+        if decalage is None:
+            return 0
+        return round(decalage / 3_600_000) * 3600
+
+    def bougies(self, pair: str, count: int = 300) -> list[Candle]:
+        """L'historique M1 d'un actif, demandé au broker.
+
+        ⚠ Source DIFFÉRENTE de celle du backtest, et il faut le dire. Le
+        backtest lit notre base, qui ne contient que les paires collectées ;
+        la course doit pouvoir trader n'importe quel actif au plafond, et le
+        broker est alors la seule source. Les deux devraient coïncider — même
+        flux, même agrégation à la minute — mais ce n'est pas garanti, et une
+        divergence rendrait le direct différent du backtest.
+
+        Pour les quatre paires épinglées, la comparaison est possible : notre
+        base a les mêmes minutes. C'est le contrôle à faire avant d'accorder
+        du crédit à un résultat obtenu en direct.
+        """
+        self._exiger_connecte()
+        if not self._client.get_candles(pair, 60, count_request=1):
+            raise SourceIndisponible(f"Historique refusé sur {pair}.")
+        brut = (self._globals.pairs.get(pair) or {}).get("history") or []
+        decalage = self._decalage_horaire_sec()
+        sortie: list[Candle] = []
+        for ligne in brut:
+            try:
+                sortie.append(Candle(
+                    pair=pair, tf_sec=60,
+                    ts_sec=int(ligne["time"]) - decalage,
+                    open=float(ligne["open"]), high=float(ligne["high"]),
+                    low=float(ligne["low"]), close=float(ligne["close"]),
+                    # Le broker ne dit pas combien de ticks composent sa
+                    # bougie. On met 1 plutôt que 0 : zéro voudrait dire
+                    # « bougie vide », ce qui est faux et ferait écarter la
+                    # bougie par le critère de qualité du §2.4.
+                    tick_count=1, complete=True))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(sortie, key=lambda c: c.ts_sec)
 
     # --- l'ordre ------------------------------------------------------------
 

@@ -30,12 +30,25 @@ probablement du bruit — et on le saura sans attendre la dixième journée.
     deux sessions perdues d'affilée -> on se réancre sur le jour du plan
     le plus proche du solde réel, on ne court pas après le plan
 
---- ⚠ Pourquoi les données viennent de la BASE et non du broker -----------
+--- ⚠ D'où viennent les bougies, et pourquoi ça a changé -----------------
 
-Le collecteur écrit les bougies M1 closes dans la base ; ce module les relit.
-Ouvrir un second flux de ticks pour les mêmes bougies ferait deux sources
-d'une même vérité, qui divergeraient un jour. La connexion au broker ne sert
-qu'à PLACER les ordres.
+Elles venaient de NOTRE base. C'était le bon choix tant que la course se
+limitait aux quatre paires épinglées — une seule source, celle-là même que
+le backtest relit.
+
+Mais les quatre épinglées sont une décision de COLLECTE, pas de trading.
+S'y limiter réduisait le champ à une poignée d'actifs, et à la moitié du
+temps UNE SEULE des quatre paie le maximum. La plateforme en cote près de
+deux cents.
+
+La course demande donc son historique AU BROKER, seule source qui couvre les
+actifs qu'on ne collecte pas. Le prix à payer est réel et il faut le dire :
+le direct et le backtest ne lisent plus la même source. Elles devraient
+coïncider — même flux, même agrégation à la minute — mais ce n'est pas
+garanti. `bougies_collectees()` reste là pour le contrôle : sur les quatre
+paires épinglées, on peut comparer ce que le broker rend à ce qu'on a
+enregistré, et c'est à faire avant d'accorder du crédit à un résultat obtenu
+en direct.
 """
 
 from __future__ import annotations
@@ -71,6 +84,20 @@ log = logging.getLogger(__name__)
 #: le prend plus : la décision reposait sur un prix qui n'est plus le prix.
 FRAICHEUR_MAX_SEC = 90
 
+#: Actifs examinés par passage. Chaque examen demande son historique au
+#: broker, ce qui le fait changer d'actif — et huit changements simultanés lui
+#: avaient fait fermer le socket. On en prend donc une poignée, en rotation,
+#: plutôt que la centaine d'un coup.
+PAIRES_MAX_PAR_PASSAGE = 8
+
+#: Pause entre deux demandes d'historique, pour la même raison.
+DELAI_ENTRE_ACTIFS_SEC = 0.4
+
+#: Le catalogue des payouts se relit toutes les deux minutes. Ils bougent en
+#: minutes, pas en secondes : le relire à chaque passage n'apprendrait rien et
+#: coûterait une trame à chaque fois.
+RAFRAICHIR_UNIVERS_SEC = 120
+
 
 @dataclass
 class Etat:
@@ -99,6 +126,8 @@ class Etat:
     #: patienter ou intervenir.
     paires_ecartees_payout: int = 0
     payouts_vus: dict[str, int] = field(default_factory=dict)
+    #: Nombre d'actifs au plafond au dernier relevé du catalogue.
+    univers_taille: int = 0
     derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
@@ -118,35 +147,89 @@ class CoursePlanDemo:
         self.strategie = strategie or ZoneH1()
         self.etat = Etat(plan=plan, solde=plan.capital_initial)
         self.etat.ouvrir_la_journee()
-        for p in paires:
-            self.courtier.suivre(p)
+        self._univers: list[str] | None = None
+        self._univers_ts = 0
+        self._rotation = 0
+        # ⚠ On n'appelle PLUS `suivre()` sur les paires épinglées. L'univers
+        # est découvert à chaque relevé du catalogue, et demander un
+        # historique change déjà d'actif : garder quatre abonnements en plus
+        # ne ferait qu'ajouter des changements de symbole concurrents, ce qui
+        # est précisément ce qui fait fermer le socket.
 
     # --- le signal ---------------------------------------------------------
 
-    def _bougies(self, paire: str, n: int) -> list[Candle]:
+    def bougies_collectees(self, paire: str, n: int) -> list[Candle]:
+        """Les bougies de NOTRE base — seulement pour les paires collectées.
+
+        Plus utilisée pour décider : la course lit désormais l'historique du
+        broker, seule source qui couvre les actifs qu'on ne collecte pas. Elle
+        reste pour le contrôle qui compte : comparer, sur les quatre paires
+        épinglées, ce que le broker rend à ce qu'on a enregistré. Une
+        divergence y rendrait le direct différent du backtest.
+        """
         fin = self.lecteur.last_candle_ts_sec()
         if fin is None:
             return []
         bougies = self.lecteur.candles(paire, 60, fin - n * 60, fin + 60)
         return [b for b in bougies if b.complete]
 
-    def chercher_un_signal(self):
-        """Le premier signal frais parmi les paires suivies, ou `None`.
+    def univers(self) -> list[str]:
+        """TOUS les actifs ouverts qui paient le maximum, pas seulement les
+        paires épinglées.
 
-        Les paires sont parcourues dans un ordre FIXE et non au hasard : un
-        ordre aléatoire rendrait la course non reproductible, et deux courses
-        sur les mêmes données donneraient des soldes différents.
+        ⚠ Les quatre épinglées sont une décision de COLLECTE. S'y limiter pour
+        chercher des signaux réduirait le champ à une poignée d'actifs alors
+        que la plateforme en cote près de deux cents, dont plusieurs dizaines
+        au plafond à tout instant — et à la moitié du temps une seule des
+        quatre est éligible.
+
+        Le catalogue est relu périodiquement et non à chaque passage : les
+        payouts bougent en minutes, pas en secondes, et le relire vingt fois
+        par minute n'apprendrait rien.
         """
         maintenant = int(time.time())
-        for paire in self.paires:
-            # LE PAYOUT D'ABORD. Une paire qui ne paie pas le maximum n'est
-            # pas analysée du tout : ni lecture de ses bougies, ni calcul de
-            # zones, ni évaluation de la stratégie. La version précédente
-            # faisait l'inverse et jetait le signal APRÈS l'avoir calculé —
-            # du travail fait pour rien sur la moitié du temps de marché.
-            if not self._payout_au_maximum(paire):
+        if (self._univers is None
+                or maintenant - self._univers_ts >= RAFRAICHIR_UNIVERS_SEC):
+            try:
+                self._univers = self.courtier.paires_au_plafond()
+                self._univers_ts = maintenant
+                self.etat.univers_taille = len(self._univers)
+            except BotError as erreur:
+                log.warning("Catalogue des paires indisponible : %s", erreur)
+                if self._univers is None:
+                    return []
+        return self._univers
+
+    def chercher_un_signal(self):
+        """Le premier signal frais parmi les actifs au plafond, ou `None`.
+
+        Les actifs sont parcourus en ROTATION et non toujours dans le même
+        ordre : sans cela, les premiers de la liste monopoliseraient les
+        signaux et les derniers ne seraient jamais examinés quand le plafond
+        de paires par passage est atteint.
+        """
+        maintenant = int(time.time())
+        candidats = self.univers()
+        if not candidats:
+            return None
+        # Rotation : on reprend là où le passage précédent s'est arrêté.
+        depart = self._rotation % len(candidats)
+        ordre = candidats[depart:] + candidats[:depart]
+        examinees = 0
+        for paire in ordre:
+            if examinees >= PAIRES_MAX_PAR_PASSAGE:
+                break
+            self._rotation += 1
+            try:
+                bougies = self.courtier.bougies(
+                    paire, self.strategie.p.lookback)
+            except BotError as erreur:
+                log.debug("Historique indisponible sur %s : %s", paire, erreur)
                 continue
-            bougies = self._bougies(paire, self.strategie.p.lookback)
+            examinees += 1
+            # Le broker n'aime pas qu'on enchaîne les changements d'actif :
+            # huit abonnements simultanés lui avaient fait fermer le socket.
+            time.sleep(DELAI_ENTRE_ACTIFS_SEC)
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 continue
             derniere = bougies[-1]
@@ -163,6 +246,11 @@ class CoursePlanDemo:
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
             if signal is None:
+                continue
+            # Le payout est revérifié À L'INSTANT DU SIGNAL. Le catalogue peut
+            # dater de quelques minutes, et entrer sur un payout périmé est
+            # exactement ce que le filtre existe pour empêcher.
+            if not self._payout_au_maximum(paire):
                 continue
             self.etat.signaux_trouves += 1
             return signal
@@ -321,12 +409,12 @@ class CoursePlanDemo:
             # Deux silences très différents, et il faut les distinguer : une
             # course qui n'analyse rien parce que rien ne paie 92 % attend ;
             # une course qui ne lit plus la base est en panne.
-            if e.paires_ecartees_payout:
-                return (f"connectée, aucune paire au payout maximal pour "
-                        f"l'instant — payouts {self._payouts_lisibles()} "
-                        f"(il faut >= 84)")
-            return ("connectée, aucune bougie évaluée pour l'instant — "
-                    "si ça dure, c'est la LECTURE de la base qui est en cause")
+            if e.univers_taille == 0:
+                return ("connectée, AUCUN actif au plafond pour l'instant — "
+                        "le catalogue des payouts ne rend rien d'éligible")
+            return (f"connectée, {e.univers_taille} actif(s) au plafond mais "
+                    f"aucune bougie évaluée — c'est l'HISTORIQUE demandé au "
+                    f"broker qui est en cause, pas la base")
         age = int(time.time()) - e.derniere_evaluation_ts
         base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
                 f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour}  "
@@ -334,9 +422,10 @@ class CoursePlanDemo:
                 f"réancrages {len(e.reancrages)}")
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
-        return (f"{base} | {e.bougies_evaluees} bougies évaluées, "
+        return (f"{base} | {e.univers_taille} actif(s) au plafond, "
+                f"{e.bougies_evaluees} bougies évaluées, "
                 f"{e.signaux_trouves} signal(aux), dernière lecture il y a "
-                f"{age} s | payouts {self._payouts_lisibles()} (il faut >= 84)")
+                f"{age} s")
 
 
 def nouveau_jour(etat: Etat) -> None:
