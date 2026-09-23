@@ -292,6 +292,17 @@ class CourtierDemo:
             return execution
         self._exiger_connecte()
 
+        # ⚠ ATTENDRE L'ÉCHÉANCE AVANT D'INTERROGER.
+        #
+        # `check_win` de la bibliothèque abandonne au bout de SOIXANTE
+        # SECONDES et rend « unknown ». Sur une option de 15 minutes, elle
+        # rendrait donc « unknown » à tous les coups : chaque session serait
+        # interrompue dès le premier pas, la martingale ne descendrait jamais
+        # son échelle, et chaque mise serait perdue — sans une seule erreur.
+        #
+        # Les 26 ordres d'essai étaient à 60 s d'échéance : la limite tenait
+        # tout juste, et le défaut est resté invisible.
+        self._attendre_l_echeance(execution)
         profit, statut = self._client.check_win(execution.order_id)
         execution.resultat = statut
         execution.profit = None if profit is None else float(profit)
@@ -326,6 +337,27 @@ class CourtierDemo:
             if ouverture is not None and execution.ouverture_ts_ms is None:
                 execution.ouverture_ts_ms = int(ouverture * 1000)
         return execution
+
+    def _attendre_l_echeance(self, execution: Execution) -> None:
+        """Dort jusqu'à l'expiration, plus une marge, par petits pas.
+
+        Par petits pas et non d'un bloc : le thread doit pouvoir être
+        interrompu, et un sommeil de quinze minutes rendrait un arrêt de
+        service muet pendant tout ce temps.
+        """
+        if execution.accepte_ts_ms is None:
+            return
+        cible = (execution.accepte_ts_ms / 1000
+                 + execution.expiration_sec + MARGE_DENOUEMENT_SEC)
+        restant = cible - time.time()
+        if restant > 0:
+            log.info("Attente du dénouement : %.0f s (échéance %d s).",
+                     restant, execution.expiration_sec)
+        while True:
+            restant = cible - time.time()
+            if restant <= 0:
+                return
+            time.sleep(min(5.0, restant))
 
     # --- gardes -------------------------------------------------------------
 

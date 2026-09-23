@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 
 from maxprofit.core.errors import BotError
 from maxprofit.core.market_view import SequenceMarketView
+from maxprofit.core.payout import PLAFOND_PCT, au_plafond
 from maxprofit.core.types import Candle, Direction
 from maxprofit.execution.courtier import CourtierDemo
 from maxprofit.execution.journal import JournalExecution
@@ -91,6 +92,10 @@ class Etat:
     #: ressemblaient à du vert.
     bougies_evaluees: int = 0
     signaux_trouves: int = 0
+    #: Signaux ÉCARTÉS faute de payout maximal. Comptés à part, et affichés :
+    #: sans ce compteur, une course qui refuse tout pour cause de payout
+    #: ressemblerait trait pour trait à une course qui ne trouve rien.
+    signaux_ecartes_payout: int = 0
     derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
@@ -147,10 +152,38 @@ class CoursePlanDemo:
                 continue
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
-            if signal is not None:
-                self.etat.signaux_trouves += 1
-                return signal
+            if signal is None:
+                continue
+            self.etat.signaux_trouves += 1
+            if not self._payout_au_maximum(paire):
+                self.etat.signaux_ecartes_payout += 1
+                continue
+            return signal
         return None
+
+    def _payout_au_maximum(self, paire: str) -> bool:
+        """N'entrer QUE lorsque le broker paie son maximum.
+
+        ⚠ « Payout 92 % » se lit sur le FLUX à 84, pas à 92. Le broker
+        applique `min(flux + 8, 92)` — mesuré sur 26 ordres réels et confirmé
+        par l'affichage de la plateforme. Filtrer sur `flux >= 92` écarterait
+        42 % d'occasions qui paient exactement la même chose.
+
+        Une indisponibilité du payout vaut REFUS. Entrer sans savoir ce qu'on
+        sera payé est précisément ce que ce filtre existe pour empêcher.
+        """
+        try:
+            flux = self.courtier.payout(paire)
+        except BotError as erreur:
+            log.warning("Payout indisponible sur %s : %s", paire, erreur)
+            return False
+        if au_plafond(flux):
+            return True
+        log.info("Signal écarté sur %s : payout %d %% (appliqué %d %%), "
+                 "le maximum de %d %% demande un flux >= %d %%.",
+                 paire, flux, min(flux + 8, PLAFOND_PCT), PLAFOND_PCT,
+                 PLAFOND_PCT - 8)
+        return False
 
     # --- la session --------------------------------------------------------
 
@@ -280,8 +313,9 @@ class CoursePlanDemo:
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
         return (f"{base} | {e.bougies_evaluees} bougies évaluées, "
-                f"{e.signaux_trouves} signal(aux), dernière lecture il y a "
-                f"{age} s")
+                f"{e.signaux_trouves} signal(aux) dont "
+                f"{e.signaux_ecartes_payout} écarté(s) payout, "
+                f"dernière lecture il y a {age} s")
 
 
 def nouveau_jour(etat: Etat) -> None:

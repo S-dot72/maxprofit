@@ -46,7 +46,7 @@ from maxprofit.research.metriques import (
     seuil_de_rentabilite_pct,
     signaux_pour_etablir,
 )
-from maxprofit.research.payout import (
+from maxprofit.core.payout import (
     BONUS_PCT,
     FLUX_POUR_LE_PLAFOND,
     PLAFOND_PCT,

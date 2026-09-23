@@ -1,6 +1,13 @@
 """
 Le payout du flux n'est pas celui qu'on touche.
 
+Ce module vit dans `core` et non dans `research` parce que ce n'est pas un
+résultat d'analyse : c'est un FAIT sur le broker, au même titre que la
+définition d'une bougie. La recherche s'en sert pour juger une hypothèse,
+le live pour décider s'il a le droit d'entrer. Le laisser dans `research`
+aurait obligé `live` à importer la couche qui analyse — ou, pire, à en
+garder une copie.
+
 --- ⚠ La règle, mesurée sur des ordres réels -------------------------------
 
     payout appliqué = min(payout du flux + 8, 92)

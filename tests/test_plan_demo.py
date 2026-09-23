@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from maxprofit.core.errors import BotError
 from maxprofit.core.types import Direction, Signal
 from maxprofit.execution.journal import Execution, JournalExecution
 from maxprofit.live.plan_demo import CoursePlanDemo, nouveau_jour
@@ -403,3 +404,64 @@ def test_une_course_sans_ordre_dit_si_elle_est_VIVANTE(course):
     assert "240 bougies évaluées" in resume
     assert "0 signal(aux)" in resume
     assert "dernière lecture il y a 0 s" in resume
+
+
+# --------------------------------------------------------------------------- #
+# Le filtre de payout — n'entrer qu'au maximum
+# --------------------------------------------------------------------------- #
+
+class CourtierAPayout(CourtierFactice):
+    """Un courtier scripté qui rend aussi un payout de FLUX."""
+
+    def __init__(self, resultats, payout_flux):
+        super().__init__(resultats)
+        self.payout_flux = payout_flux
+
+    def payout(self, pair):
+        if self.payout_flux is None:
+            raise BotError("payout indisponible")
+        return float(self.payout_flux)
+
+
+def _course_payout(tmp_path, resultats, payout_flux, plan=None):
+    from maxprofit.strategies.zone_h1 import ZoneH1
+
+    journal = JournalExecution(tmp_path / "exec.db", campagne="payout")
+    c = CoursePlanDemo(LecteurFactice(), CourtierAPayout(resultats, payout_flux),
+                       journal, plan or _plan(), ("EURUSD_otc",), ZoneH1())
+    # Le signal est scripté : on mesure le FILTRE, pas la stratégie.
+    c.strategie.on_bar = lambda vue: Signal(
+        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    return c
+
+
+@pytest.mark.parametrize("flux,accepte", [
+    (92, True),     # le maximum affiché
+    (84, True),     # 84 + 8 = 92 : PAIE PAREIL, et c'est le point
+    (83, False),    # 83 + 8 = 91 : un point de moins, on n'entre pas
+    (71, False),
+    (None, False),  # indisponible = refus
+])
+def test_on_n_entre_qu_au_payout_maximum(tmp_path, flux, accepte):
+    """« Payout 92 % » se lit sur le FLUX à 84, pas à 92.
+
+    Le broker applique min(flux + 8, 92) — mesuré sur 26 ordres réels et
+    confirmé par l'affichage de la plateforme. Filtrer sur `flux >= 92`
+    écarterait 42 % d'occasions qui paient exactement la même chose.
+    """
+    c = _course_payout(tmp_path, ["win"], flux)
+    assert c._payout_au_maximum("EURUSD_otc") is accepte
+    c.journal.close()
+
+
+def test_un_signal_ecarte_pour_payout_est_COMPTE(tmp_path):
+    """Sinon une course qui refuse tout pour cause de payout ressemblerait
+    trait pour trait à une course qui ne trouve rien."""
+    c = _course_payout(tmp_path, ["win"], 71)
+    c.etat.bougies_evaluees = 1
+    c.etat.derniere_evaluation_ts = int(time.time())
+    c.etat.signaux_trouves = 3
+    c.etat.signaux_ecartes_payout = 3
+    assert "3 signal(aux) dont 3 écarté(s) payout" in c.resume()
+    c.journal.close()
