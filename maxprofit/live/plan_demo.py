@@ -170,6 +170,11 @@ class Etat:
     payouts_vus: dict[str, int] = field(default_factory=dict)
     #: Nombre d'actifs au plafond au dernier relevé du catalogue.
     univers_taille: int = 0
+    #: Quand la course a démarré. Affiché, parce que « rien ne bouge » et
+    #: « ça tourne depuis trois minutes » se ressemblent trait pour trait à
+    #: l'écran, et appellent des gestes opposés : chercher une panne, ou
+    #: attendre.
+    demarre_ts: int = 0
     #: Le solde du BROKER au démarrage de la course.
     #:
     #: Le solde du plan en est DÉRIVÉ :
@@ -229,6 +234,7 @@ class CoursePlanDemo:
         self.mode_univers = mode_univers
         self.etat = Etat(plan=plan, solde=plan.capital_initial)
         self.etat.ouvrir_la_journee()
+        self.etat.demarre_ts = int(time.time())
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._rotation = 0
@@ -415,6 +421,10 @@ class CoursePlanDemo:
             self.etat.solde_broker_ancre = courant
             log.info("Ancre du solde posée à %.2f $ (broker). Le plan part "
                      "de %.2f $.", courant, self.etat.plan.capital_initial)
+            # Figée TOUT DE SUITE : sans cela elle n'était persistée qu'au
+            # premier ordre, et chaque redémarrage sans trade la reposait
+            # ailleurs — le plan aurait perdu son point de départ.
+            self._sauvegarder()
         solde = (self.etat.plan.capital_initial
                  + courant - self.etat.solde_broker_ancre)
         self.etat.solde = solde
@@ -708,11 +718,20 @@ class CoursePlanDemo:
                 f"réancrages {len(e.reancrages)}")
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
-        return (f"{base} | {e.univers_taille} actif(s) au plafond, "
+        depuis = (int(time.time()) - e.demarre_ts) // 60 if e.demarre_ts else 0
+        # ⚠ Le débit mesuré : 248 signaux éligibles en 10,1 jours sur quatre
+        # paires, soit un toutes les ~230 bougies évaluées. Sans ce repère,
+        # « 8 bougies, 0 signal » ressemble à une panne alors que c'est
+        # exactement ce qu'on attend au bout de trois minutes.
+        reste = max(0, 230 - e.bougies_evaluees % 230)
+        attente = (f"~{reste} bougies avant le prochain signal attendu"
+                   if e.signaux_trouves == 0 else "")
+        return (f"{base} | en route depuis {depuis} min | "
+                f"{e.univers_taille} actif(s) au plafond, "
                 f"{e.bougies_evaluees} bougies évaluées, "
                 f"{e.signaux_trouves} signal(aux), {e.pas_sautes_independance} "
-                f"pas sauté(s) pour indépendance, {e.sessions_interrompues} "
-                f"session(s) interrompue(s), dernière lecture il y a {age} s")
+                f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
+                f"lecture il y a {age} s{' | ' + attente if attente else ''}")
 
 
 def nouveau_jour(etat: Etat) -> None:

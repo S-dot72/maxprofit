@@ -504,7 +504,12 @@ def test_une_course_sans_ordre_dit_si_elle_est_VIVANTE(course):
     resume = c.resume()
     assert "240 bougies évaluées" in resume
     assert "0 signal(aux)" in resume
-    assert "dernière lecture il y a 0 s" in resume
+    assert "lecture il y a 0 s" in resume
+    # Le repère qui distingue « ça démarre » de « c'est cassé » : sans lui,
+    # « 8 bougies, 0 signal » ressemble à une panne alors que c'est
+    # exactement ce qu'on attend au bout de trois minutes.
+    assert "en route depuis" in resume
+    assert "avant le prochain signal attendu" in resume
 
 
 # --------------------------------------------------------------------------- #
