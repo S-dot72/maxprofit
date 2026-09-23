@@ -92,10 +92,13 @@ class Etat:
     #: ressemblaient à du vert.
     bougies_evaluees: int = 0
     signaux_trouves: int = 0
-    #: Signaux ÉCARTÉS faute de payout maximal. Comptés à part, et affichés :
-    #: sans ce compteur, une course qui refuse tout pour cause de payout
-    #: ressemblerait trait pour trait à une course qui ne trouve rien.
-    signaux_ecartes_payout: int = 0
+    #: Paires ÉCARTÉES faute de payout maximal, et le dernier payout vu sur
+    #: chacune. Affichés tous les deux : sans eux, une course qui n'analyse
+    #: rien parce que rien ne paie 92 % ressemble trait pour trait à une
+    #: course qui ne trouve aucun signal — et l'on ne sait pas s'il faut
+    #: patienter ou intervenir.
+    paires_ecartees_payout: int = 0
+    payouts_vus: dict[str, int] = field(default_factory=dict)
     derniere_evaluation_ts: int = 0
 
     def ouvrir_la_journee(self) -> None:
@@ -136,6 +139,13 @@ class CoursePlanDemo:
         """
         maintenant = int(time.time())
         for paire in self.paires:
+            # LE PAYOUT D'ABORD. Une paire qui ne paie pas le maximum n'est
+            # pas analysée du tout : ni lecture de ses bougies, ni calcul de
+            # zones, ni évaluation de la stratégie. La version précédente
+            # faisait l'inverse et jetait le signal APRÈS l'avoir calculé —
+            # du travail fait pour rien sur la moitié du temps de marché.
+            if not self._payout_au_maximum(paire):
+                continue
             bougies = self._bougies(paire, self.strategie.p.lookback)
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 continue
@@ -155,9 +165,6 @@ class CoursePlanDemo:
             if signal is None:
                 continue
             self.etat.signaux_trouves += 1
-            if not self._payout_au_maximum(paire):
-                self.etat.signaux_ecartes_payout += 1
-                continue
             return signal
         return None
 
@@ -176,9 +183,12 @@ class CoursePlanDemo:
             flux = self.courtier.payout(paire)
         except BotError as erreur:
             log.warning("Payout indisponible sur %s : %s", paire, erreur)
+            self.etat.payouts_vus[paire] = -1
             return False
+        self.etat.payouts_vus[paire] = int(flux)
         if au_plafond(flux):
             return True
+        self.etat.paires_ecartees_payout += 1
         log.info("Signal écarté sur %s : payout %d %% (appliqué %d %%), "
                  "le maximum de %d %% demande un flux >= %d %%.",
                  paire, flux, min(flux + 8, PLAFOND_PCT), PLAFOND_PCT,
@@ -299,10 +309,22 @@ class CoursePlanDemo:
         self.jouer_un_pas(signal)
         return True
 
+    def _payouts_lisibles(self) -> str:
+        return " ".join(
+            f"{p.replace('_otc', '')}:{v if v >= 0 else '?'}"
+            for p, v in sorted(self.etat.payouts_vus.items())) or "—"
+
     def resume(self) -> str:
         j = self.etat.journee
         e = self.etat
         if e.bougies_evaluees == 0:
+            # Deux silences très différents, et il faut les distinguer : une
+            # course qui n'analyse rien parce que rien ne paie 92 % attend ;
+            # une course qui ne lit plus la base est en panne.
+            if e.paires_ecartees_payout:
+                return (f"connectée, aucune paire au payout maximal pour "
+                        f"l'instant — payouts {self._payouts_lisibles()} "
+                        f"(il faut >= 84)")
             return ("connectée, aucune bougie évaluée pour l'instant — "
                     "si ça dure, c'est la LECTURE de la base qui est en cause")
         age = int(time.time()) - e.derniere_evaluation_ts
@@ -313,9 +335,8 @@ class CoursePlanDemo:
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
         return (f"{base} | {e.bougies_evaluees} bougies évaluées, "
-                f"{e.signaux_trouves} signal(aux) dont "
-                f"{e.signaux_ecartes_payout} écarté(s) payout, "
-                f"dernière lecture il y a {age} s")
+                f"{e.signaux_trouves} signal(aux), dernière lecture il y a "
+                f"{age} s | payouts {self._payouts_lisibles()} (il faut >= 84)")
 
 
 def nouveau_jour(etat: Etat) -> None:

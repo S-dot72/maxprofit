@@ -455,13 +455,26 @@ def test_on_n_entre_qu_au_payout_maximum(tmp_path, flux, accepte):
     c.journal.close()
 
 
-def test_un_signal_ecarte_pour_payout_est_COMPTE(tmp_path):
-    """Sinon une course qui refuse tout pour cause de payout ressemblerait
-    trait pour trait à une course qui ne trouve rien."""
+def test_les_payouts_vus_sont_affiches(tmp_path):
+    """Sinon une course qui n'analyse rien parce que rien ne paie 92 %
+    ressemble trait pour trait à une course qui ne trouve aucun signal — et
+    l'on ne sait pas s'il faut patienter ou intervenir."""
     c = _course_payout(tmp_path, ["win"], 71)
-    c.etat.bougies_evaluees = 1
-    c.etat.derniere_evaluation_ts = int(time.time())
-    c.etat.signaux_trouves = 3
-    c.etat.signaux_ecartes_payout = 3
-    assert "3 signal(aux) dont 3 écarté(s) payout" in c.resume()
+    assert c._payout_au_maximum("EURUSD_otc") is False
+    resume = c.resume()
+    assert "aucune paire au payout maximal" in resume
+    assert "EURUSD:71" in resume and ">= 84" in resume
+    c.journal.close()
+
+
+def test_une_paire_sous_le_plafond_n_est_PAS_analysee(tmp_path):
+    """L'ordre des opérations compte : filtrer le payout APRÈS avoir évalué
+    la stratégie fait le travail pour rien sur les trois quarts des paires la
+    moitié du temps."""
+    c = _course_payout(tmp_path, ["win"], 71)
+    vues = []
+    c._bougies = lambda paire, n: vues.append(paire) or []
+    assert c.chercher_un_signal() is None
+    assert vues == [], "aucune bougie ne doit être lue sous le plafond"
+    assert c.etat.bougies_evaluees == 0
     c.journal.close()
