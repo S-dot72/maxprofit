@@ -995,7 +995,7 @@ def test_on_ne_superpose_JAMAIS_deux_ordres(course):
     assert c.journal.toutes() == [], "aucun ordre ne doit partir par-dessus"
 
 
-def test_le_resume_annonce_le_DEBIT_et_son_plafond_mesure(course):
+def test_le_resume_annonce_le_DEBIT_et_son_plafond_mesure(course, monkeypatch):
     """« 5 sessions sur 18 » se lit comme un retard. Le plafond du marche est
     a 16,1 sessions/jour sur ces quatre paires, et il est mesure, pas choisi.
 
@@ -1005,23 +1005,63 @@ def test_le_resume_annonce_le_DEBIT_et_son_plafond_mesure(course):
     import time as _t
 
     from maxprofit.live.plan_demo import SESSIONS_PAR_JOUR_MESUREES
+
+    # ⚠ L'horloge est FIGEE a midi UTC pile, et ce n'est pas du confort.
+    #
+    # Le debit divise les sessions de la JOURNEE par le temps ecoule DANS la
+    # journee. Ce dernier depend de l'heure a laquelle le test tourne : sans
+    # horloge figee, il passerait a midi et echouerait a minuit.
+    MIDI = 1790251200                    # un multiple de 86400, plus 12 h
+    assert MIDI % 86400 == 12 * 3600
+    monkeypatch.setattr(_t, "time", lambda: float(MIDI))
+
     c = course(["win"], plan=_plan(sessions=18))
     c.etat.univers_taille = 3
     c.etat.paires_gratuites = 3
     c.etat.bougies_evaluees = 2087
     c.etat.signaux_bruts = 7
-    c.etat.derniere_evaluation_ts = int(_t.time())
-    # Douze heures de course, huit sessions jouees.
-    c.etat.demarre_ts = int(_t.time()) - 12 * 3600
+    c.etat.derniere_evaluation_ts = MIDI
+    c.etat.demarre_ts = MIDI - 12 * 3600
     c.etat.journee.sessions_jouees = 8
     resume = c.resume()
+    # Huit sessions en douze heures de journee = seize par jour.
     assert "débit 16.0 sessions/jour" in resume, resume
     assert f"mesuré {SESSIONS_PAR_JOUR_MESUREES} ± " in resume, (
         "l'écart-type accompagne la moyenne : 13,4 seul se lit comme une "
         "promesse alors que le pire jour donne 2,4 sessions et le meilleur "
         "23,8")
     assert "1 signal pour 298 bougies" in resume
-    assert "sur 12.0 h" in resume
+    assert "8 session(s) en 12.0 h de journée" in resume
+
+
+def test_le_debit_ne_MELANGE_PAS_la_journee_et_la_duree_de_course(course,
+                                                                 monkeypatch):
+    """Le bug qu'un relevé de production a révélé : « 116,9 sessions/jour ».
+
+    `sessions_jouees` compte la JOURNEE UTC ; on divisait par le temps écoulé
+    depuis le démarrage de la COURSE. Après un redéploiement en milieu de
+    journée, six sessions de la journée divisées par 1,2 h de course donnaient
+    neuf fois le maximum du marché — affiché juste à côté du plafond de 13,4,
+    ce qui rendait les deux chiffres inutilisables.
+    """
+    import time as _t
+    MIDI = 1790251200
+    monkeypatch.setattr(_t, "time", lambda: float(MIDI))
+
+    c = course(["win"], plan=_plan(sessions=18))
+    c.etat.univers_taille = 4
+    c.etat.bougies_evaluees = 178
+    c.etat.signaux_bruts = 1
+    c.etat.derniere_evaluation_ts = MIDI
+    # La course vient de redémarrer : 73 minutes. La journée, elle, a douze
+    # heures et six sessions.
+    c.etat.demarre_ts = MIDI - 73 * 60
+    c.etat.journee.sessions_jouees = 6
+    resume = c.resume()
+    assert "débit 12.0 sessions/jour" in resume, resume
+    assert "116" not in resume, (
+        "six sessions sur 1,2 h de course ne font pas 117 par jour")
+    assert "course en route depuis 1.2 h" in resume
 
 
 def test_le_debit_se_taait_sous_une_heure_de_course(course):

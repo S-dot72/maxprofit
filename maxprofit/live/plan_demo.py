@@ -920,22 +920,40 @@ class CoursePlanDemo:
         broker = (f" (broker {e.solde_broker:.2f} $)"
                   if e.solde_broker is not None else "")
         # Le DÉBIT RÉEL, maintenant que les compteurs survivent aux
-        # redémarrages. Sans lui, « 5/18 » se lit comme un retard alors que le
-        # plafond du marché est à 16,1 — et l'on cherche une panne qui n'existe
+        # redémarrages. Sans lui, « 6/18 » se lit comme un retard alors que le
+        # plafond du marché est à 13,4 — et l'on cherche une panne qui n'existe
         # pas. Avec lui, on voit tout de suite si la course est sous son
         # plafond ou simplement dans une heure creuse.
-        heures = max(1e-9, (int(time.time()) - e.demarre_ts) / 3600) \
-            if e.demarre_ts else 0.0
+        #
+        # ⚠ LE NUMÉRATEUR ET LE DÉNOMINATEUR DOIVENT COUVRIR LA MÊME FENÊTRE.
+        #
+        # Ils ne le faisaient pas : `sessions_jouees` compte la JOURNÉE UTC en
+        # cours, et l'on divisait par le temps écoulé depuis le DÉMARRAGE de la
+        # course. Après un redéploiement en milieu de journée, six sessions de
+        # la journée divisées par 1,2 h de course donnaient « 116,9 sessions /
+        # jour » — un chiffre qui ne veut rien dire et qui, affiché à côté d'un
+        # plafond de 13,4, ferait croire à un débit neuf fois supérieur au
+        # maximum du marché.
+        #
+        # On divise donc par le temps écoulé DANS LA JOURNÉE UTC, qui est la
+        # fenêtre que compte `sessions_jouees`.
+        ecoule_h = (int(time.time()) % 86400) / 3600
+        depuis_h = ((int(time.time()) - e.demarre_ts) / 3600
+                    if e.demarre_ts else 0.0)
         debit = ""
-        if heures >= 1:
-            par_jour = j.sessions_jouees / heures * 24
+        # Deux conditions, et les deux sont nécessaires : une heure de journée
+        # écoulée pour que le taux ait un sens, et une heure de course pour ne
+        # pas attribuer à la course ce qu'elle n'a pas eu le temps de faire.
+        if ecoule_h >= 1 and depuis_h >= 1:
+            par_jour = j.sessions_jouees / ecoule_h * 24
             pour = vues / e.signaux_bruts if e.signaux_bruts else 0
             debit = (f" | débit {par_jour:.1f} sessions/jour "
                      f"(mesuré {SESSIONS_PAR_JOUR_MESUREES} "
                      f"± {ECART_DEBIT_PAR_JOUR}), "
                      f"1 signal pour "
                      f"{(f'{pour:.0f}' if pour else '—')} bougies, "
-                     f"sur {heures:.1f} h")
+                     f"{j.sessions_jouees} session(s) en {ecoule_h:.1f} h "
+                     f"de journée, course en route depuis {depuis_h:.1f} h")
         return (f"{base}{broker} | en route depuis {depuis} min | "
                 f"{e.univers_taille} actif(s) au plafond dont "
                 f"{e.paires_gratuites} en base, "
