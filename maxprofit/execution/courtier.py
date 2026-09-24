@@ -377,9 +377,44 @@ class CourtierDemo:
         execution.brut = dict(brut) if isinstance(brut, dict) else {"brut": brut}
 
         if not abouti or order_id is None:
+            # ⚠ « REFUS SANS MOTIF » ÉTAIT NOTRE FAUTE, PAS CELLE DU BROKER.
+            #
+            # 34 ordres refusés d'affilée sur BTCUSD_otc, et le journal n'en
+            # disait rien : `order_data` est vide quand la bibliothèque échoue,
+            # donc on enregistrait la chaîne « refus sans motif » et l'on
+            # jetait tout le reste. Impossible de savoir si la mise était sous
+            # le minimum de l'actif, si l'échéance n'était pas acceptée
+            # dessus, ou si le socket avait lâché.
+            #
+            # On garde donc ce que la bibliothèque expose AILLEURS, plus le
+            # contexte de l'ordre. Un refus doit pouvoir être expliqué après
+            # coup sans avoir à le reproduire.
+            execution.brut = {
+                **execution.brut,
+                "refus_contexte": {
+                    "mise": mise,
+                    "payout_flux_pct": payout_flux,
+                    "expiration_sec": expiration_sec,
+                    "prix_attendu": prix_attendu,
+                    "erreur_websocket": _texte(
+                        getattr(self._globals, "websocket_error_reason", None)),
+                    "websocket_en_erreur": bool(
+                        getattr(self._globals, "check_websocket_if_error",
+                                False)),
+                    "resultat_brut": _texte(
+                        getattr(self._globals, "result", None)),
+                },
+            }
+            contexte = execution.brut["refus_contexte"]
             execution.refus = str(
-                execution.brut.get("error") or "refus sans motif")
+                execution.brut.get("error")
+                or contexte["erreur_websocket"]
+                or contexte["resultat_brut"]
+                or f"refus sans motif (mise {mise:.2f} $, flux "
+                   f"{payout_flux:.0f} %, {expiration_sec} s)")
             execution.accepte_ts_ms = None
+            log.warning("Refus sur %s : %s | contexte %s",
+                        pair, execution.refus, contexte)
             return execution
 
         execution.accepte = True
@@ -534,6 +569,24 @@ class CourtierDemo:
         if ecoule >= self.plafonds.duree_max_sec:
             raise BotError(
                 f"Durée maximale atteinte : {ecoule / 3600:.1f} h.")
+
+
+def _texte(valeur) -> str | None:
+    """Une valeur de bibliothèque rendue journalisable, ou `None`.
+
+    Les globales de la bibliothèque contiennent aussi bien `None` qu'un dict,
+    qu'une exception ou qu'une chaîne. Les stocker telles quelles ferait
+    échouer la sérialisation JSON du journal — au moment précis où l'on essaie
+    d'enregistrer un incident.
+    """
+    if valeur is None:
+        return None
+    try:
+        texte = str(valeur)
+    except Exception:                        # noqa: BLE001
+        return "<non convertible>"
+    texte = texte.strip()
+    return texte[:500] or None
 
 
 def _flottant(source: dict, *noms: str) -> float | None:
