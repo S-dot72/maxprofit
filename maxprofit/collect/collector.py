@@ -259,6 +259,22 @@ class Config:
     #: confirmés, pas avant — mieux vaut quatre paires collectées que huit
     #: paires silencieuses.
     max_paires: int = 4
+    #: Combien de paires de TÊTE de `paires_fixes` ne doivent jamais être
+    #: abandonnées, quoi qu'il arrive au socket.
+    #:
+    #: ⚠ C'est le filet de l'élargissement. Le broker a déjà fermé le socket
+    #: quand on lui demandait plus de quatre abonnements — la note d'aide de
+    #: `--max-paires` le dit depuis des semaines. Mais cette observation
+    #: précède l'espacement de 0,4 s entre `changeSymbol`, donc elle mesurait
+    #: peut-être une CADENCE et non un NOMBRE. Le seul moyen de savoir est
+    #: d'essayer.
+    #:
+    #: Essayer sans filet coûterait la continuité des séries pré-inscrites :
+    #: un abonnement refusé fait remonter `SourceIndisponible`, le collecteur
+    #: se reconnecte, redemande les mêmes paires, échoue encore — et la série
+    #: se troue indéfiniment sans que rien ne soit « en panne ». Avec ce
+    #: socle, le plafond REDESCEND tout seul jusqu'à ce qu'il tienne.
+    paires_socle: int = 4
 
     def __post_init__(self) -> None:
         if not (0 <= self.min_payout <= 100):
@@ -286,6 +302,10 @@ class Collector:
         self.store: MarketWriter | None = None
         self.agg = CandleAggregator(garder_ticks=cfg.stocker_ticks)
         self.subscribed: List[str] = []
+        #: Plafond d'abonnements DÉCOUVERT à l'exécution, ou `None` tant que
+        #: rien n'a été refusé. Il ne fait que descendre : le remonter
+        #: rejouerait l'échec à chaque reconnexion.
+        self._plafond_abonnements: int | None = None
         self.running = True
         # Les minuteurs partent à `now` et non à 0 : sinon le premier passage
         # dans la boucle rejoue immédiatement toutes les tâches périodiques,
@@ -306,6 +326,28 @@ class Collector:
         self.running = False
 
     # --- filtrage des paires ------------------------------------------------
+
+    def _reduire_le_plafond(self, tentee: int) -> None:
+        """Le socket a refusé `tentee` abonnements : on viser moins.
+
+        Décroissant seulement, et jamais sous le socle. Un plafond qui
+        remonterait tout seul rejouerait l'échec à chaque reconnexion, et
+        c'est précisément la boucle qu'on veut éviter.
+        """
+        socle = max(1, self.cfg.paires_socle)
+        if tentee <= socle:
+            return
+        nouveau = max(socle, tentee - 2)
+        if self._plafond_abonnements is not None:
+            nouveau = min(nouveau, self._plafond_abonnements)
+        if nouveau == self._plafond_abonnements:
+            return
+        self._plafond_abonnements = nouveau
+        log.warning(
+            "Le broker a refusé %d abonnements. Plafond ramené à %d pour "
+            "cette exécution — les %d paires de tête sont préservées, c'est "
+            "elles qui portent les séries continues.",
+            tentee, nouveau, socle)
 
     def refresh_pairs(self) -> None:
         pairs = self.source.list_pairs()
@@ -332,10 +374,23 @@ class Collector:
                     len(candidates), self.cfg.max_paires,
                 )
 
+        # ⚠ L'ORDRE DE `paires_fixes` EST SIGNIFIANT ICI.
+        #
+        # Les paires de tête sont celles qu'on ne veut perdre sous aucun
+        # prétexte — l'univers pré-inscrit. Tronquer par la fin, et abonner
+        # dans l'ordre, garantit qu'un socket qui lâche en cours de route les
+        # a déjà servies.
+        if self._plafond_abonnements is not None:
+            eligible = eligible[:self._plafond_abonnements]
+
         if eligible != self.subscribed:
             ajoutees = set(eligible) - set(self.subscribed)
             retirees = set(self.subscribed) - set(eligible)
-            self.source.subscribe(eligible)
+            try:
+                self.source.subscribe(eligible)
+            except SourceIndisponible:
+                self._reduire_le_plafond(len(eligible))
+                raise
             self.subscribed = eligible
             log.info("Paires éligibles : %d (+%d / -%d)",
                      len(eligible), len(ajoutees), len(retirees))
@@ -726,14 +781,19 @@ def build_config(args) -> Config:
     fixes = _paires_fixes_env(getattr(args, "paires", ""))
     if fixes:
         reglages["paires_fixes"] = fixes
+    socle = getattr(args, "paires_socle", None)
+    if socle:
+        reglages["paires_socle"] = int(socle)
     return Config(**reglages)
 
 
 def _paires_fixes_env(brut: str) -> tuple[str, ...]:
     """Liste séparée par des virgules, depuis l'argument ou `PAIRES_FIXES`.
 
-    Les doublons sont retirés en conservant l'ordre donné : ce sont les
-    premières qui comptent si la liste dépasse `max_paires`.
+    ⚠ L'ORDRE EST SIGNIFIANT, et il ne l'est pas seulement en cas de
+    troncature. Les premières de la liste sont abonnées d'abord et ne sont
+    jamais lâchées : c'est là que doivent figurer les paires dont on veut une
+    série CONTINUE — l'univers pré-inscrit. Voir `Config.paires_socle`.
     """
     texte = (brut or "").strip() or os.environ.get("PAIRES_FIXES", "").strip()
     vues, sortie = set(), []
@@ -765,10 +825,24 @@ def main(argv: list[str] | None = None) -> int:
                          "touche à l'argent (spec §5).")
     ap.add_argument("--max-paires", type=int,
                     default=int(os.environ.get("MAX_PAIRES", "4") or 4),
-                    help="Nombre maximal de paires souscrites (défaut : 4, ou "
-                         "$MAX_PAIRES). 4 est le seul nombre observé en train "
-                         "de livrer des ticks ; au-delà, le broker ferme le "
-                         "socket sans rien envoyer.")
+                    help="Nombre maximal de paires souscrites (défaut : 4, "
+                         "ou $MAX_PAIRES). Ne s'applique QU'AU classement par "
+                         "payout : une liste épinglée n'est pas tronquée par "
+                         "ce nombre. Le broker avait fermé le socket au-delà "
+                         "de quatre abonnements, mais cette observation "
+                         "précède l'espacement de 0,4 s entre changeSymbol — "
+                         "elle mesurait peut-être une cadence et non un "
+                         "nombre. Le filet est `--paires-socle`.")
+    ap.add_argument("--paires-socle", type=int,
+                    default=int(os.environ.get("PAIRES_SOCLE", "4") or 4),
+                    help="Combien de paires de TÊTE de --paires ne doivent "
+                         "jamais être lâchées, quoi qu'il arrive au socket "
+                         "(défaut : 4, ou $PAIRES_SOCLE). Si le broker refuse "
+                         "la liste entière, le plafond redescend seul jusqu'à "
+                         "ce nombre plutôt que de rejouer l'échec à chaque "
+                         "reconnexion — ce qui trouerait indéfiniment les "
+                         "séries pré-inscrites sans que rien ne paraisse en "
+                         "panne.")
     ap.add_argument("--paires", default="",
                     help="Paires à suivre en permanence, séparées par des "
                          "virgules (ou $PAIRES_FIXES). Remplace le classement "

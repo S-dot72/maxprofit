@@ -549,6 +549,54 @@ def test_le_resume_distingue_une_bougie_VUE_d_une_bougie_PERIMEE(course):
     assert "40 actif(s) au plafond dont 4 en base" in resume
 
 
+def test_elargir_la_COLLECTE_n_elargit_pas_l_univers_TRADE(tmp_path):
+    """Le defaut qui aurait detruit le test hors echantillon en silence.
+
+    La course recevait `cfg.paires_fixes`, la liste du COLLECTEUR. Les deux
+    coincidaient, donc rien ne se voyait. Ajouter une paire a la collecte
+    aurait elargi du meme geste l'univers trade, et une validation faite sur
+    un autre univers que celui declare au registre (#58, #59) ne vaut rien.
+    """
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(
+        LecteurFactice(), CourtierFactice(["win"]), journal, _plan(),
+        PAIRES_TEST, paires_collectees=PAIRES_TEST + ("CHFJPY_otc",))
+    # Ce qu'on TRADE n'a pas bouge.
+    assert c.paires == PAIRES_TEST
+    # Ce qu'on LIT en base, si.
+    assert "CHFJPY_otc" in c.paires_collectees
+    # Et seules les paires tradees sont souscrites : un abonnement inutile
+    # compte dans le budget du socket, qui est la ressource rare.
+    assert set(c.courtier.suivies) == set(PAIRES_TEST)
+    journal.close()
+
+
+def test_une_paire_collectee_mais_non_epinglee_est_lue_en_BASE(tmp_path):
+    """Sinon l'elargissement de la collecte ne servirait a rien : la paire
+    serait en base ET demandee au broker pour 27 secondes."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(
+        LecteurFactice(), CourtierFactice(["win"]), journal, _plan(),
+        PAIRES_TEST, paires_collectees=PAIRES_TEST + ("CHFJPY_otc",))
+    demandees = []
+    vraie = c.courtier.bougies
+    c.courtier.bougies = lambda pair, count=300: (
+        demandees.append(pair) or vraie(pair, count))
+    c._bougies_de("CHFJPY_otc")
+    assert demandees == [], "collectee => lue en base, pas chez le broker"
+    c._bougies_de("XAUUSD_otc")
+    assert demandees == ["XAUUSD_otc"], "non collectee => le broker, faute de mieux"
+    journal.close()
+
+
+def test_l_univers_pre_inscrit_est_EN_DUR_et_non_configurable():
+    """Une pre-inscription qui se lit dans une variable d'environnement n'est
+    pas une pre-inscription : elle change sans qu'on s'en apercoive."""
+    from maxprofit.live.plan_demo import UNIVERS_PRE_INSCRIT
+    assert UNIVERS_PRE_INSCRIT == (
+        "AUDCAD_otc", "AUDUSD_otc", "EURUSD_otc", "GBPAUD_otc")
+
+
 def test_une_paire_collectee_ne_demande_RIEN_au_broker(course):
     """Le prix d'une paire, mesuré : 27 s chez le broker, une requête locale
     dans notre base. C'est ce qui décide combien de paires on peut suivre."""

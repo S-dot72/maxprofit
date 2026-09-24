@@ -195,6 +195,21 @@ DELAI_INDEPENDANCE_SEC = 900
 #: mises déjà engagées resteraient hors des comptes.
 ATTENTE_MAX_PAS_SEC = 2 * 3600
 
+#: L'univers sur lequel l'hypothèse a été PRÉ-INSCRITE (registre #58, #59).
+#:
+#: ⚠ EN DUR, ET NON DANS LA CONFIGURATION. Il l'était : la course recevait
+#: `cfg.paires_fixes or PAIRES_PAR_DEFAUT`, c'est-à-dire la liste du
+#: COLLECTEUR. Les deux coïncidaient, donc rien ne se voyait — mais élargir la
+#: collecte d'une seule paire élargissait du même geste l'univers TRADÉ, et une
+#: validation hors échantillon faite sur un autre univers que celui déclaré ne
+#: vaut rien. Le défaut aurait détruit le test au moment précis où l'on croyait
+#: seulement collecter plus.
+#:
+#: Ce que l'on collecte et ce que l'on trade sont deux décisions distinctes.
+#: Celle-ci est figée par une pré-inscription ; l'autre est un réglage.
+UNIVERS_PRE_INSCRIT: tuple[str, ...] = (
+    "AUDCAD_otc", "AUDUSD_otc", "EURUSD_otc", "GBPAUD_otc")
+
 UNIVERS_EPINGLEES = "epinglees"
 UNIVERS_PLAFOND = "plafond"
 
@@ -298,11 +313,19 @@ class CoursePlanDemo:
     def __init__(self, lecteur: MarketReader, courtier: CourtierDemo,
                  journal: JournalExecution, plan: PlanCapital,
                  paires: tuple[str, ...], strategie: ZoneH1 | None = None,
-                 mode_univers: str = UNIVERS_EPINGLEES, alerter=None):
+                 mode_univers: str = UNIVERS_EPINGLEES, alerter=None,
+                 paires_collectees: tuple[str, ...] | None = None):
         self.lecteur = lecteur
         self.courtier = courtier
         self.journal = journal
         self.paires = paires
+        # Ce que NOTRE BASE contient, qui n'est pas ce que l'on trade. Toute
+        # paire d'ici est lue localement — instantanément et toujours fraîche —
+        # au lieu d'être demandée au broker pour 27 secondes. Par défaut les
+        # deux listes coïncident : c'était le cas jusqu'ici, et c'est ce qui
+        # rendait le couplage invisible.
+        self.paires_collectees = tuple(
+            paires_collectees if paires_collectees is not None else paires)
         self.strategie = strategie or ZoneH1()
         #: Prévenir l'opérateur. Une course qui tourne dix jours sans rien
         #: dire oblige à interroger `/etat` au hasard : on découvre un
@@ -381,7 +404,7 @@ class CoursePlanDemo:
         limite — bornée dans `CourtierDemo` — et l'on paie 27 secondes. D'où
         le budget strict de `PAIRES_MAX_PAR_PASSAGE`.
         """
-        if paire in self.paires:
+        if paire in self.paires_collectees:
             return self.bougies_collectees(paire, self.strategie.p.lookback)
         return self.courtier.bougies(paire, self.strategie.p.lookback)
 
@@ -437,8 +460,9 @@ class CoursePlanDemo:
         # autres coûtent 27 secondes de broker chacune, et seul ce qui tient
         # dans le budget est examiné — en rotation, pour que les dernières de
         # la liste ne soient pas condamnées à ne jamais être vues.
-        gratuites = [p for p in candidats if p in self.paires]
-        payantes = [p for p in candidats if p not in self.paires]
+        gratuites = [p for p in candidats if p in self.paires_collectees]
+        payantes = [p for p in candidats
+                    if p not in self.paires_collectees]
         if payantes:
             depart = self._rotation % len(payantes)
             payantes = payantes[depart:] + payantes[:depart]
@@ -1075,7 +1099,8 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      sessions_par_jour: int, jours: int,
                      paires: tuple[str, ...], chemin_lecture="lecture",
                      chemin_ecriture="ecriture",
-                     mode_univers: str = UNIVERS_EPINGLEES, alerter=None):
+                     mode_univers: str = UNIVERS_EPINGLEES, alerter=None,
+                     paires_collectees: tuple[str, ...] | None = None):
     """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
 
     ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
@@ -1124,6 +1149,7 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     courtier.connecter()
     course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
                             ZoneH1(), mode_univers=mode_univers,
+                            paires_collectees=paires_collectees,
                             alerter=alerter)
     log.info("Univers : %s (%s)", mode_univers,
              ", ".join(paires) if mode_univers == UNIVERS_EPINGLEES

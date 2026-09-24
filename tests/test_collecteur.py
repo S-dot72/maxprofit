@@ -30,6 +30,7 @@ from typing import Iterator, List, Sequence
 import pytest
 
 from maxprofit.collect.collector import CandleAggregator, Collector, Config
+from maxprofit.collect.pocketoption import SourceIndisponible
 from maxprofit.collect.sources import MarketDataSource
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import PairInfo, Tick
@@ -730,6 +731,81 @@ def test_un_nom_inconnu_est_signale_fort(tmp_path, caplog):
                            paires_fixes=("EURUSD_otc", "EURSUD_otc"))
     assert src.abonnements[-1] == ["EURUSD_otc"]
     assert any("EURSUD_otc" in m for m in caplog.messages)
+
+
+class SourceQuiRefuseAuDela(SourceCatalogue):
+    """Le broker qui ferme le socket au-dela de N abonnements.
+
+    C'est le comportement que la note de `--max-paires` decrit depuis des
+    semaines : « 4 est le seul nombre observe en train de livrer des ticks ;
+    au-dela, le broker ferme le socket sans rien envoyer ».
+    """
+
+    def __init__(self, paires, tolere):
+        super().__init__(paires)
+        self.tolere = tolere
+        self.abonnements = []
+        self.refus = 0
+
+    def subscribe(self, pairs):
+        self.abonnements.append(list(pairs))
+        if len(pairs) > self.tolere:
+            self.refus += 1
+            raise SourceIndisponible(
+                f"Socket ferme par le broker ({len(pairs)} abonnements)")
+
+
+def test_un_socket_qui_refuse_fait_REDESCENDRE_le_plafond(tmp_path, caplog):
+    """Sans ce filet, elargir la collecte troue les series pre-inscrites.
+
+    Un abonnement refuse fait remonter SourceIndisponible ; le collecteur se
+    reconnecte, redemande les MEMES paires, echoue encore. La serie se troue
+    indefiniment sans que rien ne soit « en panne » — et ce sont les quatre
+    paires pre-inscrites qu'on perd, celles dont la continuite fait le test.
+    """
+    catalogue = [PairInfo(f"P{i}_otc", True, 92) for i in range(6)]
+    src = SourceQuiRefuseAuDela(catalogue, tolere=4)
+    cfg = replace(_config(tmp_path),
+                  paires_fixes=tuple(f"P{i}_otc" for i in range(6)),
+                  paires_socle=4)
+    c = Collector(src, cfg)
+    # `run()` ouvre la base ; ici on appelle `refresh_pairs` directement,
+    # plusieurs fois, pour observer le plafond descendre.
+    c._ouvrir()
+
+    with caplog.at_level("WARNING"):
+        # Premier passage : six demandes, refus.
+        with pytest.raises(SourceIndisponible):
+            c.refresh_pairs()
+        assert src.abonnements[-1] == [f"P{i}_otc" for i in range(6)]
+        assert c._plafond_abonnements == 4
+
+        # Deuxieme passage, apres reconnexion : quatre, et ca tient.
+        c.subscribed = []
+        c.refresh_pairs()
+
+    assert src.abonnements[-1] == [f"P{i}_otc" for i in range(4)], (
+        "on tronque par la FIN : les paires de tete sont les pre-inscrites")
+    assert src.refus == 1, "le plafond ne doit pas rejouer l'echec"
+    assert any("Plafond ramené à 4" in m for m in caplog.messages)
+
+
+def test_le_plafond_ne_descend_jamais_sous_le_socle(tmp_path):
+    """Descendre sous le socle reviendrait a sacrifier ce qu'on protege."""
+    catalogue = [PairInfo(f"P{i}_otc", True, 92) for i in range(4)]
+    src = SourceQuiRefuseAuDela(catalogue, tolere=0)
+    cfg = replace(_config(tmp_path),
+                  paires_fixes=tuple(f"P{i}_otc" for i in range(4)),
+                  paires_socle=4)
+    c = Collector(src, cfg)
+    c._ouvrir()
+    for _ in range(5):
+        with pytest.raises(SourceIndisponible):
+            c.refresh_pairs()
+        c.subscribed = []
+    assert c._plafond_abonnements in (None, 4), (
+        "le socle ne se negocie pas : si meme lui est refuse, c'est une panne "
+        "a signaler, pas un plafond a baisser")
 
 
 def test_sans_epinglage_le_classement_reste_la_regle(tmp_path):

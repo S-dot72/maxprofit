@@ -56,6 +56,37 @@ services:
         value: "1"
       - key: MIN_PAYOUT_PCT
         value: "92"
+      # LES PAIRES COLLECTÉES, et l'ORDRE COMPTE.
+      #
+      # Les quatre premières sont l'univers PRÉ-INSCRIT au registre (#58,
+      # #59). Elles sont abonnées d'abord, et jamais tronquées : c'est leur
+      # continuité qui fait le test hors échantillon. Les suivantes sont un
+      # élargissement, et elles passent après.
+      #
+      # ⚠ Collecter n'est PAS trader. L'univers tradé par la course est
+      # `UNIVERS_PRE_INSCRIT`, en dur dans le code, et il ne bouge pas quand
+      # cette liste s'allonge. Les deux étaient la même variable jusqu'au
+      # 2026-09-23, et ajouter une paire ici aurait détruit la validation
+      # hors échantillon sans rien signaler.
+      #
+      # Pourquoi CHFJPY et BTCUSD, et pas les paires les plus disponibles :
+      # celles-ci sont des devises ARRIMÉES (AEDCNY 31 % du temps à 92 %,
+      # OMRCNY, SARCNY, QARCNY…) et elles ne bougent pas — AEDCNY_otc a donné
+      # 0 signal sur 416 bougies. CHFJPY est un vrai cross avec deux devises
+      # qu'aucune épinglée ne couvre ; BTCUSD est très volatil et sa
+      # corrélation au forex est quasi nulle, ce qui sert directement la règle
+      # d'indépendance de la martingale.
+      #
+      # Palier en cours : 4 -> 6. Le broker avait fermé le socket au-delà de
+      # quatre abonnements, mais cette observation précède l'espacement de
+      # 0,4 s entre `changeSymbol` : elle mesurait peut-être une CADENCE. Si
+      # six sont refusées, `_reduire_le_plafond` redescend seul à quatre et le
+      # journal le dit — la série pré-inscrite ne se troue pas.
+      - key: PAIRES_FIXES
+        value: "EURUSD_otc,AUDUSD_otc,GBPAUD_otc,AUDCAD_otc,CHFJPY_otc,BTCUSD_otc"
+      # Le nombre de paires de tête qu'aucun incident ne doit faire lâcher.
+      - key: PAIRES_SOCLE
+        value: "4"
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
       # tableau de bord Render, pour ne jamais entrer dans git.
       # Jeton de session du broker. Il EXPIRE : le service alerte alors sur

@@ -51,7 +51,8 @@ from maxprofit.collect.pocketoption import resoudre_ssid
 from maxprofit.hosting.course import (
     SuperviseurCourse, course_activee, date_de_depart)
 from maxprofit.hosting.superviseur import Superviseur
-from maxprofit.live.plan_demo import fabriquer_course
+from maxprofit.live.plan_demo import (
+    UNIVERS_PRE_INSCRIT, fabriquer_course)
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -97,7 +98,9 @@ def _fabriquer_source(nom: str):
 #: course manquerait dans `/etat` sans que rien ne le signale.
 _course: dict = {}
 
-#: Les paires de la course, quand `PAIRES_FIXES` n'est pas réglé. Ce sont
+#: Les paires COLLECTÉES par défaut, quand `PAIRES_FIXES` n'est pas réglé.
+#: L'univers TRADÉ par la course, lui, est `UNIVERS_PRE_INSCRIT` et ne se
+#: règle pas — voir le commentaire là-bas. Ce sont
 #: celles sur lesquelles l'hypothèse a été mesurée : en changer ferait tourner
 #: la course sur un univers différent de celui qui a été pré-inscrit.
 PAIRES_PAR_DEFAUT = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc")
@@ -198,7 +201,21 @@ async def _servir(args) -> int:
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
                 sessions_par_jour=int(os.environ.get("PLAN_SESSIONS", "18")),
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
-                paires=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
+                # ⚠ CE QUE L'ON TRADE N'EST PAS CE QUE L'ON COLLECTE.
+                #
+                # Cette ligne passait `cfg.paires_fixes`, c'est-à-dire la
+                # liste du COLLECTEUR. Les deux coïncidaient, donc rien ne se
+                # voyait — mais ajouter une paire à la collecte élargissait du
+                # même geste l'univers TRADÉ, et une validation hors
+                # échantillon faite sur un autre univers que celui déclaré au
+                # registre ne vaut rien. Le test se serait détruit au moment
+                # précis où l'on croyait seulement collecter plus.
+                paires=UNIVERS_PRE_INSCRIT,
+                # Les paires dont NOTRE BASE a l'historique. Elles sont lues
+                # localement au lieu d'être demandées au broker pour 27
+                # secondes chacune — c'est ce qui rend l'élargissement de la
+                # collecte utile au direct, sans toucher à l'univers tradé.
+                paires_collectees=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
                 mode_univers=os.environ.get(
                     "PLAN_UNIVERS", "epinglees").strip() or "epinglees",
                 alerter=alerter),
