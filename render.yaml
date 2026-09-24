@@ -102,7 +102,14 @@ services:
       # tableau de bord, elle désactive l'élargissement sans commit. C'est le
       # chemin de retour, et il doit rester à une saisie de distance.
       #
-      # Palier en cours : +CHFJPY_otc +BTCUSD_otc (4 -> 6).
+      # Paliers : +CHFJPY_otc +BTCUSD_otc (4 -> 6, tenu, couverture 100 %),
+      # puis +USDJPY_otc +AUDCHF_otc +GBPUSD_otc (6 -> 9).
+      #
+      # Neuf n'est pas un chiffre rond choisi au hasard : six paires donnent
+      # 3,33 actifs au plafond en moyenne, la stratégie rend un signal toutes
+      # les 111 bougies au plafond, une session consomme 1,68 pas — donc
+      # dix-huit sessions en douze heures demandent 4,66 actifs au plafond,
+      # soit neuf paires.
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
       # tableau de bord Render, pour ne jamais entrer dans git.
       # Jeton de session du broker. Il EXPIRE : le service alerte alors sur

@@ -756,7 +756,12 @@ def test_l_elargissement_S_AJOUTE_aux_epinglees(monkeypatch):
     assert fixes[:4] == ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc",
                          "AUDCAD_otc")
     assert fixes[4:] == PAIRES_EN_PLUS_PAR_DEFAUT
-    assert len(fixes) == 6
+    # Neuf au palier courant. Le nombre vient de l'arithmetique du debit :
+    # 3,33 actifs au plafond pour six paires, 1 signal pour 111 bougies au
+    # plafond, 1,68 pas par session -> 4,66 actifs requis pour 18 sessions en
+    # 12 h, soit neuf paires. Si ce test casse en changeant de palier, c'est
+    # qu'il faut refaire le calcul, pas ajuster le chiffre.
+    assert len(fixes) == 4 + len(PAIRES_EN_PLUS_PAR_DEFAUT)
 
 
 def test_la_variable_VIDE_desactive_l_elargissement(monkeypatch):

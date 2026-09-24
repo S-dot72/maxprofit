@@ -826,7 +826,25 @@ def build_config(args) -> Config:
 #: désactive l'élargissement. « Absente » et « vide » ne veulent donc pas dire
 #: la même chose, et c'est la distinction qui rend le retour en arrière
 #: possible.
-PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = ("CHFJPY_otc", "BTCUSD_otc")
+PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
+    # Palier 4 -> 6, tenu : le socket a accepté six abonnements et la
+    # couverture est restée à 100 %. L'ancienne note « 4 est le seul nombre
+    # observé en train de livrer des ticks » mesurait donc une CADENCE, pas un
+    # nombre — elle précède l'espacement de 0,4 s entre `changeSymbol`.
+    "CHFJPY_otc", "BTCUSD_otc",
+    # Palier 6 -> 9. Le chiffre vient de l'arithmétique, pas d'une envie :
+    # six paires donnent 3,33 actifs au plafond en moyenne (mesuré sur 2 613
+    # relevés), soit 0,555 par paire ; la stratégie rend un signal toutes les
+    # 111 bougies passées au plafond ; une session consomme 1,68 pas. Pour
+    # dix-huit sessions en douze heures il faut donc 4,66 actifs au plafond,
+    # c'est-à-dire NEUF paires.
+    #
+    # USDJPY_otc est demandée explicitement. AUDCHF_otc et GBPUSD_otc sont les
+    # deux crosses les plus disponibles parmi celles qui BOUGENT : les mieux
+    # disponibles dans l'absolu sont des devises arrimées (AEDCNY, OMRCNY,
+    # SARCNY…) et AEDCNY_otc avait donné zéro signal sur 416 bougies.
+    "USDJPY_otc", "AUDCHF_otc", "GBPUSD_otc",
+)
 
 
 def _decouper(texte: str) -> tuple[str, ...]:
