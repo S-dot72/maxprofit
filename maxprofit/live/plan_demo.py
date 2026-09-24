@@ -390,6 +390,11 @@ class CoursePlanDemo:
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._rotation = 0
+        #: Rotation des paires COLLECTÉES, distincte de celle des payantes.
+        #: Les deux files n'avancent pas au même rythme — les payantes d'une
+        #: par passage, les gratuites toutes — et un compteur partagé aurait
+        #: fait tourner l'une au rythme de l'autre.
+        self._rotation_gratuites = 0
         #: La journée UTC que la course croit être en cours. 0 = pas encore
         #: établie ; le premier passage la pose sans rien déclencher.
         self.jour_utc_courant = 0
@@ -411,10 +416,38 @@ class CoursePlanDemo:
         # Quatre abonnements tiennent : c'est ce que le mode épinglées faisait
         # déjà. C'est huit changements CONCURRENTS qui avaient fermé le
         # socket, et le budget d'une paire par passage les exclut désormais.
+        #
+        # ⚠ AU MIEUX, ET SURTOUT PAS EN LEVANT. `suivre()` refuse un actif qui
+        # n'envoie aucun tick en 20 s, et ce refus est JUSTE avant un ordre :
+        # on ne mise pas sur un prix inconnu. Au démarrage il est destructeur.
+        #
+        # Une paire FERMÉE n'envoie légitimement aucun tick. AUDCAD_otc était
+        # fermée, la construction a levé, le superviseur a reconstruit, la
+        # construction a levé encore — cinq fois, puis course ABANDONNÉE. Une
+        # paire hors séance a donc arrêté tout le plan, et les cinq autres
+        # étaient parfaitement tradables.
+        #
+        # La garantie reste où elle compte : `placer()` lit le prix et lève si
+        # le tampon est vide. Un actif non souscrit fait échouer SON ordre, pas
+        # la course — et trois échecs le mettent en quarantaine.
+        self._non_souscrites: set[str] = set()
         for p in paires:
-            self.courtier.suivre(p)
+            self._suivre_au_mieux(p)
 
     # --- le signal ---------------------------------------------------------
+
+    def _suivre_au_mieux(self, paire: str) -> bool:
+        """S'abonne si possible, note l'échec sinon. Ne lève jamais."""
+        try:
+            self.courtier.suivre(paire)
+        except BotError as erreur:
+            self._non_souscrites.add(paire)
+            log.warning(
+                "Abonnement à %s impossible (%s). La course continue sans "
+                "elle et réessaiera avant d'y passer un ordre.", paire, erreur)
+            return False
+        self._non_souscrites.discard(paire)
+        return True
 
     def bougies_collectees(self, paire: str, n: int) -> list[Candle]:
         """Les bougies de NOTRE base — seulement pour les paires collectées.
@@ -518,6 +551,26 @@ class CoursePlanDemo:
         gratuites = [p for p in candidats if p in self.paires_collectees]
         payantes = [p for p in candidats
                     if p not in self.paires_collectees]
+
+        # ⚠ LES GRATUITES TOURNENT AUSSI, ET CE N'EST PAS UN DÉTAIL DE STYLE.
+        #
+        # Elles étaient parcourues toujours dans le même ordre — celui de
+        # `PAIRES_FIXES` — et la recherche rend le PREMIER signal trouvé. La
+        # première de la liste emportait donc chaque égalité, et la troisième
+        # ne passait que si les deux d'avant n'avaient rien.
+        #
+        # Mesuré : GBPAUD_otc est troisième et n'a jamais reçu un seul ordre,
+        # alors qu'elle est au plafond 35 % du temps. Pire, la première était
+        # EURUSD_otc — la plus prolixe (22,3 signaux/jour) ET la moins précise
+        # des quatre (44,1 %, sous le seuil de rentabilité). L'ordre fixe
+        # maximisait donc la part de la pire paire.
+        #
+        # Une rotation ne crée aucun signal : elle répartit ceux qui existent.
+        # C'est sans effet sur le débit, et c'est tout l'effet sur la précision.
+        if gratuites:
+            depart = self._rotation_gratuites % len(gratuites)
+            gratuites = gratuites[depart:] + gratuites[:depart]
+            self._rotation_gratuites += 1
         if payantes:
             depart = self._rotation % len(payantes)
             payantes = payantes[depart:] + payantes[:depart]
@@ -735,6 +788,12 @@ class CoursePlanDemo:
             self.etat.solde_ouverture_session = self.etat.solde
         session = self.etat.session
         mise = session.mise_courante()
+
+        # Une paire qu'on n'a pas pu souscrire au démarrage était peut-être
+        # simplement hors séance. Elle a pu ouvrir depuis : on réessaie ici,
+        # une fois, plutôt que de la perdre pour toute la durée de la course.
+        if signal.pair in self._non_souscrites:
+            self._suivre_au_mieux(signal.pair)
 
         sens = "call" if signal.direction is Direction.CALL else "put"
         self.etat.trade_en_cours = (

@@ -319,6 +319,101 @@ def test_un_ordre_refuse_ne_consomme_pas_de_pas(course):
     assert c.etat.solde > CAPITAL
 
 
+class LecteurAvecBougies(LecteurFactice):
+    """Un lecteur qui rend de vraies bougies, pour que la stratégie tourne."""
+
+    def __init__(self, fin_ts=1790000000):
+        self.fin = fin_ts
+
+    def last_candle_ts_sec(self):
+        return self.fin
+
+    def candles(self, pair, tf, debut, fin):
+        from maxprofit.core.types import Candle
+        n = 301
+        return [Candle(pair=pair, tf_sec=60, ts_sec=self.fin - (n - 1 - k) * 60,
+                       open=1.0, high=1.001, low=0.999, close=1.0,
+                       tick_count=30, complete=True)
+                for k in range(n)]
+
+
+def test_les_paires_collectees_sont_parcourues_A_TOUR_DE_ROLE(tmp_path):
+    """La première de la liste emportait chaque égalité.
+
+    Les gratuites étaient parcourues dans l'ordre de `PAIRES_FIXES` et la
+    recherche rend le PREMIER signal trouvé : la troisième ne passait que si
+    les deux d'avant n'avaient rien. Mesuré en production — GBPAUD_otc est
+    troisième et n'a jamais reçu un seul ordre en trois jours, alors qu'elle
+    est au plafond 35 % du temps.
+
+    Pire : la première était EURUSD_otc, la plus prolixe ET la moins précise
+    des quatre (44,1 %, sous le seuil). L'ordre fixe maximisait la part de la
+    pire paire.
+    """
+    six = ("A_otc", "B_otc", "C_otc", "D_otc", "E_otc", "F_otc")
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurAvecBougies(), CourtierFactice(["win"] * 50),
+                       journal, _plan(sessions=18), six)
+    c.univers = lambda: list(six)
+
+    # On observe l'ordre dans lequel les bougies sont DEMANDÉES.
+    vues = []
+    vraie = c.bougies_collectees
+    c.bougies_collectees = lambda p, n: (vues.append(p) or vraie(p, n))
+
+    premieres = []
+    for _ in range(len(six)):
+        vues.clear()
+        c.chercher_un_signal()
+        premieres.append(vues[0])
+    assert premieres == list(six), (
+        f"chaque paire doit passer en tête à son tour, vu {premieres}")
+    journal.close()
+
+
+def test_la_rotation_ne_saute_aucune_paire_dans_un_passage(tmp_path):
+    """Tourner ne doit pas vouloir dire n'en regarder qu'une : toutes les
+    paires collectées sont examinées à CHAQUE passage, seul l'ordre change."""
+    six = ("A_otc", "B_otc", "C_otc", "D_otc", "E_otc", "F_otc")
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurAvecBougies(), CourtierFactice(["win"] * 50),
+                       journal, _plan(sessions=18), six)
+    c.univers = lambda: list(six)
+    vues = []
+    vraie = c.bougies_collectees
+    c.bougies_collectees = lambda p, n: (vues.append(p) or vraie(p, n))
+    c.chercher_un_signal()
+    assert set(vues) == set(six), (
+        "un passage examine toutes les paires, pas seulement celle de tête")
+    journal.close()
+
+
+def test_une_paire_qui_n_envoie_pas_de_tick_NE_TUE_PAS_la_course(tmp_path):
+    """Le crash qui a mis la course en ABANDONNÉE après cinq échecs.
+
+    `suivre()` refuse un actif muet depuis 20 s, et ce refus est JUSTE avant
+    un ordre : on ne mise pas sur un prix inconnu. Au démarrage il est
+    destructeur — une paire FERMÉE n'envoie légitimement aucun tick.
+    AUDCAD_otc était hors séance, la construction a levé, le superviseur a
+    reconstruit, cinq fois, puis course ABANDONNÉE. Les cinq autres paires
+    étaient parfaitement tradables.
+    """
+    class CourtierMuetSurUne(CourtierFactice):
+        def suivre(self, pair):
+            if pair == "AUDCAD_otc":
+                raise BotError(f"{pair} n'a envoyé aucun tick en 20 s.")
+            super().suivre(pair)
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    paires = ("EURUSD_otc", "AUDCAD_otc", "GBPAUD_otc")
+    # Ne doit PAS lever.
+    c = CoursePlanDemo(LecteurFactice(), CourtierMuetSurUne(["win"]), journal,
+                       _plan(sessions=18), paires)
+    assert c._non_souscrites == {"AUDCAD_otc"}
+    assert set(c.courtier.suivies) == {"EURUSD_otc", "GBPAUD_otc"}
+    journal.close()
+
+
 def test_une_paire_REFUSEE_sans_cesse_est_ecartee(course):
     """La boucle qui a coûté une nuit entière de course.
 
