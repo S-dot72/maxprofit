@@ -276,6 +276,30 @@ class Superviseur:
         """
         return len(getattr(self.collecteur, "subscribed", ()) or ())
 
+    def paires_souscrites_nommees(self) -> str:
+        """LESQUELLES, et pas seulement combien.
+
+        ⚠ Le compte seul a coûté trois déploiements. Un palier de 4 à 6 paires
+        avait été écrit dans `render.yaml`, mais sur Render une variable déjà
+        réglée dans le tableau de bord l'emporte sur le fichier. `/etat`
+        répondait « Paires souscrites : 4 » à chaque essai — exactement la
+        même ligne qu'avant — sans qu'on puisse distinguer « la configuration
+        n'est pas passée » de « le broker a refusé les deux nouvelles ». Les
+        deux appellent des gestes opposés.
+
+        Avec les noms, la réponse est immédiate : les nouvelles sont là ou
+        elles n'y sont pas.
+        """
+        souscrites = list(getattr(self.collecteur, "subscribed", ()) or ())
+        if not souscrites:
+            return "0"
+        plafond = getattr(self.collecteur, "_plafond_abonnements", None)
+        note = ""
+        if plafond is not None:
+            note = (f" — plafond ramené à {plafond} par le broker, "
+                    f"les paires de tête sont préservées")
+        return f"{len(souscrites)} ({', '.join(souscrites)}){note}"
+
     def _pause_restante_sec(self) -> float:
         jusqu_a = getattr(self.collecteur, "pause_jusqu_a_sec", 0.0) or 0.0
         return max(0.0, jusqu_a - time.time())

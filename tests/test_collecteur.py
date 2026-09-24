@@ -733,6 +733,76 @@ def test_un_nom_inconnu_est_signale_fort(tmp_path, caplog):
     assert any("EURSUD_otc" in m for m in caplog.messages)
 
 
+def test_l_elargissement_S_AJOUTE_aux_epinglees(monkeypatch):
+    """Le palier doit marcher SANS qu'un humain aille cliquer.
+
+    Il avait été écrit dans `render.yaml` sous la clé `PAIRES_FIXES`. Sur
+    Render, une variable déjà réglée dans le tableau de bord l'emporte sur le
+    fichier — et celle-ci l'était. Trois déploiements, et « Paires souscrites :
+    4 » à chaque fois : le code était juste, la configuration inerte.
+    """
+    import argparse
+
+    from maxprofit.collect.collector import (
+        PAIRES_EN_PLUS_PAR_DEFAUT, build_config)
+    monkeypatch.setenv("PAIRES_FIXES",
+                       "EURUSD_otc,AUDUSD_otc,GBPAUD_otc,AUDCAD_otc")
+    monkeypatch.delenv("PAIRES_EN_PLUS", raising=False)
+    args = argparse.Namespace(db="/tmp/x.db", min_payout=92, max_paires=4,
+                              paires="")
+    fixes = build_config(args).paires_fixes
+    # Les épinglées EN TÊTE, l'élargissement après : c'est l'ordre
+    # d'abonnement, et donc qui survit si le socket lâche en cours de route.
+    assert fixes[:4] == ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc",
+                         "AUDCAD_otc")
+    assert fixes[4:] == PAIRES_EN_PLUS_PAR_DEFAUT
+    assert len(fixes) == 6
+
+
+def test_la_variable_VIDE_desactive_l_elargissement(monkeypatch):
+    """Absente et vide ne veulent pas dire la même chose.
+
+    Sans cette distinction, revenir en arrière demanderait un commit, donc un
+    déploiement — au moment précis où l'on voudrait aller vite.
+    """
+    import argparse
+
+    from maxprofit.collect.collector import build_config
+    monkeypatch.setenv("PAIRES_FIXES", "EURUSD_otc,AUDUSD_otc")
+    monkeypatch.setenv("PAIRES_EN_PLUS", "")
+    args = argparse.Namespace(db="/tmp/x.db", min_payout=92, max_paires=4,
+                              paires="")
+    assert build_config(args).paires_fixes == ("EURUSD_otc", "AUDUSD_otc")
+
+
+def test_un_elargissement_sans_epinglees_est_IGNORE(monkeypatch, caplog):
+    """Sans épinglées, le collecteur suit le classement des payouts. Y ajouter
+    deux paires le ferait basculer en mode épinglé avec elles SEULES — donc
+    collecter moins en croyant élargir."""
+    import argparse
+
+    from maxprofit.collect.collector import build_config
+    monkeypatch.delenv("PAIRES_FIXES", raising=False)
+    monkeypatch.setenv("PAIRES_EN_PLUS", "CHFJPY_otc")
+    args = argparse.Namespace(db="/tmp/x.db", min_payout=92, max_paires=4,
+                              paires="")
+    with caplog.at_level("WARNING"):
+        assert build_config(args).paires_fixes == ()
+    assert any("IGNORÉ" in m for m in caplog.messages)
+
+
+def test_l_elargissement_ne_duplique_pas_une_epinglee(monkeypatch):
+    import argparse
+
+    from maxprofit.collect.collector import build_config
+    monkeypatch.setenv("PAIRES_FIXES", "EURUSD_otc,CHFJPY_otc")
+    monkeypatch.setenv("PAIRES_EN_PLUS", "CHFJPY_otc,BTCUSD_otc")
+    args = argparse.Namespace(db="/tmp/x.db", min_payout=92, max_paires=4,
+                              paires="")
+    assert build_config(args).paires_fixes == (
+        "EURUSD_otc", "CHFJPY_otc", "BTCUSD_otc")
+
+
 class SourceQuiRefuseAuDela(SourceCatalogue):
     """Le broker qui ferme le socket au-dela de N abonnements.
 

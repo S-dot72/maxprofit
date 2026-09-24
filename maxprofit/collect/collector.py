@@ -780,11 +780,81 @@ def build_config(args) -> Config:
         reglages["stocker_ticks"] = False
     fixes = _paires_fixes_env(getattr(args, "paires", ""))
     if fixes:
-        reglages["paires_fixes"] = fixes
+        # L'élargissement s'AJOUTE, il ne remplace pas : les épinglées restent
+        # en tête, donc premières abonnées et jamais tronquées.
+        en_plus = _paires_en_plus_env(getattr(args, "paires_en_plus", ""))
+        nouvelles = tuple(p for p in en_plus if p not in fixes)
+        if nouvelles:
+            log.info(
+                "Élargissement : %d paire(s) ajoutée(s) aux %d épinglées "
+                "(%s). Les épinglées restent en tête et ne sont jamais "
+                "lâchées (socle de %d).",
+                len(nouvelles), len(fixes), ", ".join(nouvelles),
+                reglages.get("paires_socle", Config.paires_socle))
+        reglages["paires_fixes"] = fixes + nouvelles
+    elif _paires_en_plus_env(getattr(args, "paires_en_plus", "")):
+        # Sans épinglées, le collecteur suit le classement des payouts.
+        # Y ajouter deux paires ferait basculer en mode épinglé avec DEUX
+        # paires, ce qui collecterait moins qu'avant en croyant élargir.
+        log.warning(
+            "PAIRES_EN_PLUS est réglé mais aucune paire n'est épinglée : "
+            "l'élargissement est IGNORÉ. Le collecteur suit le classement "
+            "des payouts, et y ajouter des paires le ferait basculer en mode "
+            "épinglé avec elles seules — donc collecter moins.")
     socle = getattr(args, "paires_socle", None)
     if socle:
         reglages["paires_socle"] = int(socle)
     return Config(**reglages)
+
+
+#: L'élargissement en cours, AJOUTÉ aux paires épinglées.
+#:
+#: ⚠ UNE VALEUR PAR DÉFAUT DANS LE CODE, ET C'EST VOULU.
+#:
+#: Le palier 4 -> 6 avait été écrit dans `render.yaml` sous la clé
+#: `PAIRES_FIXES`. Il n'a rien changé : sur Render, une variable déjà réglée
+#: dans le tableau de bord l'emporte sur le fichier, et celle-ci l'était. Trois
+#: déploiements plus tard, la sonde affichait toujours « Paires souscrites : 4 »
+#: — le code était juste, la configuration inerte, et rien ne le disait.
+#:
+#: D'où cette liste SÉPARÉE. Elle s'ajoute à `PAIRES_FIXES` au lieu de la
+#: remplacer, donc l'univers pré-inscrit reste en tête quoi qu'il arrive, et son
+#: défaut vit ici — là où un déploiement le rend effectif sans qu'un humain
+#: aille cliquer.
+#:
+#: Réversible sans toucher au code : régler `PAIRES_EN_PLUS` à la chaîne vide
+#: désactive l'élargissement. « Absente » et « vide » ne veulent donc pas dire
+#: la même chose, et c'est la distinction qui rend le retour en arrière
+#: possible.
+PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = ("CHFJPY_otc", "BTCUSD_otc")
+
+
+def _decouper(texte: str) -> tuple[str, ...]:
+    """Une liste séparée par des virgules, doublons retirés, ordre conservé."""
+    vues, sortie = set(), []
+    for nom in (texte or "").split(","):
+        nom = nom.strip()
+        if nom and nom not in vues:
+            vues.add(nom)
+            sortie.append(nom)
+    return tuple(sortie)
+
+
+def _paires_en_plus_env(brut: str = "") -> tuple[str, ...]:
+    """Les paires de l'élargissement, depuis l'argument, `PAIRES_EN_PLUS`, ou
+    le défaut du code — dans cet ordre.
+
+    ⚠ La variable ABSENTE et la variable VIDE sont deux choses différentes :
+    absente, on prend le défaut ; vide, on n'élargit pas. Sans cette
+    distinction, revenir en arrière demanderait un commit, donc un
+    déploiement, donc du temps — au moment précis où l'on voudrait aller vite.
+    """
+    if (brut or "").strip():
+        return _decouper(brut)
+    depuis_env = os.environ.get("PAIRES_EN_PLUS")
+    if depuis_env is None:
+        return PAIRES_EN_PLUS_PAR_DEFAUT
+    return _decouper(depuis_env)
 
 
 def _paires_fixes_env(brut: str) -> tuple[str, ...]:
@@ -833,6 +903,13 @@ def main(argv: list[str] | None = None) -> int:
                          "précède l'espacement de 0,4 s entre changeSymbol — "
                          "elle mesurait peut-être une cadence et non un "
                          "nombre. Le filet est `--paires-socle`.")
+    ap.add_argument("--paires-en-plus", default="",
+                    help="Paires à AJOUTER aux épinglées, séparées par des "
+                         "virgules (ou $PAIRES_EN_PLUS). Elles passent après "
+                         "les épinglées, donc elles sont tronquées les "
+                         "premières si le socket refuse. Variable ABSENTE : "
+                         "on prend le défaut du code. Variable VIDE : on "
+                         "n'élargit pas.")
     ap.add_argument("--paires-socle", type=int,
                     default=int(os.environ.get("PAIRES_SOCLE", "4") or 4),
                     help="Combien de paires de TÊTE de --paires ne doivent "

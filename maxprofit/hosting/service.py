@@ -106,6 +106,23 @@ _course: dict = {}
 PAIRES_PAR_DEFAUT = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc")
 
 
+def univers_trade(cfg) -> tuple[str, ...]:
+    """Les paires sur lesquelles la course prend des positions.
+
+    Une fonction, et non une expression noyée dans l'appel à
+    `fabriquer_course`, parce que cette décision s'est perdue deux fois :
+    une fois en élargissant la collecte sans s'apercevoir qu'on élargissait le
+    trading, une fois en figeant le trading sans s'apercevoir qu'on
+    l'empêchait d'élargir. Une décision qui compte se teste.
+
+    C'est TOUT CE QUE L'ON COLLECTE. Décidé le 2026-09-24 : quatre paires ne
+    sont à 92 % que 2,5 en moyenne, et attendre la fin du test du plan pour
+    élargir coûtait des semaines de débit. Le coût est consigné au registre
+    sous #71 — voir aussi le commentaire à l'appel de `fabriquer_course`.
+    """
+    return tuple(cfg.paires_fixes or PAIRES_PAR_DEFAUT)
+
+
 def _alerte_synchrone(bot):
     """Un pont thread -> boucle asyncio pour que la course puisse alerter.
 
@@ -201,16 +218,32 @@ async def _servir(args) -> int:
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
                 sessions_par_jour=int(os.environ.get("PLAN_SESSIONS", "18")),
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
-                # ⚠ CE QUE L'ON TRADE N'EST PAS CE QUE L'ON COLLECTE.
+                # ⚠ ON TRADE TOUT CE QUE L'ON COLLECTE. C'EST UNE DÉCISION,
+                # PRISE LE 2026-09-24, ET ELLE A UN COÛT.
                 #
-                # Cette ligne passait `cfg.paires_fixes`, c'est-à-dire la
-                # liste du COLLECTEUR. Les deux coïncidaient, donc rien ne se
-                # voyait — mais ajouter une paire à la collecte élargissait du
-                # même geste l'univers TRADÉ, et une validation hors
-                # échantillon faite sur un autre univers que celui déclaré au
-                # registre ne vaut rien. Le test se serait détruit au moment
-                # précis où l'on croyait seulement collecter plus.
-                paires=UNIVERS_PRE_INSCRIT,
+                # Cette ligne a passé `UNIVERS_PRE_INSCRIT` pendant une
+                # journée, pour que l'univers tradé reste exactement celui
+                # déclaré au registre (#58, #59) — condition d'une validation
+                # hors échantillon qui vaille quelque chose. L'utilisateur a
+                # tranché autrement : quatre paires ne sont à 92 % que 2,5 en
+                # moyenne, et attendre la fin du test pour élargir coûtait des
+                # semaines de débit.
+                #
+                # Ce que cela coûte exactement, pour que personne ne le
+                # découvre en relisant les résultats : le test au niveau du
+                # PLAN — enchaînement des sessions, choix du pas de martingale,
+                # séquence des gains — tourne désormais sur un univers de six
+                # paires là où cinq en étaient déclarées zéro. Cette partie
+                # n'est plus une validation hors échantillon de la
+                # configuration déclarée.
+                #
+                # Ce qui SURVIT, et c'est ce qui justifie de ne pas tout
+                # jeter : le journal enregistre la paire de chaque ordre. La
+                # précision PAR PAIRE des quatre pré-inscrites reste donc
+                # mesurable, non biaisée, et c'est elle que #58/#59 prédisent.
+                # `UNIVERS_PRE_INSCRIT` reste en dur pour cette analyse.
+                # Consigné au registre sous #71.
+                paires=univers_trade(cfg),
                 # Les paires dont NOTRE BASE a l'historique. Elles sont lues
                 # localement au lieu d'être demandées au broker pour 27
                 # secondes chacune — c'est ce qui rend l'élargissement de la
@@ -367,7 +400,8 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
             f"({tot['collecte_sec'] / 3600:.0f} h sur "
             f"{tot['fenetre_sec'] / 3600:.0f} h)")
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
-    lignes.append(f"Paires souscrites : {superviseur.paires_souscrites()}")
+    lignes.append(
+        f"Paires souscrites : {superviseur.paires_souscrites_nommees()}")
     if course is not None:
         lignes.append(f"Course du plan : {course.resume()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")

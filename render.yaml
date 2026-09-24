@@ -82,11 +82,27 @@ services:
       # 0,4 s entre `changeSymbol` : elle mesurait peut-être une CADENCE. Si
       # six sont refusées, `_reduire_le_plafond` redescend seul à quatre et le
       # journal le dit — la série pré-inscrite ne se troue pas.
+      # ⚠ CETTE CLÉ EST INERTE SI ELLE EST DÉJÀ RÉGLÉE DANS LE TABLEAU DE
+      # BORD, et elle l'est. Sur Render, une variable saisie à la main
+      # l'emporte sur ce fichier. Le palier de 4 à 6 paires a donc été écrit
+      # ici, déployé trois fois, et n'a jamais pris effet — `/etat` répondait
+      # « Paires souscrites : 4 » à chaque essai.
+      #
+      # Elle reste pour dire l'intention. L'élargissement effectif passe par
+      # `PAIRES_EN_PLUS`, dont le défaut vit DANS LE CODE
+      # (`PAIRES_EN_PLUS_PAR_DEFAUT`) : un déploiement suffit, sans qu'un
+      # humain aille cliquer.
       - key: PAIRES_FIXES
-        value: "EURUSD_otc,AUDUSD_otc,GBPAUD_otc,AUDCAD_otc,CHFJPY_otc,BTCUSD_otc"
+        value: "EURUSD_otc,AUDUSD_otc,GBPAUD_otc,AUDCAD_otc"
       # Le nombre de paires de tête qu'aucun incident ne doit faire lâcher.
       - key: PAIRES_SOCLE
         value: "4"
+      # L'ÉLARGISSEMENT. Laissé NON RÉGLÉ ici, exprès : absente, la variable
+      # fait prendre le défaut du code ; réglée à la chaîne vide dans le
+      # tableau de bord, elle désactive l'élargissement sans commit. C'est le
+      # chemin de retour, et il doit rester à une saisie de distance.
+      #
+      # Palier en cours : +CHFJPY_otc +BTCUSD_otc (4 -> 6).
       # Les secrets ne sont pas dans ce fichier : ils se saisissent dans le
       # tableau de bord Render, pour ne jamais entrer dans git.
       # Jeton de session du broker. Il EXPIRE : le service alerte alors sur

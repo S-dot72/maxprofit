@@ -252,6 +252,13 @@ class Etat:
     #: Paires lues dans notre base au dernier passage — celles qui ne coûtent
     #: rien, et les seules qu'on puisse suivre bougie par bougie.
     paires_gratuites: int = 0
+    #: Paires de l'univers dont NOTRE BASE n'a pas encore assez d'historique.
+    #:
+    #: Une paire qu'on vient d'ajouter à la collecte est éligible au payout et
+    #: pourtant muette : la stratégie a besoin de 300 bougies de recul, soit
+    #: cinq heures après l'abonnement. Sans ce compteur, « 6 actifs au plafond,
+    #: 0 signal » ressemble à une panne alors que c'est le temps qui manque.
+    paires_sans_historique: int = 0
     #: Les compteurs d'activité, nommés une fois pour que la persistance
     #: et la relecture ne puissent pas diverger.
     COMPTEURS = ("bougies_evaluees", "bougies_perimees", "signaux_bruts",
@@ -349,6 +356,9 @@ class CoursePlanDemo:
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._rotation = 0
+        #: La journée UTC que la course croit être en cours. 0 = pas encore
+        #: établie ; le premier passage la pose sans rien déclencher.
+        self.jour_utc_courant = 0
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
         # Les bougies des paires collectées viennent de la base, mais
@@ -469,6 +479,7 @@ class CoursePlanDemo:
         self.etat.paires_gratuites = len(gratuites)
 
         examinees = 0
+        sans_historique = 0
         for paire in gratuites + payantes:
             payante = paire not in self.paires
             if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
@@ -487,6 +498,10 @@ class CoursePlanDemo:
                 # demande rien, et n'a donc rien à attendre.
                 time.sleep(DELAI_ENTRE_ACTIFS_SEC)
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
+                # Trop peu d'historique pour même chercher une zone. C'est le
+                # cas normal d'une paire fraîchement ajoutée à la collecte,
+                # et il dure des heures : il doit se compter, pas se taire.
+                sans_historique += 1
                 continue
             derniere = bougies[-1]
             if derniere.ts_sec <= self.etat.derniere_bougie.get(paire, 0):
@@ -519,7 +534,9 @@ class CoursePlanDemo:
             if not self._payout_au_maximum(paire):
                 continue
             self.etat.signaux_trouves += 1
+            self.etat.paires_sans_historique = sans_historique
             return signal
+        self.etat.paires_sans_historique = sans_historique
         return None
 
     def _payout_au_maximum(self, paire: str) -> bool:
@@ -875,6 +892,62 @@ class CoursePlanDemo:
         self.etat.sessions_interrompues += 1
         self._cloturer_session()
 
+    def passer_le_jour_si_besoin(self, jour_utc_courant: int) -> bool:
+        """Avance d'une journée de plan quand la journée UTC a changé.
+
+        ⚠ CE PASSAGE N'EXISTAIT PAS. `nouveau_jour()` était écrite, testée, et
+        appelée par personne ; la colonne `jour_utc` était écrite à chaque pas
+        et relue par personne. Le mécanisme était conçu et laissé débranché.
+
+        Ce que cela coûtait, et qui ne se voyait pas :
+
+        - le plan restait sur « jour 1/30 » indéfiniment ;
+        - `sessions_jouees` ne repartait jamais de zéro, donc le quota de 18
+          s'appliquait à TOUTE la course et non à la journée. Arrivé à 18, la
+          course se serait arrêtée sur SESSIONS_EPUISEES pour de bon — un arrêt
+          définitif qui ressemble trait pour trait à une journée terminée ;
+        - la garde de perte journalière se calculait sur le cumul, donc elle se
+          serait déclenchée de plus en plus tôt.
+
+        Ce qui l'a révélé : le débit affiché à 126,7 sessions/jour, parce qu'il
+        divisait six sessions de la veille par 1,1 h de journée nouvelle. Le
+        chiffre absurde était le symptôme, pas la maladie.
+
+        Rend `True` si la journée a tourné, pour que l'appelant persiste.
+        """
+        if not self.jour_utc_courant:
+            # Premier passage : on se cale, sans rien avancer. Sans ce cas, un
+            # redémarrage compterait une journée de plan à chaque fois.
+            self.jour_utc_courant = jour_utc_courant
+            return False
+        if jour_utc_courant <= self.jour_utc_courant:
+            return False
+        if self.etat.session is not None:
+            # Une martingale à cheval sur minuit finit d'abord. La couper
+            # laisserait des mises engagées dans une journée qui n'existe plus.
+            log.info("Journée UTC changée, mais une session est en cours : "
+                     "le passage attend qu'elle se clôture.")
+            return False
+        ecart = jour_utc_courant - self.jour_utc_courant
+        self.jour_utc_courant = jour_utc_courant
+        # UNE journée de plan par changement de journée UTC, même si plusieurs
+        # se sont écoulées. Le plan compte 30 journées TRADÉES ; en sauter
+        # parce que l'hébergeur dormait raccourcirait le test sans le dire.
+        if ecart > 1:
+            log.warning(
+                "%d journées UTC se sont écoulées depuis le dernier passage. "
+                "Le plan n'avance que d'UNE journée : il en compte 30 tradées, "
+                "pas 30 au calendrier.", ecart)
+        ancien = self.etat.jour
+        nouveau_jour(self.etat)
+        log.info("Journée de plan %d -> %d. Compteurs remis à zéro, solde "
+                 "conservé à %.2f $.", ancien, self.etat.jour, self.etat.solde)
+        self._prevenir(
+            f"📅 <b>Jour {self.etat.jour}/{self.etat.plan.jours}</b>\n"
+            f"solde <b>{self.etat.solde:.2f} $</b>, compteurs de la journée "
+            f"remis à zéro")
+        return True
+
     def _payouts_lisibles(self) -> str:
         return " ".join(
             f"{p.replace('_otc', '')}:{v if v >= 0 else '?'}"
@@ -956,7 +1029,9 @@ class CoursePlanDemo:
                      f"de journée, course en route depuis {depuis_h:.1f} h")
         return (f"{base}{broker} | en route depuis {depuis} min | "
                 f"{e.univers_taille} actif(s) au plafond dont "
-                f"{e.paires_gratuites} en base, "
+                f"{e.paires_gratuites} en base"
+                f"{f' ({e.paires_sans_historique} sans historique suffisant)'
+                   if e.paires_sans_historique else ''}, "
                 f"{vues} bougies vues par la stratégie "
                 f"({e.bougies_perimees} périmées sur {e.bougies_evaluees}), "
                 f"{e.signaux_bruts} signal(aux) bruts dont "
@@ -1175,7 +1250,11 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
 
     repris = charger_etat(ecriture, campagne, plan)
     if repris is not None:
-        course.etat, _ = repris
+        course.etat, jour_utc_repris = repris
+        # ⚠ Cette seconde valeur était JETÉE. C'est elle qui dit quelle
+        # journée UTC était en cours au dernier pas, donc la seule à pouvoir
+        # détecter que minuit est passé pendant que le processus était mort.
+        course.jour_utc_courant = int(jour_utc_repris or 0)
         log.info("Course REPRISE depuis la base : %s", course.resume())
     else:
         log.info("Nouvelle course : %s", course.resume())
@@ -1200,9 +1279,14 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         # L'état est sauvé après CHAQUE pas. Le processus peut mourir à
         # n'importe quel moment — l'hébergeur redéploie, met en veille — et un
         # état sauvé par intermittence rejouerait des ordres déjà passés.
+        aujourdhui = jour_utc()
+        # AVANT le tour, pas après : ouvrir une session au nom d'hier
+        # l'imputerait à des compteurs qui vont être remis à zéro.
+        if course.passer_le_jour_si_besoin(aujourdhui):
+            sauver_etat(ecriture, campagne, course.etat, aujourdhui)
         joue = tour_nu()
         if joue:
-            sauver_etat(ecriture, campagne, course.etat, jour_utc())
+            sauver_etat(ecriture, campagne, course.etat, aujourdhui)
         return joue
 
     course.tour = tour_persistant

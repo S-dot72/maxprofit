@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import time
+from pathlib import Path
 
 import pytest
 
@@ -549,13 +550,14 @@ def test_le_resume_distingue_une_bougie_VUE_d_une_bougie_PERIMEE(course):
     assert "40 actif(s) au plafond dont 4 en base" in resume
 
 
-def test_elargir_la_COLLECTE_n_elargit_pas_l_univers_TRADE(tmp_path):
-    """Le defaut qui aurait detruit le test hors echantillon en silence.
+def test_la_course_SAIT_separer_ce_qu_elle_trade_de_ce_qu_elle_lit(tmp_path):
+    """Le MECANISME de separation, qui doit rester disponible.
 
-    La course recevait `cfg.paires_fixes`, la liste du COLLECTEUR. Les deux
-    coincidaient, donc rien ne se voyait. Ajouter une paire a la collecte
-    aurait elargi du meme geste l'univers trade, et une validation faite sur
-    un autre univers que celui declare au registre (#58, #59) ne vaut rien.
+    La production a choisi de trader tout ce qu'elle collecte (voir
+    `hosting.service.univers_trade`, decision du 2026-09-24). Mais la course
+    doit rester capable de dissocier les deux : c'est ce qui permettra de
+    rejouer l'univers PRE-INSCRIT sur les memes bougies, et c'est la seule
+    facon de conclure #58/#59 proprement une fois le plan termine.
     """
     journal = JournalExecution(tmp_path / "e.db", campagne="t")
     c = CoursePlanDemo(
@@ -589,9 +591,35 @@ def test_une_paire_collectee_mais_non_epinglee_est_lue_en_BASE(tmp_path):
     journal.close()
 
 
-def test_l_univers_pre_inscrit_est_EN_DUR_et_non_configurable():
-    """Une pre-inscription qui se lit dans une variable d'environnement n'est
-    pas une pre-inscription : elle change sans qu'on s'en apercoive."""
+def test_la_production_trade_TOUT_ce_qu_elle_collecte(monkeypatch):
+    """La decision du 2026-09-24, testee au point ou elle se prend.
+
+    Elle s'est perdue deux fois : une fois en elargissant la collecte sans
+    s'apercevoir qu'on elargissait le trading, une fois en figeant le trading
+    sans s'apercevoir qu'on l'empechait d'elargir. Trois deploiements ont
+    affiche « Paires souscrites : 4 » sans que rien ne soit en panne.
+    """
+    from maxprofit.collect.collector import Config
+    from maxprofit.hosting.service import PAIRES_PAR_DEFAUT, univers_trade
+
+    six = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc",
+           "CHFJPY_otc", "BTCUSD_otc")
+    assert univers_trade(Config(db=Path("/tmp/x.db"), min_payout=92,
+                                paires_fixes=six)) == six
+    # Sans epinglees, on retombe sur le defaut du code, jamais sur rien :
+    # un univers vide ferait une course qui tourne sans jamais rien evaluer.
+    vide = univers_trade(Config(db=Path("/tmp/x.db"), min_payout=92))
+    assert vide == PAIRES_PAR_DEFAUT and vide
+
+
+def test_l_univers_pre_inscrit_reste_EN_DUR_pour_l_analyse():
+    """Il ne sert plus a choisir ce qu'on trade, mais a RELIRE les resultats.
+
+    Le journal enregistre la paire de chaque ordre : la precision par paire
+    des quatre pre-inscrites reste donc mesurable meme si la course en trade
+    six. C'est cette liste qui dira lesquelles comptent pour #58/#59 — et une
+    liste qui se lit dans une variable d'environnement changerait sans qu'on
+    s'en apercoive."""
     from maxprofit.live.plan_demo import UNIVERS_PRE_INSCRIT
     assert UNIVERS_PRE_INSCRIT == (
         "AUDCAD_otc", "AUDUSD_otc", "EURUSD_otc", "GBPAUD_otc")
