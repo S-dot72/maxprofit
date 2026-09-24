@@ -119,6 +119,28 @@ SESSIONS_PAR_JOUR_MESUREES = 13.4
 #: en sont à plus de six sessions d'écart.
 ECART_DEBIT_PAR_JOUR = 6.5
 
+#: Refus d'affilée sur une paire avant de la mettre de côté.
+#:
+#: ⚠ MESURÉ EN PRODUCTION, ET IL A COÛTÉ UNE NUIT. BTCUSD_otc a reçu 34 ordres
+#: en 34 minutes — un par minute, tous refusés par le broker avec « refus sans
+#: motif », tous journalisés, aucun joué. Un refus rendait la main sans rien
+#: retenir, donc le passage suivant retrouvait le même signal sur la même paire
+#: et retentait. Pendant ce temps la course ne faisait rien d'autre : c'était
+#: la seule paire au plafond de payout à ce moment-là.
+#:
+#: Trois, et non un : un refus isolé arrive (un payout qui bouge entre la
+#: décision et le clic), et bannir sur un accident coûterait une paire saine.
+REFUS_AVANT_QUARANTAINE = 3
+
+#: Combien de temps une paire refusée reste écartée.
+#:
+#: Une heure, parce que les causes plausibles se résolvent à cette échelle —
+#: une mise sous le minimum de l'actif, une échéance que le broker n'accepte
+#: pas sur lui, un actif suspendu — et parce qu'une paire définitivement
+#: bannie disparaîtrait sans qu'on l'ait décidé. On réessaie, mais pas toutes
+#: les minutes.
+QUARANTAINE_SEC = 3600
+
 FRAICHEUR_MAX_SEC = 90
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
@@ -252,6 +274,18 @@ class Etat:
     #: Paires lues dans notre base au dernier passage — celles qui ne coûtent
     #: rien, et les seules qu'on puisse suivre bougie par bougie.
     paires_gratuites: int = 0
+    #: Paires écartées après des refus répétés, et jusqu'à quand.
+    #: Persistées : un redéploiement remettrait sinon la boucle en route.
+    quarantaine: dict[str, int] = field(default_factory=dict)
+    #: Refus d'affilée par paire, remis à zéro dès qu'un ordre passe.
+    refus_daffilee: dict[str, int] = field(default_factory=dict)
+    #: Quand le dernier refus a eu lieu, par paire.
+    #:
+    #: ⚠ SANS LUI, « D'AFFILÉE » NE VEUT RIEN DIRE. Le compteur ne décroissait
+    #: jamais : un refus isolé laissait un 1 permanent, et trois refus isolés
+    #: espacés d'une semaine finissaient par écarter une paire parfaitement
+    #: saine. La suite n'était consécutive que dans le nom.
+    dernier_refus_ts: dict[str, int] = field(default_factory=dict)
     #: Paires de l'univers dont NOTRE BASE n'a pas encore assez d'historique.
     #:
     #: Une paire qu'on vient d'ajouter à la collecte est éligible au payout et
@@ -460,6 +494,17 @@ class CoursePlanDemo:
         """
         maintenant = int(time.time())
         candidats = self.univers()
+        # Les paires écartées sortent de la course. Filtrer ICI plutôt que
+        # dans `univers()` garde le catalogue des payouts intact :
+        # `univers_taille` doit continuer à dire combien d'actifs paient le
+        # maximum, pas combien on accepte de jouer.
+        #
+        # Ce filtre ÉCONOMISE le balayage ; ce n'est pas lui qui garantit la
+        # règle. La garantie est dans `tour()`, parce qu'une garde posée dans
+        # la recherche de signal disparaît dès qu'on remplace cette recherche.
+        if self.etat.quarantaine:
+            candidats = [p for p in candidats
+                         if p not in self.etat.quarantaine]
         if not candidats:
             return None
 
@@ -706,6 +751,7 @@ class CoursePlanDemo:
                         execution.refus)
             self.etat.trade_en_cours = None
             self.journal.ecrire(execution)
+            self._noter_un_refus(signal.pair, execution.refus)
             return
         # ⚠ ÉCRIRE MAINTENANT, avant les quinze minutes d'attente.
         #
@@ -716,6 +762,9 @@ class CoursePlanDemo:
         # livres, et un solde de plan resté à 250 $ pendant que le compte
         # réel bougeait.
         self.journal.ecrire(execution)
+        # Accepté : la paire a prouvé qu'elle marche, son ardoise est nette.
+        self.etat.refus_daffilee.pop(signal.pair, None)
+        self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
         execution = self.courtier.denouer(execution)
         self.journal.mettre_a_jour(execution)
@@ -812,6 +861,7 @@ class CoursePlanDemo:
         temps et l'exposition n'est plus celle qu'on a calculée.
         """
         self.rafraichir_le_solde()
+        self._purger_la_quarantaine()
         if self.etat.session is None:
             arret = self.peut_ouvrir()
             if arret is not None:
@@ -821,6 +871,15 @@ class CoursePlanDemo:
             return True
         signal = self.chercher_un_signal()
         if signal is None:
+            return False
+        # ⚠ LA GARANTIE EST ICI, et pas dans `chercher_un_signal`.
+        #
+        # Le filtre y est aussi, pour économiser le balayage. Mais une règle
+        # posée dans la recherche de signal disparaît dès que quelqu'un
+        # remplace cette recherche — ce que font les tests, et ce que ferait
+        # n'importe quelle autre source de signaux. La règle qui empêche 34
+        # ordres refusés d'affilée ne peut pas dépendre de ça.
+        if signal.pair in self.etat.quarantaine:
             return False
         if not self._pas_independant(signal):
             self.etat.pas_sautes_independance += 1
@@ -948,6 +1007,52 @@ class CoursePlanDemo:
             f"remis à zéro")
         return True
 
+    def _purger_la_quarantaine(self) -> None:
+        """Lève les peines arrivées à terme. Appelée à chaque passage."""
+        maintenant = int(time.time())
+        for paire in [p for p, t in self.etat.quarantaine.items()
+                      if t <= maintenant]:
+            del self.etat.quarantaine[paire]
+            self.etat.refus_daffilee.pop(paire, None)
+            self.etat.dernier_refus_ts.pop(paire, None)
+            log.info("Quarantaine levée sur %s : on réessaie.", paire)
+
+    def _noter_un_refus(self, paire: str, motif: str | None) -> None:
+        """Compte les refus d'affilée et met la paire de côté au troisième.
+
+        ⚠ Sans ce compteur, un refus ne laissait AUCUNE trace dans l'état : le
+        passage suivant retrouvait le même signal sur la même paire, retentait,
+        et échouait pareil. Mesuré en production : 34 ordres sur BTCUSD_otc en
+        34 minutes, tous refusés, pendant que la course ne faisait rien
+        d'autre — c'était la seule paire au plafond à ce moment-là.
+
+        La boucle ne levait aucune erreur et ne consommait aucune mise. Elle
+        ne coûtait que du temps, ce qui est exactement ce qui manque quand on
+        vise dix-huit sessions par jour.
+        """
+        maintenant = int(time.time())
+        precedent = self.etat.dernier_refus_ts.get(paire, 0)
+        # Une série interrompue par une longue accalmie n'est pas une série.
+        # On repart de un plutôt que d'additionner des incidents sans rapport.
+        n = 1 if maintenant - precedent > QUARANTAINE_SEC else \
+            self.etat.refus_daffilee.get(paire, 0) + 1
+        self.etat.refus_daffilee[paire] = n
+        self.etat.dernier_refus_ts[paire] = maintenant
+        if n < REFUS_AVANT_QUARANTAINE:
+            return
+        jusqu_a = int(time.time()) + QUARANTAINE_SEC
+        self.etat.quarantaine[paire] = jusqu_a
+        log.warning(
+            "%s écartée pour %d min après %d refus d'affilée (%s). Réessai "
+            "ensuite : on ne bannit pas définitivement une paire sur un motif "
+            "que le broker ne donne pas.",
+            paire, QUARANTAINE_SEC // 60, n, motif)
+        self._prevenir(
+            f"⏸ <b>{paire}</b> écartée {QUARANTAINE_SEC // 60} min\n"
+            f"{n} ordres refusés d'affilée par le broker "
+            f"({motif or 'sans motif'})")
+        self._sauvegarder()
+
     def _payouts_lisibles(self) -> str:
         return " ".join(
             f"{p.replace('_otc', '')}:{v if v >= 0 else '?'}"
@@ -992,6 +1097,13 @@ class CoursePlanDemo:
                    if e.signaux_trouves == 0 else "")
         broker = (f" (broker {e.solde_broker:.2f} $)"
                   if e.solde_broker is not None else "")
+        ecartees = ""
+        if e.quarantaine:
+            reste = {p: max(0, (t - int(time.time())) // 60)
+                     for p, t in sorted(e.quarantaine.items())}
+            ecartees = (" | écartées : "
+                        + ", ".join(f"{p} ({m} min)"
+                                    for p, m in reste.items()))
         # Le DÉBIT RÉEL, maintenant que les compteurs survivent aux
         # redémarrages. Sans lui, « 6/18 » se lit comme un retard alors que le
         # plafond du marché est à 13,4 — et l'on cherche une panne qui n'existe
@@ -1037,7 +1149,7 @@ class CoursePlanDemo:
                 f"{e.signaux_bruts} signal(aux) bruts dont "
                 f"{e.signaux_trouves} retenu(s), {e.pas_sautes_independance} "
                 f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
-                f"lecture il y a {age} s{debit}"
+                f"lecture il y a {age} s{ecartees}{debit}"
                 f"{' | ' + attente if attente else ''}")
 
 
@@ -1106,7 +1218,12 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
          etat.dernier_trade[0] if etat.dernier_trade else None,
          etat.dernier_trade[1] if etat.dernier_trade else None,
          etat.solde_broker_ancre,
-         json.dumps({n: getattr(etat, n) for n in Etat.COMPTEURS}),
+         json.dumps({**{n: getattr(etat, n) for n in Etat.COMPTEURS},
+                     # Préfixées, pour que la relecture les distingue des
+                     # compteurs entiers sans avoir à les énumérer deux fois.
+                     "_quarantaine": etat.quarantaine,
+                     "_refus": etat.refus_daffilee,
+                     "_refus_ts": etat.dernier_refus_ts}),
          etat.demarre_ts),
     )
     valider(conn)
@@ -1147,9 +1264,19 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     # Les compteurs d'activité. Absents d'un état écrit avant la migration
     # v9 : on repart de zéro plutôt que d'échouer — perdre une mesure est
     # moins grave que refuser de reprendre un plan en cours.
-    for nom, valeur in json.loads(ligne[14] or "{}").items():
+    sauve = json.loads(ligne[14] or "{}")
+    for nom, valeur in sauve.items():
         if nom in Etat.COMPTEURS:
             setattr(etat, nom, int(valeur))
+    # ⚠ La quarantaine DOIT survivre au redémarrage. Sans cela, un
+    # redéploiement remettrait en route exactement la boucle qu'elle existe
+    # pour arrêter — et les redéploiements sont fréquents.
+    etat.quarantaine = {str(k): int(v)
+                        for k, v in (sauve.get("_quarantaine") or {}).items()}
+    etat.refus_daffilee = {str(k): int(v)
+                           for k, v in (sauve.get("_refus") or {}).items()}
+    etat.dernier_refus_ts = {
+        str(k): int(v) for k, v in (sauve.get("_refus_ts") or {}).items()}
     etat.demarre_ts = int(ligne[15] or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:

@@ -319,6 +319,137 @@ def test_un_ordre_refuse_ne_consomme_pas_de_pas(course):
     assert c.etat.solde > CAPITAL
 
 
+def test_une_paire_REFUSEE_sans_cesse_est_ecartee(course):
+    """La boucle qui a coûté une nuit entière de course.
+
+    BTCUSD_otc a reçu 34 ordres en 34 minutes — un par minute, tous refusés
+    par le broker avec « refus sans motif », tous journalisés, aucun joué. Un
+    refus rendait la main sans rien retenir : le passage suivant retrouvait le
+    même signal sur la même paire et retentait. Pendant ce temps la course ne
+    faisait rien d'autre, c'était la seule paire au plafond de payout.
+
+    Aucune erreur, aucune mise perdue. Seulement du temps — ce qui manque
+    précisément quand on vise dix-huit sessions par jour.
+    """
+    from maxprofit.live.plan_demo import REFUS_AVANT_QUARANTAINE
+    c = course(["refus"] * 10, plan=_plan(sessions=18))
+    # La paire du signal scripté alterne : on la fige pour reproduire le cas.
+    paire = PAIRES_TEST[0]
+    c.chercher_un_signal = lambda: Signal(
+        pair=paire, direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    c.univers = lambda: list(PAIRES_TEST)
+
+    for _ in range(REFUS_AVANT_QUARANTAINE):
+        c.tour()
+    assert paire in c.etat.quarantaine, (
+        f"{REFUS_AVANT_QUARANTAINE} refus d'affilée doivent écarter la paire")
+    # Et elle ne revient plus dans les candidats tant que la peine court.
+    assert c.chercher_un_signal is not None
+    ordres_avant = len(c.journal.toutes())
+    c.tour()
+    assert len(c.journal.toutes()) == ordres_avant, (
+        "une paire écartée ne doit plus produire d'ordre")
+
+
+def test_un_refus_ISOLE_n_ecarte_pas_une_paire_saine(course):
+    """Un payout qui bouge entre la décision et le clic suffit à faire
+    refuser un ordre. Bannir là-dessus coûterait une paire qui marche."""
+    from maxprofit.live.plan_demo import REFUS_AVANT_QUARANTAINE
+    assert REFUS_AVANT_QUARANTAINE >= 2
+    c = course(["refus", "win"], plan=_plan(sessions=18))
+    c.tour()
+    c.tour()
+    assert c.etat.quarantaine == {}
+    # Le compteur est PAR PAIRE, et le signal scripté alterne : le refus est
+    # sur la première, le succès sur la seconde. L'ardoise de la première
+    # reste donc à 1 — ce qui est juste, et inoffensif tant qu'elle décroît.
+    assert c.etat.refus_daffilee == {PAIRES_TEST[0]: 1}
+
+
+def test_un_refus_ACCEPTE_ensuite_remet_l_ardoise_a_zero(course):
+    c = course(["refus", "win"], plan=_plan(sessions=18))
+    c.chercher_un_signal = lambda: Signal(
+        pair=PAIRES_TEST[0], direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    c.tour()
+    assert c.etat.refus_daffilee == {PAIRES_TEST[0]: 1}
+    c.tour()
+    assert c.etat.refus_daffilee == {}, (
+        "un ordre accepté prouve que la paire marche")
+    assert c.etat.dernier_refus_ts == {}
+
+
+def test_des_refus_ESPACES_ne_s_additionnent_pas(course, monkeypatch):
+    """« D'affilée » doit vouloir dire quelque chose.
+
+    Le compteur ne décroissait jamais : un refus isolé laissait un 1
+    permanent, et trois refus isolés espacés d'une semaine finissaient par
+    écarter une paire parfaitement saine. La suite n'était consécutive que
+    dans le nom.
+    """
+    import time as _t
+
+    from maxprofit.live.plan_demo import (QUARANTAINE_SEC,
+                                          REFUS_AVANT_QUARANTAINE)
+    c = course(["refus"] * 20, plan=_plan(sessions=18))
+    c.chercher_un_skip = None
+    c.chercher_un_signal = lambda: Signal(
+        pair=PAIRES_TEST[0], direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    base = int(_t.time())
+    for k in range(REFUS_AVANT_QUARANTAINE + 2):
+        # Chaque refus est séparé du précédent par plus que la quarantaine.
+        instant = base + k * (QUARANTAINE_SEC + 60)
+        monkeypatch.setattr(_t, "time", lambda i=instant: float(i))
+        c.tour()
+        assert c.etat.refus_daffilee == {PAIRES_TEST[0]: 1}, (
+            f"au {k + 1}e refus espacé, le compteur doit être reparti de 1")
+        assert c.etat.quarantaine == {}, (
+            "des incidents sans rapport ne doivent pas écarter une paire")
+
+
+def test_la_quarantaine_EXPIRE_d_elle_meme(course, monkeypatch):
+    """On n'a pas le motif du refus, donc on ne bannit pas définitivement."""
+    import time as _t
+
+    from maxprofit.live.plan_demo import QUARANTAINE_SEC
+    assert QUARANTAINE_SEC > 0
+    c = course(["win"], plan=_plan(sessions=18))
+    c.etat.quarantaine = {PAIRES_TEST[0]: int(_t.time()) + 10}
+    c.etat.refus_daffilee = {PAIRES_TEST[0]: 3}
+    # Avant l'échéance : la peine tient.
+    c._purger_la_quarantaine()
+    assert PAIRES_TEST[0] in c.etat.quarantaine
+    # Après : elle tombe, et l'ardoise de la paire avec elle.
+    monkeypatch.setattr(_t, "time", lambda: 1e12)
+    c._purger_la_quarantaine()
+    assert c.etat.quarantaine == {}, "la peine expire seule"
+    assert c.etat.refus_daffilee == {}
+
+
+def test_la_quarantaine_SURVIT_a_un_redemarrage(tmp_path):
+    """Sinon un redéploiement remet en route la boucle qu'elle arrête — et
+    les redéploiements sont fréquents."""
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=10)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.quarantaine = {"BTCUSD_otc": 1790300000}
+    c.etat.refus_daffilee = {"BTCUSD_otc": 3}
+    sauver_etat(conn, "t", c.etat, 0)
+
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.quarantaine == {"BTCUSD_otc": 1790300000}
+    assert relu.refus_daffilee == {"BTCUSD_otc": 3}
+    journal.close()
+    conn.close()
+
+
 def test_un_denouement_inconnu_interrompt_au_lieu_de_deviner(course):
     """« unknown » n'est ni gagné ni perdu. Le compter comme perdu
     surestimerait la perte, comme gagné l'effacerait."""
