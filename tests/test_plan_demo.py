@@ -1023,6 +1023,42 @@ def test_une_session_qui_attend_trop_longtemps_est_INTERROMPUE(tmp_path,
     # La mise engagée est COMPTÉE : une session abandonnée dont les mises
     # disparaîtraient ferait croire à un solde qu'on n'a pas.
     assert c.etat.solde == pytest.approx(CAPITAL - engage)
+    # ⚠ MAIS ELLE NE CONSOMME PAS DE CRÉNEAU, et ce n'est pas la même chose.
+    #
+    # Elle en consommait un, et cela coûtait deux fois : un créneau sur les
+    # dix-huit de la journée, et une perte consécutive — donc deux
+    # interruptions auraient déclenché un réancrage. Interrompue veut dire NI
+    # gagnée NI perdue.
+    #
+    # Repéré en production : sept sessions terminées chez le broker, huit
+    # annoncées par le plan.
+    assert c.etat.journee.sessions_jouees == 0, (
+        "une session abandonnée après un seul pas n'est pas une session jouée")
+    assert c.etat.journee.sessions_perdues_daffilee == 0, (
+        "ni une session perdue : elle n'a pas déroulé son échelle")
+    assert len(c.etat.reancrages) == 0
+    journal.close()
+
+
+def test_deux_interruptions_ne_declenchent_pas_un_REANCRAGE(tmp_path,
+                                                            monkeypatch):
+    """Le réancrage répond à deux sessions PERDUES d'affilée — c'est-à-dire
+    deux échelles descendues jusqu'au bout. Deux sessions abandonnées faute de
+    pas indépendant ne disent rien de la stratégie, et remettre le capital à
+    l'ancre sur elles serait une réaction à du vide."""
+    monkeypatch.setattr("maxprofit.live.plan_demo.ATTENTE_MAX_PAS_SEC", -1)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose"] * 6),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = lambda: Signal(
+        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    for _ in range(4):
+        c.tour()
+    assert c.etat.sessions_interrompues == 2
+    assert c.etat.journee.sessions_jouees == 0
+    assert len(c.etat.reancrages) == 0, (
+        "deux interruptions ne sont pas deux défaites")
     journal.close()
 
 

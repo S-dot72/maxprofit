@@ -879,8 +879,34 @@ class CoursePlanDemo:
         self.rafraichir_le_solde()
         montant = (self.etat.solde - ouverture if ouverture is not None
                    else session.montant)
-        self.etat.journee.enregistrer(
-            session.etat is EtatSession.GAGNEE, 0.0)
+        # ⚠ UNE SESSION INTERROMPUE N'EST PAS UNE SESSION JOUÉE.
+        #
+        # Elle l'était, et cela coûtait deux fois. `Journee.enregistrer`
+        # avance `sessions_jouees` — donc une session abandonnée après un seul
+        # pas brûlait un créneau sur les dix-huit — ET incrémente
+        # `sessions_perdues_daffilee` quand elle n'est pas gagnée, donc deux
+        # interruptions auraient déclenché un réancrage.
+        #
+        # Interrompue veut dire NI gagnée NI perdue : le pas 1 a échoué, aucun
+        # pas indépendant n'est venu dans les deux heures, et la session a été
+        # soldée sans avoir déroulé son échelle. La compter comme jouée est
+        # aussi faux que la compter comme perdue.
+        #
+        # Elle était comptée pour une raison qui n'existe plus : le solde était
+        # alors tenu dans un livre à part, et une session dont les mises
+        # disparaissaient des comptes aurait fait croire à un solde qu'on n'a
+        # pas. Le solde vient maintenant du JOURNAL DES ORDRES — l'argent est
+        # compté qu'on enregistre la session ou non.
+        #
+        # Repéré en production : sept sessions terminées chez le broker, huit
+        # annoncées par le plan. La huitième avait perdu son pas 1 à 08:31 et
+        # n'avait jamais trouvé de pas 2 quatorze heures plus tard.
+        # Le compteur d'interruptions est tenu par `_interrompre_la_session`,
+        # qui est le seul endroit d'où elles viennent. L'incrémenter ici aussi
+        # les compterait deux fois.
+        if session.etat is not EtatSession.INTERROMPUE:
+            self.etat.journee.enregistrer(
+                session.etat is EtatSession.GAGNEE, 0.0)
         self.etat.journee.solde = self.etat.solde
         self.etat.journee.arret = self.etat.journee.peut_ouvrir_une_session()
         self.etat.solde_ouverture_session = None
