@@ -237,7 +237,21 @@ async def _servir(args) -> int:
         course = SuperviseurCourse(
             lambda alerter: fabriquer_course(
                 resoudre_ssid(demo=True),
-                campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v1"),
+                # ⚠ LE NOM DE CAMPAGNE EST CE QUI REMET LE TEST À ZÉRO.
+                #
+                # Le solde du plan vaut `capital_initial + somme des profits des
+                # ordres DE CETTE CAMPAGNE`, et l'état du plan est rangé sous la
+                # même clé. Changer ce nom repart donc de 250 $, jour 1, zéro
+                # session — sans rien effacer : les ordres de `plan-demo-v1`
+                # restent en base, et c'est exactement ce qu'on veut pour
+                # comparer l'avant et l'après.
+                #
+                # `v2` parce que la stratégie a changé le 2026-09-27 : elle
+                # refuse désormais une zone déjà jouée (registre #76). Mélanger
+                # dans une même campagne des ordres pris avant et après ce
+                # changement rendrait la mesure illisible — on ne saurait plus
+                # ce que le taux décrit.
+                campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v2"),
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
                 sessions_par_jour=SESSIONS_PAR_JOUR_DU_PLAN,
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
