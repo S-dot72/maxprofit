@@ -46,6 +46,52 @@ BACKOFF_SEC = 60
 BACKOFF_MAX_SEC = 1800
 
 
+def _ou(erreur: BaseException) -> str:
+    """Où l'erreur s'est produite : fichier, ligne, et le code fautif.
+
+    ⚠ SANS ÇA, UNE ERREUR AVALÉE EST INDIAGNOSTICABLE. Ce superviseur attrape
+    TOUT — c'est une règle assumée, parce que laisser remonter tuerait la
+    collecte, qui vaut plus que la course. Mais `/etat` n'affichait que le type
+    et le message, et « TypeError: unsupported operand type(s) for -: 'str' and
+    'str' » ne dit ni où ni sur quoi. Il a fallu inspecter la base, les types
+    rendus par le pilote et trois modules pour ne rien trouver, faute de savoir
+    quelle ligne accusait.
+
+    On ne garde que le CADRE LE PLUS PROFOND, et seulement le code du projet :
+    une pile entière dans un message Telegram est illisible, et les cadres de
+    bibliothèque désignent presque toujours l'appelant.
+    """
+    trace = erreur.__traceback__
+    dernier = profond = None
+    while trace is not None:
+        profond = trace
+        nom = trace.tb_frame.f_code.co_filename.replace("\\", "/")
+        if "/maxprofit/" in nom:
+            dernier = trace
+        trace = trace.tb_next
+    # À défaut d'un cadre du projet, le plus profond quel qu'il soit : une
+    # erreur née dans une bibliothèque vaut mieux localisée là que nulle part.
+    dernier = dernier or profond
+    if dernier is None:
+        return "origine inconnue"
+    cadre = dernier.tb_frame
+    chemin = cadre.f_code.co_filename.replace("\\", "/")
+    # Le dépôt s'appelant `maxprofit` et le paquet aussi, préfixer sans
+    # retirer donnerait « maxprofit/maxprofit/core/... ».
+    reste = chemin.split("/maxprofit/")[-1] if "/maxprofit/" in chemin         else chemin.rsplit("/", 2)[-1]
+    fichier = reste if reste.startswith("maxprofit/") else f"maxprofit/{reste}"
+    ligne = ""
+    try:
+        import linecache
+        ligne = linecache.getline(
+            cadre.f_code.co_filename, dernier.tb_lineno).strip()
+    except Exception:                        # noqa: BLE001
+        pass
+    return (f"{fichier}:{dernier.tb_lineno} dans "
+            f"{cadre.f_code.co_name}()"
+            + (f" — `{ligne[:120]}`" if ligne else ""))
+
+
 class SuperviseurCourse:
     """Fait tourner la course du plan à côté de la collecte, sans l'exposer.
 
@@ -152,7 +198,8 @@ class SuperviseurCourse:
                 # Laisser remonter tuerait le processus qui collecte, et la
                 # collecte vaut plus que la course.
                 self.echecs_consecutifs += 1
-                self.derniere_erreur = f"{type(erreur).__name__}: {erreur}"
+                self.derniere_erreur = (
+                    f"{type(erreur).__name__}: {erreur} — {_ou(erreur)}")
                 log.exception("Course du plan en échec (%d/%d)",
                               self.echecs_consecutifs, ECHECS_MAX)
                 self._prevenir(

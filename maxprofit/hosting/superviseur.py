@@ -150,8 +150,13 @@ class Superviseur:
                     "🔄 <b>Redémarrage du collecteur</b>\n\n"
                     "La connexion au broker est restée coupée trop longtemps. "
                     "Le processus repart à neuf et la collecte reprend seule.\n\n"
-                    "Les données déjà collectées sont dans Turso : rien n'est "
-                    "perdu."
+                    # ⚠ Disait « dans Turso ». Turso a été abandonné le
+                    # 2026-09-10 au profit de Neon, et ce message a survécu à
+                    # la migration : il rassurait en nommant une base qui
+                    # n'existe plus. Nommer la base plutôt que le fournisseur
+                    # évite que la prochaine migration le laisse mentir.
+                    "Les données déjà collectées sont dans la base distante : "
+                    "rien n'est perdu."
                 )
                 raise erreur
 
