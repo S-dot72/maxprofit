@@ -41,6 +41,8 @@ from maxprofit.research.rejeu import (                             # noqa: E402
     FENETRE_SEC, IndexBougies, IndexPayouts, generer_signaux, rejouer)
 from maxprofit.store.db import chemin_donnees, open_read_only      # noqa: E402
 from maxprofit.store.market import MarketReader                    # noqa: E402
+from maxprofit.strategies.rebond_mediane import (                  # noqa: E402
+    PARAMETRES_PAR_DEFAUT as PARAMETRES_REBOND, RebondMediane)
 from maxprofit.strategies.zone_h1 import (                         # noqa: E402
     PARAMETRES_PRE_INSCRITS, ZoneH1)
 
@@ -105,6 +107,30 @@ def _ligne(nom, r, debut, fin, valides) -> str:
             f"{_pct(perdues / closes if closes else None)}")
 
 
+def _variantes(args):
+    """(stratégie, garde de calibration, libellé) pour chaque réglage comparé.
+
+    La garde de calibration est celle de ZoneH1 : elle mesure sa tolérance
+    contre l'amplitude des bougies. RebondMediane s'exprime en écarts-types
+    de la bande, donc à l'échelle de chaque paire, et n'en a pas besoin.
+    """
+    if args.strategie == "rebond_mediane":
+        for fenetre in _liste(args.plus_haut, int):
+            yield (RebondMediane(replace(PARAMETRES_REBOND,
+                                         fenetre_plus_haut=fenetre)),
+                   lambda pair, f: True,
+                   f"rebond_mediane, plus haut sur {fenetre} bougies")
+        return
+    for entrees in _liste(args.entrees, int):
+        strategie = ZoneH1(replace(PARAMETRES_PRE_INSCRITS,
+                                   entrees_max_par_zone=entrees))
+        garde = SimpleNamespace(strategie=strategie)
+        yield (strategie,
+               lambda pair, f, _g=garde:
+               CoursePlanDemo._dans_sa_plage_de_calibration(_g, pair, f),
+               f"zone_h1, entrees_max_par_zone={entrees}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--debut", help="AAAA-MM-JJ (défaut : première bougie)")
@@ -113,17 +139,24 @@ def main() -> int:
                     help="Paires séparées par des virgules (défaut : toutes "
                          "celles qui ont assez de bougies)")
     ap.add_argument("--min-bougies", type=int, default=2000)
-    ap.add_argument("--echeances", default="60,120,180,300,600,900",
-                    help="Échéances en secondes, multiples de 60")
+    ap.add_argument("--strategie", choices=("zone_h1", "rebond_mediane"),
+                    default="zone_h1")
+    ap.add_argument("--echeances", default="",
+                    help="Échéances en secondes, multiples de 60 (défaut : "
+                         "1 à 15 min pour zone_h1, 1 min pour rebond_mediane)")
     ap.add_argument("--entrees", default=str(
         PARAMETRES_PRE_INSCRITS.entrees_max_par_zone),
-        help="Valeurs de entrees_max_par_zone à comparer")
+        help="zone_h1 : valeurs de entrees_max_par_zone à comparer")
+    ap.add_argument("--plus-haut", default="10,20,30",
+                    help="rebond_mediane : fenêtres du plus haut récent")
     ap.add_argument("--independance", type=int, default=DELAI_INDEPENDANCE_SEC)
     ap.add_argument("--validation-pct", type=float, default=30.0)
     args = ap.parse_args()
 
     charger_env_local()
-    echeances = _liste(args.echeances, int)
+    echeances = _liste(args.echeances or (
+        "60,120,180,300,600,900" if args.strategie == "zone_h1" else "60"),
+        int)
     if any(e % 60 for e in echeances):
         ap.error("les échéances doivent être des multiples de 60 s")
 
@@ -158,20 +191,13 @@ def main() -> int:
         "VALIDATION": (coupure, fin),
     }
 
-    for entrees in _liste(args.entrees, int):
-        strategie = ZoneH1(replace(PARAMETRES_PRE_INSCRITS,
-                                   entrees_max_par_zone=entrees))
-        garde = SimpleNamespace(strategie=strategie)
-
-        def calibration(pair, fenetre, _g=garde):
-            return CoursePlanDemo._dans_sa_plage_de_calibration(
-                _g, pair, fenetre)
+    for strategie, calibration, libelle in _variantes(args):
 
         t0 = time.monotonic()
         signaux = generer_signaux(
             bougies, strategie, calibration,
             progression=lambda p: print(f"  stratégie sur {p}…", end="\r"))
-        print(f"\nentrees_max_par_zone={entrees} : {len(signaux)} signaux en "
+        print(f"\n{libelle} : {len(signaux)} signaux en "
               f"{time.monotonic() - t0:.0f} s")
 
         for nom, (a, b) in parts.items():
@@ -189,9 +215,11 @@ def main() -> int:
                             independance_sec=args.independance,
                             attente_max_sec=ATTENTE_MAX_PAS_SEC)
                 repere = "  <- actuel" if (
-                    echeance == PARAMETRES_PRE_INSCRITS.expiry_sec
-                    and entrees == PARAMETRES_PRE_INSCRITS
-                    .entrees_max_par_zone) else ""
+                    strategie.params == ZoneH1().params
+                    and getattr(strategie.p, "entrees_max_par_zone", None)
+                    == PARAMETRES_PRE_INSCRITS.entrees_max_par_zone
+                    and echeance == PARAMETRES_PRE_INSCRITS.expiry_sec
+                ) else ""
                 print("  " + _ligne(f"{echeance // 60} min", r, a, b, decale)
                       + repere)
     print(f"\nSessions : ouvertes par fenêtre de 12 h (moyenne, médiane, "
