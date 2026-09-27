@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -192,6 +194,12 @@ class Execution:
                 - self.accepte_ts_ms) / 1000
 
 
+#: Le motif d'une ligne réservée et jamais complétée : un ordre PEUT-ÊTRE
+#: parti, dont on ne sait rien.
+RESERVE = "réservé : envoi en cours"
+PREFIXE_RESERVATION = "reserve-"
+
+
 class JournalExecution:
     """Le journal durable. Une base SQLite locale, comme le registre."""
 
@@ -274,6 +282,75 @@ class JournalExecution:
         # lever garde le journal utilisable sur les deux moteurs.
         return int(getattr(curseur, "lastrowid", 0) or 0)
 
+    def reserver(self, pair: str, sens: str, mise: float,
+                 expiration_sec: int) -> str:
+        """Inscrit l'ordre AVANT qu'il ne parte. Rend le jeton de la ligne.
+
+        ⚠ AUCUN ORDRE NE PART SANS SA LIGNE. L'ordre était écrit APRÈS son
+        départ : quand l'écriture a échoué (clé dupliquée, 2026-09-28), deux
+        pas de 3,31 $ ont couru chez le broker sans trace, et le second est
+        parti une minute après le premier, avant son dénouement — la course,
+        relancée, ignorait le premier. Désormais, si cette ligne ne s'écrit
+        pas, l'ordre n'est pas envoyé ; et une réservation dont l'issue est
+        inconnue bloque tout nouvel ordre.
+        """
+        jeton = f"{PREFIXE_RESERVATION}{uuid.uuid4().hex}"
+        maintenant = int(time.time() * 1000)
+        self.conn.execute(
+            """INSERT INTO executions
+                   (campagne, pair, sens, mise, signal_ts_ms, clic_ts_ms,
+                    prix_attendu, payout_flux_pct, expiration_sec, accepte,
+                    refus, order_id, brut)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.campagne, pair, sens, mise, maintenant, maintenant, 0.0,
+             0.0, expiration_sec, 0, RESERVE, jeton, "{}"))
+        self.conn.commit()
+        return jeton
+
+    def completer(self, jeton: str, ex: Execution) -> None:
+        """Remplace la réservation par l'ordre tel qu'il est parti."""
+        self.conn.execute(
+            """UPDATE executions
+               SET pair = ?, sens = ?, mise = ?, signal_ts_ms = ?,
+                   clic_ts_ms = ?, accepte_ts_ms = ?, prix_attendu = ?,
+                   prix_entree = ?, prix_sortie = ?, payout_flux_pct = ?,
+                   payout_broker_pct = ?, expiration_sec = ?,
+                   ouverture_ts_ms = ?, expiration_ts_ms = ?,
+                   decalage_broker_ms = ?, accepte = ?, refus = ?,
+                   resultat = ?, profit = ?, order_id = ?, brut = ?
+               WHERE campagne = ? AND order_id = ?""",
+            (ex.pair, ex.sens, ex.mise, ex.signal_ts_ms, ex.clic_ts_ms,
+             ex.accepte_ts_ms, ex.prix_attendu, ex.prix_entree,
+             ex.prix_sortie, ex.payout_flux_pct, ex.payout_broker_pct,
+             ex.expiration_sec, ex.ouverture_ts_ms, ex.expiration_ts_ms,
+             ex.decalage_broker_ms, 1 if ex.accepte else 0, ex.refus,
+             ex.resultat, ex.profit, ex.order_id or jeton,
+             json.dumps(ex.brut, ensure_ascii=False, default=str),
+             self.campagne, jeton))
+        self.conn.commit()
+
+    def reservations(self) -> list[tuple[str, int, str, str, float]]:
+        """(jeton, instant, paire, sens, mise) des ordres PEUT-ÊTRE partis :
+        réservés, jamais complétés."""
+        return [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), float(r[4]))
+                for r in self.conn.execute(
+                    "SELECT order_id, clic_ts_ms, pair, sens, mise "
+                    "FROM executions WHERE campagne = ? AND refus = ?",
+                    (self.campagne, RESERVE)).fetchall()]
+
+    def annuler_reservation(self, jeton: str, motif: str) -> None:
+        """L'ordre n'est pas parti : la ligne le dit, et ne bloque plus."""
+        self.conn.execute(
+            "UPDATE executions SET refus = ? WHERE campagne = ? "
+            "AND order_id = ?", (motif, self.campagne, jeton))
+        self.conn.commit()
+
+    def order_ids(self) -> set[str]:
+        """Les identifiants broker déjà au journal, toutes campagnes."""
+        return {str(r[0]) for r in self.conn.execute(
+            "SELECT order_id FROM executions WHERE order_id IS NOT NULL"
+        ).fetchall()}
+
     def mettre_a_jour(self, ex: Execution) -> None:
         """Complète un ordre DÉJÀ écrit, une fois son sort connu.
 
@@ -332,6 +409,8 @@ class JournalExecution:
         return float(ligne[0])
 
     def toutes(self) -> list[Execution]:
+        # `prix_attendu > 0` écarte les réservations jamais complétées : ce ne
+        # sont pas des ordres, seulement la trace d'un envoi tenté.
         lignes = self.conn.execute(
             """SELECT pair, sens, mise, signal_ts_ms, prix_attendu,
                       payout_flux_pct, expiration_sec, clic_ts_ms,
@@ -339,7 +418,8 @@ class JournalExecution:
                       prix_sortie, payout_broker_pct, expiration_ts_ms,
                       resultat, profit, brut, ouverture_ts_ms,
                       decalage_broker_ms
-               FROM executions WHERE campagne = ? ORDER BY id""",
+               FROM executions WHERE campagne = ? AND prix_attendu > 0
+               ORDER BY id""",
             (self.campagne,)).fetchall()
         return [
             Execution(

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -64,7 +65,8 @@ from maxprofit.core.errors import BotError
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.payout import PLAFOND_PCT, au_plafond
 from maxprofit.core.types import Candle, Direction
-from maxprofit.execution.courtier import CourtierDemo
+from maxprofit.execution.courtier import (
+    CourtierDemo, execution_depuis_deal, trouver_deal)
 from maxprofit.execution.journal import JournalExecution
 from maxprofit.plan import (
     Arret,
@@ -184,6 +186,10 @@ FRAICHEUR_MAX_SEC = 90
 #: nouvelles : une bougie écrite incomplète lors d'une coupure peut être
 #: réécrite ensuite.
 RECOUVREMENT_CACHE_SEC = 300
+
+#: Au-delà de l'échéance, délai laissé au broker avant de confronter une
+#: réservation restée sans issue à la liste de ses ordres clôturés.
+MARGE_CONFIRMATION_SEC = 120
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
 #: paires que nous collectons ne comptent pas : leur historique est dans
@@ -457,6 +463,12 @@ class CoursePlanDemo:
         self.delais_evaluation: deque[float] = deque(maxlen=200)
         self.delais_clic: deque[float] = deque(maxlen=50)
         self._fin_bougie_du_signal: int | None = None
+        #: Posé par `/rapatrier` (autre thread) : la session en cours sera
+        #: close au prochain passage, puisque des ordres importés en ont
+        #: changé le solde.
+        self.demande_interruption = threading.Event()
+        #: Pourquoi aucun ordre ne part en ce moment, s'il y a une raison.
+        self.attente_confirmation: str | None = None
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
         # Les bougies des paires collectées viennent de la base, mais
@@ -911,14 +923,33 @@ class CoursePlanDemo:
             self._suivre_au_mieux(signal.pair)
 
         sens = "call" if signal.direction is Direction.CALL else "put"
+        # ⚠ LA LIGNE D'ABORD, L'ORDRE ENSUITE. Voir `JournalExecution.reserver`.
+        try:
+            jeton = self.journal.reserver(signal.pair, sens, mise,
+                                          self.strategie.p.expiry_sec)
+        except Exception as erreur:              # noqa: BLE001
+            log.exception("Journal inaccessible : l'ordre n'est PAS envoyé")
+            self._prevenir(
+                f"⛔ Ordre {signal.pair} {sens} {mise:.2f} $ NON envoyé : le "
+                f"journal refuse l'écriture ({erreur}). Aucun ordre ne part "
+                f"sans sa ligne.")
+            return
         entree = int(time.time())
         self.etat.trade_en_cours = (
             signal.pair, sens, mise, entree + self.strategie.p.expiry_sec)
         try:
             execution = self.courtier.placer(
                 signal.pair, sens, self.strategie.p.expiry_sec, mise=mise)
-        except BaseException:
+        except BaseException as erreur:
+            # `placer` ne lève qu'AVANT l'envoi (plafonds, prix, payout) : la
+            # bibliothèque avale ce qui arrive après, et le courtier en fait
+            # un refus. L'ordre n'est donc pas parti.
             self.etat.trade_en_cours = None
+            try:
+                self.journal.annuler_reservation(
+                    jeton, f"non envoyé : {type(erreur).__name__}: {erreur}")
+            except Exception:                    # noqa: BLE001
+                log.exception("Réservation %s non annulée", jeton)
             raise
         if self._fin_bougie_du_signal is not None:
             self.delais_clic.append(
@@ -928,7 +959,7 @@ class CoursePlanDemo:
             log.warning("Ordre refusé (%s) : le pas n'est pas joué.",
                         execution.refus)
             self.etat.trade_en_cours = None
-            self._journaliser(execution)
+            self._journaliser(jeton, execution)
             self._noter_un_refus(signal.pair, execution.refus)
             return
         # ⚠ ÉCRIRE MAINTENANT, avant les quinze minutes d'attente.
@@ -939,7 +970,7 @@ class CoursePlanDemo:
         # dénouement — cinq ordres exécutés chez le broker, zéro dans nos
         # livres, et un solde de plan resté à 250 $ pendant que le compte
         # réel bougeait.
-        journalise = self._journaliser(execution)
+        journalise = self._journaliser(jeton, execution)
         # ⚠ DATÉ DE L'ENTRÉE, PAS DU DÉNOUEMENT.
         #
         # La règle d'indépendance (#68) veut le pas suivant « au moins quinze
@@ -962,7 +993,7 @@ class CoursePlanDemo:
         if not journalise:
             # Second essai, avec le dénouement : l'ordre entre au journal
             # complet, et le solde du plan en tient compte.
-            self._journaliser(execution)
+            self._journaliser(jeton, execution)
         else:
             try:
                 self.journal.mettre_a_jour(execution)
@@ -1095,6 +1126,14 @@ class CoursePlanDemo:
         """
         self.rafraichir_le_solde()
         self._purger_la_quarantaine()
+        if self.demande_interruption.is_set():
+            self.demande_interruption.clear()
+            if self.etat.session is not None and self.etat.trade_en_cours is None:
+                self._interrompre_la_session(
+                    "des ordres rapatriés du broker ont changé le solde")
+                return True
+        if self._un_ordre_reste_a_confirmer():
+            return False
         if self.etat.session is None:
             arret = self.peut_ouvrir()
             if arret is not None:
@@ -1120,18 +1159,17 @@ class CoursePlanDemo:
         self.jouer_un_pas(signal)
         return True
 
-    def _journaliser(self, execution) -> bool:
-        """Écrit l'ordre au journal. Rend False si l'écriture a échoué.
+    def _journaliser(self, jeton: str, execution) -> bool:
+        """Complète la réservation `jeton` avec l'ordre tel qu'il est parti.
+        Rend False si l'écriture a échoué.
 
-        ⚠ NE LÈVE PAS, PARCE QUE L'ORDRE EST DÉJÀ PARTI. Une écriture ratée
-        après `placer()` faisait tomber la course : l'ordre courait chez le
-        broker sans trace dans le journal, et la session en cours était
-        perdue (« duplicate key value violates unique constraint
-        executions_pkey », 2026-09-28). On prévient, on suit l'ordre jusqu'à
-        son dénouement, et l'on réessaie alors.
+        ⚠ NE LÈVE PAS, PARCE QUE L'ORDRE EST DÉJÀ PARTI. La réservation, elle,
+        est en base : même si ce complément échoue et que le processus meurt,
+        la reprise sait qu'un ordre a pu partir et n'en placera aucun avant
+        d'en connaître l'issue.
         """
         try:
-            self.journal.ecrire(execution)
+            self.journal.completer(jeton, execution)
             return True
         except Exception as erreur:              # noqa: BLE001
             log.exception("Ordre %s NON journalisé", execution.order_id)
@@ -1140,6 +1178,58 @@ class CoursePlanDemo:
                 f"{execution.mise:.2f} $ (id {execution.order_id}) parti "
                 f"chez le broker mais NON enregistré au journal : {erreur}")
             return False
+
+    def _un_ordre_reste_a_confirmer(self) -> bool:
+        """Vrai tant qu'une réservation n'a pas d'issue connue.
+
+        ⚠ LE PAS SUIVANT ATTEND LE SORT DU PRÉCÉDENT, TOUJOURS. Deux pas de
+        3,31 $ sont partis à une minute d'intervalle, le second avant le
+        dénouement du premier : la course relancée ignorait qu'un ordre
+        courait. Une réservation sans issue, c'est un ordre PEUT-ÊTRE parti :
+        on attend son échéance, puis on le cherche chez le broker.
+        """
+        try:
+            reservations = self.journal.reservations()
+        except Exception as erreur:              # noqa: BLE001
+            self.attente_confirmation = f"journal illisible ({erreur})"
+            return True
+        maintenant = time.time() * 1000
+        delai = (self.strategie.p.expiry_sec + MARGE_CONFIRMATION_SEC) * 1000
+        for jeton, instant, pair, sens, mise in reservations:
+            if maintenant - instant < delai:
+                reste = int((instant + delai - maintenant) / 1000)
+                self.attente_confirmation = (
+                    f"ordre {pair} {sens} {mise:.2f} $ peut-être parti, issue "
+                    f"inconnue : aucun ordre avant {reste} s")
+                return True
+            self._eclaircir(jeton, instant, pair, sens, mise)
+        self.attente_confirmation = None
+        return False
+
+    def _eclaircir(self, jeton: str, instant: int, pair: str, sens: str,
+                   mise: float) -> None:
+        """Une réservation échue : l'ordre est-il parti ? Le broker le dit."""
+        try:
+            deals = self.courtier.ordres_clotures()
+        except Exception as erreur:              # noqa: BLE001
+            log.warning("Ordres clôturés indisponibles : %s", erreur)
+            deals = []
+        retrouve = trouver_deal(deals, pair, mise, instant)
+        if retrouve is not None and retrouve.order_id not in \
+                self.journal.order_ids():
+            self.journal.completer(jeton, retrouve)
+            self._prevenir(
+                f"🔎 Ordre retrouvé chez le broker : {pair} {sens} "
+                f"{mise:.2f} $ → {retrouve.resultat} "
+                f"{retrouve.profit or 0:+.2f} $. Il entre au journal.")
+            if self.etat.session is not None and self.etat.trade_en_cours is None:
+                self._interrompre_la_session(
+                    "un ordre retrouvé chez le broker a changé le solde")
+            return
+        self.journal.annuler_reservation(jeton, "non confirmé par le broker")
+        self._prevenir(
+            f"⚠ {pair} {sens} {mise:.2f} $ : réservé mais introuvable chez le "
+            f"broker, considéré comme non parti. /rapatrier pour vérifier.")
 
     def _sauvegarder(self) -> None:
         """Fige l'état tout de suite. Ne doit jamais faire tomber la course."""
@@ -1188,8 +1278,10 @@ class CoursePlanDemo:
             return False
         return int(time.time()) - dernier[1] > ATTENTE_MAX_PAS_SEC
 
-    def _interrompre_la_session(self) -> None:
-        """Aucun pas éligible depuis trop longtemps : on solde et on repart.
+    def _interrompre_la_session(self, motif: str | None = None) -> None:
+        """On solde et on repart — faute de pas éligible depuis trop
+        longtemps, ou parce que des ordres retrouvés chez le broker ont
+        changé le solde sous la session.
 
         Interrompue et non perdue : elle n'a coûté que les pas déjà joués.
         Mais elle EST comptée — une session abandonnée dont les mises
@@ -1197,9 +1289,10 @@ class CoursePlanDemo:
         """
         session = self.etat.session
         log.warning(
-            "Session interrompue : aucun pas indépendant depuis %.0f min. "
-            "%d pas joué(s), %.2f $ engagé(s).",
-            ATTENTE_MAX_PAS_SEC / 60, session.pas_joues, session.engage)
+            "Session interrompue : %s. %d pas joué(s), %.2f $ engagé(s).",
+            motif or f"aucun pas indépendant depuis "
+                     f"{ATTENTE_MAX_PAS_SEC / 60:.0f} min",
+            session.pas_joues, session.engage)
         session.interrompre()
         self.etat.sessions_interrompues += 1
         self._cloturer_session()
@@ -1404,6 +1497,8 @@ class CoursePlanDemo:
     def resume(self) -> str:
         j = self.etat.journee
         e = self.etat
+        if self.attente_confirmation:
+            return f"⏸ EN ATTENTE — {self.attente_confirmation}"
         if e.trade_en_cours is not None:
             paire, sens, mise, expire = e.trade_en_cours
             reste = max(0, expire - int(time.time()))
@@ -1660,6 +1755,78 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         session.engagees = [float(x) for x in engagees]
         etat.session = session
     return etat, int(ligne[5])
+
+
+def ordres_absents(courtier, journal, depuis_ms: int) -> list:
+    """Les ordres clôturés du broker, depuis `depuis_ms`, absents du journal.
+
+    Le compte démo peut porter aussi des ordres passés à la main : rien
+    n'est donc importé sans qu'un opérateur l'ait choisi (`/rapatrier`).
+    """
+    connus = journal.order_ids()
+    absents = [ex for ex in (execution_depuis_deal(d)
+                             for d in courtier.ordres_clotures())
+               if ex is not None and ex.order_id not in connus
+               and ex.clic_ts_ms >= depuis_ms]
+    return sorted(absents, key=lambda e: e.clic_ts_ms)
+
+
+def rapatrier(course, argument: str, ouvrir=None) -> str:
+    """`/rapatrier` : liste, puis importe sur choix, les ordres du broker
+    absents du journal depuis le départ de la campagne.
+
+    Rien n'est importé d'office : le compte démo peut porter des ordres
+    passés à la main, qui n'ont rien à faire dans le plan. Importer ferme la
+    session en cours, dont le solde vient de changer sous elle.
+
+    Sa propre connexion à la base : celle de la course sert dans un autre
+    thread, et une connexion ne se partage pas entre deux threads.
+    """
+    from datetime import datetime, timezone
+
+    from pathlib import Path
+
+    from maxprofit.store.db import open_read_write
+
+    if course is None:
+        return "La course n'est pas connectée au broker : rien à comparer."
+    conn = ouvrir() if ouvrir else open_read_write(Path("ecriture"))
+    try:
+        journal = JournalExecution(conn, course.journal.campagne)
+        absents = ordres_absents(course.courtier, journal,
+                                 (course.etat.demarre_ts or 0) * 1000)
+        if not absents:
+            return ("✅ Aucun ordre du broker n'est absent du journal depuis "
+                    "le départ de la campagne.")
+        if not argument:
+            lignes = [
+                f"{i}. {datetime.fromtimestamp(e.clic_ts_ms / 1000, timezone.utc):%d/%m %H:%M} "
+                f"UTC · {e.pair} {e.sens.upper()} {e.mise:.2f} $ → "
+                f"{e.resultat} {e.profit or 0:+.2f} $"
+                for i, e in enumerate(absents, 1)]
+            return ("<b>Ordres du broker absents du journal</b>\n"
+                    + "\n".join(lignes)
+                    + "\n\nN'importez que ceux du bot, pas ceux passés à la "
+                      "main.\n/rapatrier 1 2 pour choisir, /rapatrier tout "
+                      "pour tous.")
+        if argument.lower() == "tout":
+            choix = list(range(1, len(absents) + 1))
+        else:
+            try:
+                choix = sorted({int(x) for x in argument.replace(",", " ").split()})
+            except ValueError:
+                return "Numéros illisibles. Exemple : /rapatrier 1 2"
+            if not choix or not all(1 <= i <= len(absents) for i in choix):
+                return f"Numéros entre 1 et {len(absents)}, s'il vous plaît."
+        for i in choix:
+            journal.ecrire(absents[i - 1])
+        course.demande_interruption.set()
+        total = sum(absents[i - 1].profit or 0 for i in choix)
+        return (f"✅ {len(choix)} ordre(s) importé(s), {total:+.2f} $ au "
+                f"total. La session en cours sera close au prochain passage : "
+                f"le plan repart du solde réel.")
+    finally:
+        conn.close()
 
 
 def _resoudre_les_ordres_en_vol(course, courtier, journal) -> None:

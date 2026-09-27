@@ -52,7 +52,7 @@ from maxprofit.hosting.course import (
     SuperviseurCourse, course_activee, date_de_depart)
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.live.plan_demo import (
-    UNIVERS_PRE_INSCRIT, fabriquer_course)
+    UNIVERS_PRE_INSCRIT, fabriquer_course, rapatrier)
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -226,6 +226,9 @@ async def _servir(args) -> int:
             bot._installer_jeton = superviseur.installer_jeton
             bot._paires = lambda: _paires(superviseur)
             bot._diagnostic = lambda: _diagnostic(superviseur)
+            bot._rapatrier = lambda argument: asyncio.to_thread(
+                rapatrier, getattr(_course.get("sup"), "_course", None),
+                argument)
 
         # Le serveur est démarré APRÈS le superviseur, pour lui passer
         # l'installateur à la construction : aiohttp déprécie la modification

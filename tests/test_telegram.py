@@ -523,3 +523,73 @@ def test_start_figure_dans_le_menu():
     noms = [nom for nom, _ in COMMANDES]
     assert "start" in noms
     assert noms[0] == "start", "la porte d'entree doit venir en premier"
+
+
+# --------------------------------------------------------------------------- #
+# /rapatrier
+# --------------------------------------------------------------------------- #
+
+def test_rapatrier_est_reserve_aux_administrateurs(tmp_path):
+    client = FauxClient()
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+
+    async def rapatrier(argument):
+        appels.append(argument)
+        return "liste"
+
+    bot._rapatrier = rapatrier
+    _traiter(bot, _message("/rapatrier", chat=INTRUS))
+    assert appels == []
+    _traiter(bot, _message("/rapatrier 1 2"))
+    assert appels == ["1 2"] and client.envoyes[-1] == (CHAT, "liste")
+
+
+def test_rapatrier_liste_puis_importe_et_clot_la_session(tmp_path):
+    """Les deux pas de 3,31 $ partis sans trace : listés, importés sur choix,
+    et la session en cours close pour repartir du solde réel."""
+    import sqlite3
+    import threading
+    from types import SimpleNamespace
+
+    from maxprofit.execution.journal import JournalExecution
+    from maxprofit.live.plan_demo import rapatrier
+
+    base = tmp_path / "e.db"
+    JournalExecution(base, campagne="plan").close()
+
+    def deal(i, ouverture):
+        return {"id": i, "asset": "EURUSD_otc", "amount": 3.31, "command": 1,
+                "openTimestamp": ouverture, "closeTimestamp": ouverture + 900,
+                "openPrice": 1.1, "closePrice": 1.2, "profit": 0}
+
+    course = SimpleNamespace(
+        journal=SimpleNamespace(campagne="plan"),
+        etat=SimpleNamespace(demarre_ts=1_790_000_000),
+        courtier=SimpleNamespace(ordres_clotures=lambda: [
+            deal("po-1", 1_790_000_100), deal("po-2", 1_790_000_160)]),
+        demande_interruption=threading.Event())
+
+    def ouvrir():
+        return sqlite3.connect(str(base))
+
+    liste = rapatrier(course, "", ouvrir)
+    assert "1." in liste and "2." in liste and "EURUSD_otc PUT 3.31" in liste
+    assert "importé" in rapatrier(course, "tout", ouvrir)
+    assert course.demande_interruption.is_set()
+    relu = JournalExecution(base, campagne="plan")
+    assert sorted(e.order_id for e in relu.toutes()) == ["po-1", "po-2"]
+    assert relu.profits_du_plan() == -6.62
+    relu.close()
+    assert "Aucun ordre" in rapatrier(course, "", ouvrir)
+
+
+def test_diag_refuse_un_observateur_SANS_faire_tomber_le_bot(tmp_path):
+    """`REFUS_ADMIN` n'existait pas : un observateur qui tapait /diag faisait
+    lever une NameError au bot."""
+    client = FauxClient()
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    _traiter(bot, _message("/diag", chat=INTRUS))
+    assert client.envoyes and client.envoyes[-1][0] == INTRUS
