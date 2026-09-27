@@ -20,6 +20,7 @@ import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -292,6 +293,12 @@ FATALES = (sqlite3.ProgrammingError, sqlite3.IntegrityError, BotError,
 #: Plafond de la pause qui suit une écriture en base ratée.
 PAUSE_BASE_MAX_SEC = 300
 
+#: Levé dès que des bougies CLOSES viennent d'être écrites en base. La course
+#: du plan, qui tourne dans le même processus, l'attend pour évaluer une bougie
+#: dans les secondes qui suivent sa clôture — au lieu de la découvrir au bout
+#: d'une pause fixe de vingt secondes.
+BOUGIES_ECRITES = threading.Event()
+
 
 def _erreur_de_base(erreur: BaseException) -> bool:
     """L'erreur vient-elle du pilote de base plutôt que du broker ?
@@ -460,6 +467,8 @@ class Collector:
         # accumulerait sans fin sans jamais rien pousser vers Turso. En sqlite3
         # autocommit, c'est sans effet.
         valider(self.conn)
+        if n_c:
+            BOUGIES_ECRITES.set()
         if n_t or n_c:
             log.debug("flush: %d minute(s) de ticks, %d bougies", n_t, n_c)
         self._pause_base = 0

@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
@@ -178,6 +179,11 @@ RAPPORT_TOLERANCE_MAX = 4.0
 FENETRE_AMPLITUDE = 60
 
 FRAICHEUR_MAX_SEC = 90
+
+#: Minutes relues à chaque rafraîchissement du cache des bougies, en plus des
+#: nouvelles : une bougie écrite incomplète lors d'une coupure peut être
+#: réécrite ensuite.
+RECOUVREMENT_CACHE_SEC = 300
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
 #: paires que nous collectons ne comptent pas : leur historique est dans
@@ -440,6 +446,16 @@ class CoursePlanDemo:
         #: La journée UTC que la course croit être en cours. 0 = pas encore
         #: établie ; le premier passage la pose sans rien déclencher.
         self.jour_utc_courant = 0
+        #: Les bougies des paires collectées, gardées d'un passage à l'autre :
+        #: seul ce qui est nouveau est relu. Voir `_rafraichir_le_cache`.
+        self._cache_bougies: dict[str, list[Candle]] = {}
+        self._cache_fin: int | None = None
+        #: Secondes entre la clôture d'une bougie et son évaluation, puis
+        #: entre la clôture et le clic : les deux délais que la vitesse de
+        #: la course doit réduire. Les derniers seulement — c'est une jauge.
+        self.delais_evaluation: deque[float] = deque(maxlen=200)
+        self.delais_clic: deque[float] = deque(maxlen=50)
+        self._fin_bougie_du_signal: int | None = None
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
         # Les bougies des paires collectées viennent de la base, mais
@@ -502,12 +518,63 @@ class CoursePlanDemo:
 
         C'est aussi la source du backtest : sur ces paires, le direct
         redevient comparable à l'hypothèse pré-inscrite.
+
+        Lues dans le cache que `_rafraichir_le_cache` tient à jour.
         """
-        fin = self.lecteur.last_candle_ts_sec()
-        if fin is None:
+        if paire not in self._cache_bougies:
+            self._rafraichir_le_cache()
+        if self._cache_fin is None:
             return []
-        bougies = self.lecteur.candles(paire, 60, fin - n * 60, fin + 60)
-        return [b for b in bougies if b.complete]
+        # La même fenêtre que la requête d'origine, [fin - n min, fin] :
+        # la stratégie doit voir exactement les bougies qu'elle voyait.
+        plancher = self._cache_fin - n * 60
+        return [b for b in self._cache_bougies.get(paire, ())
+                if b.complete and b.ts_sec >= plancher]
+
+    def _rafraichir_le_cache(self) -> None:
+        """Relit les bougies des paires collectées — seulement les nouvelles.
+
+        ⚠ C'ÉTAIT L'ESSENTIEL DU TEMPS D'UN PASSAGE. Chaque paire coûtait deux
+        requêtes à la base distante — le dernier horodatage, puis ses 300
+        dernières bougies — à chaque passage, même quand rien n'avait changé :
+        une vingtaine d'allers-retours et 3 000 lignes pour dix paires. On
+        relit désormais toutes les paires en UNE requête, depuis la dernière
+        bougie connue.
+
+        Les dernières minutes sont relues quand même (`RECOUVREMENT_CACHE_SEC`)
+        : une bougie écrite incomplète à une coupure peut être réécrite.
+        """
+        paires = self.paires_collectees
+        n = self.strategie.p.lookback
+        if self._cache_fin is None:
+            fin = self.lecteur.last_candle_ts_sec()
+            if fin is None:
+                return
+            depuis = fin - n * 60
+        else:
+            depuis = self._cache_fin - RECOUVREMENT_CACHE_SEC
+        try:
+            fraiches = self.lecteur.candles_de(paires, 60, depuis)
+        except BotError as erreur:
+            # Une ligne illisible écartait autrefois UNE paire ; lue en bloc,
+            # elle ne doit pas priver toutes les autres de leurs bougies.
+            log.warning("Bougies collectées illisibles, cache conservé : %s",
+                        erreur)
+            return
+        for paire in paires:
+            gardees = [b for b in self._cache_bougies.get(paire, ())
+                       if b.ts_sec < depuis]
+            self._cache_bougies[paire] = gardees + fraiches.get(paire, [])
+        fin = max((c[-1].ts_sec for c in self._cache_bougies.values() if c),
+                  default=self._cache_fin)
+        if fin is None:
+            return
+        self._cache_fin = fin
+        plancher = fin - n * 60
+        for paire, bougies in self._cache_bougies.items():
+            if bougies and bougies[0].ts_sec < plancher:
+                self._cache_bougies[paire] = [
+                    b for b in bougies if b.ts_sec >= plancher]
 
     def _bougies_de(self, paire: str) -> list[Candle]:
         """La source dépend du MODE, et ce n'est pas un détail.
@@ -569,6 +636,7 @@ class CoursePlanDemo:
         """
         maintenant = int(time.time())
         candidats = self.univers()
+        self._rafraichir_le_cache()
         # Les paires écartées sortent de la course. Filtrer ICI plutôt que
         # dans `univers()` garde le catalogue des payouts intact :
         # `univers_taille` doit continuer à dire combien d'actifs paient le
@@ -653,6 +721,8 @@ class CoursePlanDemo:
             self.etat.derniere_bougie[paire] = derniere.ts_sec
             self.etat.bougies_evaluees += 1
             self.etat.derniere_evaluation_ts = maintenant
+            self.delais_evaluation.append(
+                time.time() - (derniere.ts_sec + 60))
             # La bougie close à ts_sec couvre [ts_sec, ts_sec+60[. Le signal
             # est donc daté de sa FIN, et c'est de là qu'on compte la
             # fraîcheur — pas de son début.
@@ -680,6 +750,7 @@ class CoursePlanDemo:
             self.etat.signaux_trouves += 1
             self.etat.paires_sans_historique = sans_historique
             self.etat.paires_hors_calibration = hors_calibration
+            self._fin_bougie_du_signal = derniere.ts_sec + 60
             return signal
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
@@ -737,32 +808,15 @@ class CoursePlanDemo:
         entre les deux signale une activité manuelle sur le compte, et il vaut
         mieux la voir que l'absorber.
         """
+        # Une seule ligne demandée à la base, et non tout le journal : relire
+        # et décoder chaque ordre (réponse brute du broker comprise) à chaque
+        # passage coûtait de plus en plus cher à mesure que la course avance.
+        # La règle de calcul est dans `JournalExecution.profits_du_plan`.
         try:
-            ordres = self.journal.toutes()
+            profits = self.journal.profits_du_plan()
         except Exception as erreur:              # noqa: BLE001
             log.warning("Journal illisible : %s", erreur)
             return
-        profits = 0.0
-        for e in ordres:
-            if not e.accepte:
-                # Refusé : rien n'est sorti du compte. Le compter coûterait
-                # une mise que le broker n'a jamais prise.
-                continue
-            if e.resultat in ("win", "loose", "draw"):
-                profits += e.profit or 0.0
-            else:
-                # ⚠ PLACÉ, PAS ENCORE DÉNOUÉ — ou dénoué en « unknown ».
-                #
-                # L'argent est SORTI du compte : le broker l'a débité au clic
-                # et ne le rendra qu'à l'échéance, augmenté ou pas. Ne rien
-                # compter ferait afficher un solde que le compte n'a pas
-                # pendant les quinze minutes de l'option, et indéfiniment
-                # pour un ordre dont le résultat ne revient jamais.
-                #
-                # On retire donc la mise. Un gagnant la rend au dénouement,
-                # avec son gain ; un « unknown » la laisse retirée, ce qui
-                # est la lecture prudente et la seule qui ne promette rien.
-                profits -= e.mise
         solde = self.etat.plan.capital_initial + profits
         self.etat.solde = solde
         if self.etat.journee is not None:
@@ -853,6 +907,10 @@ class CoursePlanDemo:
         except BaseException:
             self.etat.trade_en_cours = None
             raise
+        if self._fin_bougie_du_signal is not None:
+            self.delais_clic.append(
+                execution.clic_ts_ms / 1000 - self._fin_bougie_du_signal)
+            self._fin_bougie_du_signal = None
         if not execution.accepte:
             log.warning("Ordre refusé (%s) : le pas n'est pas joué.",
                         execution.refus)
@@ -1375,7 +1433,22 @@ class CoursePlanDemo:
                 f"{e.signaux_trouves} retenu(s), {e.pas_sautes_independance} "
                 f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
                 f"lecture il y a {age} s{ecartees}{debit}"
+                f"{self._reactivite()}"
                 f"{' | ' + attente if attente else ''}")
+
+    def _reactivite(self) -> str:
+        """Délai médian et maximal entre la clôture d'une bougie et son
+        évaluation, puis le clic. C'est la mesure de la vitesse de la course."""
+        morceaux = []
+        for nom, delais in (("évaluation", self.delais_evaluation),
+                            ("clic", self.delais_clic)):
+            if delais:
+                tries = sorted(delais)
+                morceaux.append(f"{nom} {tries[len(tries) // 2]:.1f} s "
+                                f"(max {tries[-1]:.1f} s)")
+        if not morceaux:
+            return ""
+        return " | après clôture : " + ", ".join(morceaux)
 
 
 def nouveau_jour(etat: Etat) -> None:

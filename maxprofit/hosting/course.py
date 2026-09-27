@@ -105,10 +105,17 @@ class SuperviseurCourse:
     """
 
     def __init__(self, fabriquer, *, alerter=None, pause_sec: float = 20.0,
-                 debut_ts_sec: int | None = None):
+                 debut_ts_sec: int | None = None,
+                 reveil: threading.Event | None = None):
         self._fabriquer = fabriquer
         self._alerter = alerter
+        #: Attente MAXIMALE entre deux passages sans ordre.
         self.pause_sec = pause_sec
+        #: Levé quand des bougies closes arrivent en base. La course se
+        #: réveille dessus : une pause fixe de vingt secondes faisait évaluer
+        #: chaque bougie en moyenne dix secondes après sa clôture, jusqu'à
+        #: vingt-deux, alors qu'elle est en base deux secondes après.
+        self._reveil = reveil
         #: Instant avant lequel la course ATTEND, sans rien placer.
         #:
         #: Elle existe parce que la première version obligeait l'opérateur à
@@ -148,6 +155,17 @@ class SuperviseurCourse:
     def arreter(self) -> None:
         self._arret.set()
         self.active = False
+        if self._reveil is not None:
+            self._reveil.set()
+
+    def _attendre_le_prochain_passage(self) -> None:
+        if self._reveil is None:
+            self._arret.wait(self.pause_sec)
+            return
+        self._reveil.wait(self.pause_sec)
+        # Effacé APRÈS le réveil : des bougies écrites pendant le passage
+        # suivant relèveront le drapeau, et ne seront pas manquées.
+        self._reveil.clear()
 
     # --- la boucle, et son confinement --------------------------------------
 
@@ -191,7 +209,7 @@ class SuperviseurCourse:
                     # qui attendait simplement un signal.
                     self._dernier_resume = course.resume()
                     if not joue:
-                        self._arret.wait(self.pause_sec)
+                        self._attendre_le_prochain_passage()
                 return
             except BaseException as erreur:      # noqa: BLE001
                 # TOUT est avalé, y compris ce qui serait fatal ailleurs.
