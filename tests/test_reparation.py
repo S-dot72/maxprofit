@@ -105,3 +105,35 @@ def test_de_bout_en_bout_sur_une_base_CASSEE_comme_en_production(
         "'{}')")
     from maxprofit.store.reparation import _lire_la_base, planifier as plan
     assert plan(*_lire_la_base(rouverte)) == [], "plus rien à réparer"
+
+
+@pytest.mark.skipif(not URL, reason="MAXPROFIT_PG_TEST_URL non défini")
+def test_un_compteur_d_ordres_EN_RETARD_est_recale(monkeypatch, tmp_path):
+    """Production, 2026-09-28 : « duplicate key value violates unique
+    constraint executions_pkey — Key (id)=(3) already exists ». Les lignes
+    avaient survécu au réimport, la séquence était repartie de 1."""
+    from maxprofit.store.db import open_read_write
+
+    monkeypatch.setenv("DATABASE_URL", URL)
+    conn = open_read_write(tmp_path / "x")
+    conn.execute("TRUNCATE executions")
+    insertion = (
+        "INSERT INTO executions (id, campagne, pair, sens, mise, "
+        "signal_ts_ms, clic_ts_ms, prix_attendu, payout_flux_pct, "
+        "expiration_sec, accepte, brut) VALUES (?, 't', 'EURUSD_otc', "
+        "'call', 1.0, 1, 2, 1.1, 92, 900, 1, '{}')")
+    for i in (1, 2, 3):
+        conn.execute(insertion, (i,))
+    sequence = conn.execute(
+        "SELECT pg_get_serial_sequence('executions', 'id')").fetchone()[0]
+    conn.execute(f"SELECT setval('{sequence}', 1, false)")
+
+    rouverte = open_read_write(tmp_path / "x")
+    rouverte.execute(
+        "INSERT INTO executions (campagne, pair, sens, mise, signal_ts_ms, "
+        "clic_ts_ms, prix_attendu, payout_flux_pct, expiration_sec, accepte, "
+        "brut) VALUES ('t', 'EURUSD_otc', 'call', 1.0, 1, 2, 1.1, 92, 900, 1, "
+        "'{}')")
+    assert rouverte.execute("SELECT MAX(id) FROM executions").fetchone()[0] == 4
+    from maxprofit.store.reparation import recaler_la_numerotation
+    assert recaler_la_numerotation(rouverte) is None, "rien de plus à faire"

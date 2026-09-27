@@ -186,4 +186,40 @@ def reparer_le_schema(conn) -> list[str]:
             log.error("Réparation du schéma échouée — %s : %s",
                       description, erreur)
             bilan.append(f"ÉCHEC {description} : {erreur}")
+    try:
+        recale = recaler_la_numerotation(conn)
+    except Exception as erreur:                          # noqa: BLE001
+        log.error("Numérotation des ordres non vérifiée : %s", erreur)
+        recale = None
+    if recale:
+        log.warning("Schéma réparé — %s", recale)
+        bilan.append(recale)
     return bilan
+
+
+def recaler_la_numerotation(conn) -> str | None:
+    """Remet le compteur des ordres AU-DESSUS du plus grand id existant.
+
+    ⚠ UN COMPTEUR PRÉSENT MAIS EN RETARD. Après le réimport, `executions`
+    avait gardé ses lignes (ids 1 à 3) mais sa séquence était repartie de 1 :
+    le premier ordre suivant a reçu l'id 3 et « duplicate key value violates
+    unique constraint executions_pkey » a fait tomber la course — APRÈS que
+    l'ordre était parti chez le broker, donc sans trace dans le journal.
+
+    Rend la description du recalage, ou None s'il n'y avait rien à faire.
+    """
+    ligne = conn.execute(
+        "SELECT pg_get_serial_sequence('executions', 'id')").fetchone()
+    sequence = ligne[0] if ligne else None
+    if not sequence:
+        return None
+    plus_grand = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM executions").fetchone()[0]
+    dernier, appele = conn.execute(
+        f"SELECT last_value, is_called FROM {sequence}").fetchone()
+    prochain = dernier + 1 if appele else dernier
+    if prochain > plus_grand:
+        return None
+    conn.execute("SELECT setval(?, ?, true)", (sequence, int(plus_grand)))
+    return (f"executions.id : le compteur proposait {prochain} alors que "
+            f"l'id {plus_grand} existe, recalé à {plus_grand + 1}")
