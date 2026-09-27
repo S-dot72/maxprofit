@@ -41,6 +41,7 @@ from maxprofit.collect.pocketoption import (
     SessionExpiree,
     SourceIndisponible,
     _forcer_region,
+    points_d_acces,
     installer_boucle_asyncio,
     verifier_ssid,
 )
@@ -104,11 +105,63 @@ class CourtierDemo:
         # principal en possédant une — c'est le déplacement dans un thread qui
         # l'a révélé, en production.
         self._boucle = installer_boucle_asyncio(getattr(self, "_boucle", None))
-        _forcer_region(demo=True)
-        # `demo=True` en dur : ce n'est pas un paramètre de cette classe.
-        self._client = PocketOption(demo=True, ssid=self.ssid)
-        self._client.connect()
 
+        # ⚠ LA CASCADE DE POINTS D'ACCÈS ÉTAIT DANS LE COLLECTEUR SEUL.
+        #
+        # Le broker publie deux adresses démo, la bibliothèque n'en essaie
+        # qu'une, et j'ai posé la cascade dans `PocketOptionSource` — qui sert
+        # à COLLECTER. Cette classe-ci a son propre code de connexion : elle
+        # est donc restée bloquée sur la première adresse, et la localisation
+        # des erreurs ajoutée pour l'occasion l'a désignée du doigt —
+        # « courtier.py:115 dans connecter() » — là où le message nu avait
+        # laissé chercher ailleurs.
+        #
+        # Corriger un chemin de connexion sur deux, c'est ne rien corriger :
+        # la collecte repartait et la course restait au sol.
+        adresses = points_d_acces(demo=True)
+        echecs: list[str] = []
+        for rang, nom in enumerate(adresses):
+            _forcer_region(demo=True, nom=nom)
+            try:
+                # `demo=True` en dur : ce n'est pas un paramètre de la classe.
+                self._client = PocketOption(demo=True, ssid=self.ssid)
+                self._client.connect()
+                self._attendre_le_socket()
+            except SourceIndisponible as erreur:
+                echecs.append(f"{nom} ({erreur})")
+                log.warning("Point d'accès %s injoignable (%d/%d) : %s",
+                            nom, rang + 1, len(adresses), erreur)
+                self._fermer_client_sans_bruit()
+                continue
+            if rang:
+                log.warning("Courtier connecté par le repli %s après %d "
+                            "échec(s).", nom, rang)
+            break
+        else:
+            raise SourceIndisponible(
+                "Aucun point d'accès n'a répondu. Tentés : "
+                + " | ".join(echecs or ["aucun"]))
+
+        self._verifier_authentification()
+
+    def _fermer_client_sans_bruit(self) -> None:
+        """Referme un client à moitié ouvert sans lever : on traite déjà un
+        échec, et une seconde erreur masquerait la première."""
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            client.close()
+        except Exception:                        # noqa: BLE001
+            log.debug("Fermeture du client du courtier en échec", exc_info=True)
+
+    def _attendre_le_socket(self) -> None:
+        """Attend l'ouverture du socket, ou lève.
+
+        Extrait pour que la cascade de points d'accès puisse le rejouer sur
+        l'adresse suivante : un socket qui n'ouvre pas est précisément le cas
+        où il faut changer de chemin.
+        """
         limite = time.monotonic() + DELAI_CONNEXION_SEC
         while time.monotonic() < limite:
             if getattr(self._globals, "check_websocket_if_error", False):
@@ -116,12 +169,12 @@ class CourtierDemo:
                     f"Erreur WebSocket à la connexion : "
                     f"{self._globals.websocket_error_reason}")
             if self._client.check_connect():
-                break
+                return
             time.sleep(0.2)
-        else:
-            raise SourceIndisponible(
-                f"Socket non ouvert après {DELAI_CONNEXION_SEC:.0f} s.")
+        raise SourceIndisponible(
+            f"Socket non ouvert après {DELAI_CONNEXION_SEC:.0f} s.")
 
+    def _verifier_authentification(self) -> None:
         # Le solde est le SEUL signal d'authentification : le catalogue des
         # actifs est diffusé à tout le monde, authentifié ou non. Sans ce
         # contrôle, on placerait des ordres qui ne partent nulle part.
