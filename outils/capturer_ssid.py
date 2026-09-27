@@ -306,6 +306,31 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
+def _diagnostiquer_404(base_url: str) -> str:
+    """Distingue « mauvaise URL » de « route fermée », en interrogeant /health.
+
+    Les deux rendent 404 et appellent des gestes opposés : corriger l'adresse,
+    ou définir un secret. Sans ce contrôle, le message accusait toujours le
+    secret — et il s'est trompé.
+    """
+    import urllib.error
+    import urllib.request
+
+    sonde = base_url.rstrip("/") + "/health"
+    try:
+        with urllib.request.urlopen(sonde, timeout=30) as reponse:
+            vivant = reponse.status == 200
+    except Exception:                            # noqa: BLE001
+        vivant = False
+    if vivant:
+        return ("Le service répond mais la route /session est fermée : "
+                "ADMIN_SECRET n'est pas défini côté serveur.")
+    return (f"{sonde} ne répond pas non plus : ce n'est pas l'URL de votre "
+            f"service. Prenez celle affichée en haut de sa page Render — le "
+            f"nom du service dans render.yaml n'est pas forcément son nom "
+            f"d'hôte.")
+
+
 def _envoyer_au_serveur(base_url: str, ssid: str) -> int:
     """POSTe le jeton au service hébergé.
 
@@ -348,8 +373,18 @@ def _envoyer_au_serveur(base_url: str, ssid: str) -> int:
             print("ADMIN_SECRET ne correspond pas à celui du serveur.",
                   file=sys.stderr)
         elif erreur.code == 404:
-            print("La route est désactivée : ADMIN_SECRET n'est pas défini "
-                  "côté serveur.", file=sys.stderr)
+            # ⚠ DEUX CAUSES TRÈS DIFFÉRENTES, ET CE MESSAGE N'EN VOYAIT QU'UNE.
+            #
+            # Il annonçait « ADMIN_SECRET n'est pas défini côté serveur », ce
+            # qui a coûté une fausse piste : le secret ÉTAIT défini, et l'URL
+            # était fausse. Render répond 404 pour un nom d'hôte qu'il ne
+            # route pas, exactement comme notre route répond 404 quand elle est
+            # désactivée.
+            #
+            # On les distingue en interrogeant `/health`, qui existe toujours :
+            # s'il répond, le service est là et c'est la route qui est fermée ;
+            # s'il ne répond pas, ce n'est pas notre service.
+            print(_diagnostiquer_404(base_url), file=sys.stderr)
         return 1
     except urllib.error.URLError as erreur:
         print(f"Serveur injoignable : {erreur.reason}", file=sys.stderr)
