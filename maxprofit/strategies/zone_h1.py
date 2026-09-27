@@ -71,6 +71,55 @@ class Parametres:
     memoire: int
     #: Heures closes de recul pour juger la tendance.
     recul_h1: int
+    #: Entrées déjà offertes par une zone au-delà desquelles on ne la joue plus.
+    #:
+    #: ⚠ LA CONDITION LA PLUS DISCRIMINANTE MESURÉE SUR CE PROJET, et elle vient
+    #: de l'utilisateur : « zone intacte et jamais tradée », « une seule entrée
+    #: par zone ».
+    #:
+    #: Mesuré sur 352 signaux éligibles, 20 paires, les actifs hors calibration
+    #: écartés, base 52,8 % pour un seuil de 52,08 % :
+    #:
+    #:     0 entrée déjà offerte   127 signaux   63,0 %   +2,46 sigma
+    #:     1                        76           56,6 %
+    #:     2                        54           46,3 %
+    #:     5                        15           26,7 %
+    #:     6 ou plus                24           25,0 %   -2,65 sigma
+    #:
+    #: Une PENTE, pas un seuil : les deux extrêmes sont significatifs en sens
+    #: opposés, ce qu'un seuil placé au hasard ne produirait pas. Le
+    #: walk-forward tient sur les deux moitiés — écart vierge/usée +15,0 puis
+    #: +16,6 — alors que le niveau absolu dérive. Registre #74, #75.
+    #:
+    #: ⚠ POURQUOI DEUX ET NON UNE, alors que la règle se dit « une seule entrée
+    #: par zone ».
+    #:
+    #: Ce compteur compte les OCCASIONS d'entrée déjà offertes par la zone — une
+    #: bougie dont le corps la touchait et qui la respectait en clôturant. Il ne
+    #: compte pas les signaux : un signal exige en plus que la tendance H1 soit
+    #: alignée, et cette condition-là ne peut pas entrer dans le comptage
+    #: (elle change au fil des heures, donc une zone paraîtrait « moins jouée »
+    #: vue de plus tard).
+    #:
+    #: Les occasions sont donc plus nombreuses que les signaux, et le seuil ne
+    #: se transpose pas tel quel. Mesuré avec CETTE définition, sur les quatre
+    #: paires épinglées, base 51,9 % :
+    #:
+    #:     sans filtre   312 signaux   51,9 %   -0,06 sigma   -0,0031 $/$
+    #:     3 au plus     176           58,5 %   +1,71         +0,1236
+    #:     2 au plus     114           60,5 %   +1,80         +0,1621
+    #:     1 au plus      20           55,0 %   +0,26         +0,0560
+    #:
+    #: Deux est retenu sur un critère INDÉPENDANT du résultat : il garde 37 %
+    #: des signaux, là où la mesure de référence gardait 36 % pour les zones
+    #: vierges. À un, il n'en reste que 6 % — la règle devient si stricte
+    #: qu'elle ne décrit plus le même phénomène.
+    #:
+    #: L'espérance passe de -0,0031 à +0,1621 par dollar misé. Le débit tombe à
+    #: 37 % : environ cinq sessions par jour au lieu de treize. Pour un plan
+    #: gouverné par « trois pas loss on s'arrête », c'est le bon côté de
+    #: l'échange.
+    entrees_max_par_zone: int
     expiry_sec: int
     lookback: int
 
@@ -83,6 +132,11 @@ class Parametres:
             raise BotError(f"touches_requises invalide : {self.touches_requises}")
         if self.expiry_sec <= 0:
             raise BotError(f"expiry_sec invalide : {self.expiry_sec}")
+        if self.entrees_max_par_zone < 1:
+            raise BotError(
+                f"entrees_max_par_zone doit valoir au moins 1 : "
+                f"{self.entrees_max_par_zone}. À zéro, aucune zone ne serait "
+                f"jamais jouable.")
         if self.lookback < self.memoire + 2 * self.fenetre_pique:
             raise BotError(
                 f"lookback={self.lookback} trop court pour mémoire="
@@ -101,6 +155,10 @@ PARAMETRES_PRE_INSCRITS = Parametres(
     recul_h1=2,
     expiry_sec=900,
     lookback=300,
+    # DEUX, et non une. Voir le commentaire du champ : « une seule entrée par
+    # zone » se compte ici en OCCASIONS offertes, plus fréquentes que les
+    # signaux, et deux occasions correspondent à la zone vierge mesurée.
+    entrees_max_par_zone=2,
 )
 
 
@@ -150,6 +208,44 @@ class ZoneH1(Strategy):
                     out.append((j + w, haut_a, -1))
         return out
 
+    def _entrees_deja_offertes(self, bougies: tuple[Candle, ...],
+                               conf: int, prix: float, sens: int) -> int:
+        """Combien de fois cette zone a DÉJÀ offert une entrée avant maintenant.
+
+        ⚠ RECALCULÉ DEPUIS LA FENÊTRE, JAMAIS MÉMORISÉ.
+
+        Compter les entrées passées demande de savoir ce qui s'est produit
+        avant — et la tentation est de tenir un registre des zones jouées. Ce
+        serait de l'état, et l'état romprait l'invariant n°1 : la stratégie doit
+        rendre le même verdict en backtest et en direct, sur les mêmes bougies.
+        Un registre vivrait dans la course, pas dans le backtest, et les deux
+        divergeraient dès le premier redémarrage.
+
+        La même information est DÉDUCTIBLE de la fenêtre : une entrée passée est
+        une bougie antérieure dont le corps touchait la zone à la tolérance près
+        ET qui la respectait en clôturant du bon côté. C'est exactement le
+        déclencheur, appliqué au passé. Déterministe, sans mémoire, identique
+        partout.
+
+        La tendance H1 n'entre PAS dans ce comptage. Elle change au fil des
+        heures, donc l'inclure ferait dépendre le nombre d'entrées passées de
+        l'instant où l'on regarde — une zone aurait été « moins jouée » vue de
+        plus tard, ce qui n'a aucun sens.
+        """
+        marge = prix * self.p.tolerance_pct / 100
+        derniere = len(bougies) - 1
+        compte = 0
+        for k in range(conf + 1, derniere):
+            bas, haut = _corps(bougies[k])
+            proche = bas if sens > 0 else haut
+            if abs(proche - prix) > marge:
+                continue
+            respecte = (bougies[k].close > prix if sens > 0
+                        else bougies[k].close < prix)
+            if respecte:
+                compte += 1
+        return compte
+
     def _tendance_h1_haussiere(
             self, bougies: tuple[Candle, ...]) -> bool | None:
         """Vrai si l'heure close précédente est au-dessus de celle d'avant.
@@ -182,6 +278,8 @@ class ZoneH1(Strategy):
         touche_nom = None
         sens = 0
         valeur_touche = None
+        entrees_offertes = 0
+        entrees_refusees = None
         if assez:
             i = len(bougies) - 1
             bas_i, haut_i = _corps(bougies[i])
@@ -210,9 +308,28 @@ class ZoneH1(Strategy):
                             else derniere.close < prix)
                 if not respecte:
                     continue
+                # La zone a-t-elle déjà servi ? Une zone s'épuise à être
+                # testée : 63,0 % de réussite à la première entrée, 25,0 %
+                # au-delà de la sixième (registre #74, #75).
+                offertes = self._entrees_deja_offertes(bougies, conf, prix, s)
+                if offertes >= self.p.entrees_max_par_zone:
+                    entrees_refusees = offertes
+                    continue
                 touche_nom = prix
                 sens = s
                 valeur_touche = float(touches)
+                entrees_offertes = offertes
+                # ⚠ REMIS À NÉANT, et l'invariant du §3 l'a exigé.
+                #
+                # Une zone plus ancienne a pu être refusée pour usure avant
+                # qu'on arrive à celle-ci. Garder la trace de ce refus faisait
+                # rendre « condition échouée » avec un signal en main, ce que
+                # `Evaluation` refuse à juste titre : la porte ET et le signal
+                # doivent venir du même calcul.
+                #
+                # La condition décrit LA ZONE QUI A PRODUIT LE SIGNAL, pas
+                # toutes celles qu'on a regardées en chemin.
+                entrees_refusees = None
                 break
 
         aligne = (sens != 0 and hausse is not None
@@ -227,6 +344,13 @@ class ZoneH1(Strategy):
             ConditionResult("tendance_h1_connue", hausse is not None,
                             None if hausse is None else float(hausse)),
             ConditionResult("sens_aligne_sur_h1", aligne, None),
+            # Journalisée même quand elle passe : c'est elle qui permettra de
+            # vérifier hors échantillon que la pente mesurée existe vraiment.
+            ConditionResult(
+                "zone_pas_encore_jouee",
+                entrees_refusees is None,
+                float(entrees_refusees if entrees_refusees is not None
+                      else entrees_offertes)),
         )
         signal = None
         if aligne and derniere is not None:
@@ -236,7 +360,8 @@ class ZoneH1(Strategy):
                 decided_at_ms=ts_ms,
                 expiry_sec=self.p.expiry_sec,
                 features={"niveau": float(touche_nom),
-                          "touches": float(valeur_touche or 0)},
+                          "touches": float(valeur_touche or 0),
+                          "entrees_deja_offertes": float(entrees_offertes)},
                 reason="zone respectée, touchée dans le sens de la tendance H1",
             )
         return Evaluation(
