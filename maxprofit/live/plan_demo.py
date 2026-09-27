@@ -215,10 +215,11 @@ PAIRES_MAX_PAR_PASSAGE = 1
 #: Pause entre deux demandes d'historique, pour la même raison.
 DELAI_ENTRE_ACTIFS_SEC = 0.4
 
-#: Le catalogue des payouts se relit toutes les deux minutes. Ils bougent en
-#: minutes, pas en secondes : le relire à chaque passage n'apprendrait rien et
-#: coûterait une trame à chaque fois.
-RAFRAICHIR_UNIVERS_SEC = 120
+#: Le catalogue des payouts est relu au plus toutes les quinze secondes. Il
+#: est déjà en mémoire (`GetPairs`, aucune trame envoyée) : le relire toutes
+#: les deux minutes n'économisait rien, et laissait jusqu'à deux minutes hors
+#: de la recherche une paire qui venait d'atteindre le maximum.
+RAFRAICHIR_UNIVERS_SEC = 15
 
 #: Les deux univers, et ils répondent à deux questions différentes.
 #:
@@ -648,6 +649,15 @@ class CoursePlanDemo:
         if self.etat.quarantaine:
             candidats = [p for p in candidats
                          if p not in self.etat.quarantaine]
+        # Pendant une session, l'actif du pas précédent ne peut pas porter le
+        # pas suivant. L'écarter ICI laisse la recherche trouver un signal sur
+        # un autre actif dans le même passage, au lieu de s'arrêter sur un
+        # signal que `tour()` refuserait. La garantie, elle, reste dans `tour()`.
+        session = self.etat.session
+        if (session is not None and session.pas_joues
+                and self.etat.dernier_trade is not None):
+            candidats = [p for p in candidats
+                         if p != self.etat.dernier_trade[0]]
         if not candidats:
             return None
 
@@ -898,9 +908,9 @@ class CoursePlanDemo:
             self._suivre_au_mieux(signal.pair)
 
         sens = "call" if signal.direction is Direction.CALL else "put"
+        entree = int(time.time())
         self.etat.trade_en_cours = (
-            signal.pair, sens, mise,
-            int(time.time()) + self.strategie.p.expiry_sec)
+            signal.pair, sens, mise, entree + self.strategie.p.expiry_sec)
         try:
             execution = self.courtier.placer(
                 signal.pair, sens, self.strategie.p.expiry_sec, mise=mise)
@@ -927,6 +937,20 @@ class CoursePlanDemo:
         # livres, et un solde de plan resté à 250 $ pendant que le compte
         # réel bougeait.
         self.journal.ecrire(execution)
+        # ⚠ DATÉ DE L'ENTRÉE, PAS DU DÉNOUEMENT.
+        #
+        # La règle d'indépendance (#68) veut le pas suivant « au moins quinze
+        # minutes plus tard » que celui-ci : c'est ainsi qu'elle a été rejouée
+        # et pré-inscrite, et avec une échéance de 900 s cela tombe pile au
+        # dénouement. Posé au RETOUR de `jouer_un_pas`, donc après les quinze
+        # minutes de l'option, il imposait trente minutes entre deux entrées :
+        # une règle deux fois plus stricte que celle qu'on mesure, qui coûtait
+        # un quart d'heure à chaque pas de martingale.
+        #
+        # Seul un ordre ACCEPTÉ compte : un refus n'a engagé aucun pari.
+        # Persisté tout de suite avec le reste, pour qu'un redémarrage pendant
+        # l'option ne rende pas le pas suivant éligible trop tôt.
+        self.etat.dernier_trade = (signal.pair, entree)
         # Accepté : la paire a prouvé qu'elle marche, son ardoise est nette.
         self.etat.refus_daffilee.pop(signal.pair, None)
         self.etat.dernier_refus_ts.pop(signal.pair, None)
@@ -1076,7 +1100,6 @@ class CoursePlanDemo:
             self.etat.pas_sautes_independance += 1
             return False
         self.jouer_un_pas(signal)
-        self.etat.dernier_trade = (signal.pair, int(time.time()))
         return True
 
     def _sauvegarder(self) -> None:
