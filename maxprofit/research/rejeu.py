@@ -56,7 +56,9 @@ def generer_signaux(bougies_par_paire: dict[str, Sequence[Candle]],
     minutes, bougies complètes seulement, garde de calibration, puis
     historique minimal, puis la stratégie."""
     p = strategie.p
-    minimum = 2 * p.fenetre_pique + 2
+    minimum = getattr(strategie, "bougies_minimum", None)
+    if minimum is None:
+        minimum = 2 * p.fenetre_pique + 2
     sortie: list[SignalRejoue] = []
     for pair, serie in bougies_par_paire.items():
         if progression is not None:
