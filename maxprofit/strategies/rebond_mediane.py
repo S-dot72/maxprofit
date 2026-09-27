@@ -15,7 +15,8 @@ Précisions données ensuite, et traduites telles quelles :
 - casser la médiane = CLÔTURER sous la médiane ;
 - toucher = la mèche atteint la médiane, ou s'en approche au point de
   quasiment la toucher (`tolerance_sigma`) ;
-- deux bougies rouges de repli restent un setup valable (`rouges_max`) ;
+- deux, trois ou quatre bougies rouges de repli restent un setup valable
+  (`rouges_max`) ;
 - achat seulement : pas de symétrique en tendance baissière.
 
 Et la raison de son existence : ne JAMAIS prendre position contre la tendance
@@ -90,7 +91,7 @@ class Parametres:
 
 
 PARAMETRES_PAR_DEFAUT = Parametres(
-    periode=20, tolerance_sigma=0.25, rouges_max=2, fenetre_plus_haut=20,
+    periode=20, tolerance_sigma=0.25, rouges_max=4, fenetre_plus_haut=20,
     plus_haut_recent=3, pente_bougies=5, expiry_sec=60)
 
 
