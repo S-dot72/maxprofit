@@ -291,6 +291,10 @@ def open_read_write(
 
     _configure(conn)
     version = apply_migrations(conn, migrations)
+    if postgres.est_postgres(conn):
+        # Le numéro de version ne garantit rien après un réimport de dump.
+        from maxprofit.store.reparation import reparer_le_schema
+        reparer_le_schema(conn)
     if turso.est_replique(conn):
         # Les migrations viennent d'écrire : sans cette synchronisation, un
         # conteneur qui redémarre aussitôt repartirait d'un schéma antérieur.

@@ -487,6 +487,52 @@ def test_une_panne_de_la_base_n_est_pas_imputee_au_broker(tmp_path):
         conn.close()
 
 
+class _ErreurDeSchemaPostgres(Exception):
+    """Ce que psycopg leve sur une colonne mal typee."""
+
+
+_ErreurDeSchemaPostgres.__module__ = "psycopg.errors"
+
+
+def test_une_erreur_de_SCHEMA_ne_fait_pas_marteler_le_broker(tmp_path,
+                                                             monkeypatch):
+    """La base REPOND (SELECT 1 passe) mais refuse l'ecriture : « column
+    "open" is of type json ». Elle etait comptee comme un refus du broker, et
+    chaque reconnexion reussie remettait l'attente a une seconde : neuf paires
+    reabonnees toutes les trois secondes, des heures durant."""
+    from maxprofit.collect import collector as mod
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_only
+
+    pauses: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", pauses.append)
+    erreur = _ErreurDeSchemaPostgres('column "open" is of type json')
+    src = SourceScriptee(_ticks(0), lever=erreur)
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+
+    def ecriture_refusee():
+        raise erreur
+
+    collecteur.flush = ecriture_refusee
+    vraie_pause = collecteur._vider_tampons
+
+    def vider_puis_arreter_au_troisieme():
+        vraie_pause()
+        if len(pauses) >= 2:
+            collecteur.stop()
+
+    collecteur._vider_tampons = vider_puis_arreter_au_troisieme
+    collecteur.run()
+
+    assert pauses == [5, 10], "la pause doit croitre, pas repartir a 1 s"
+    conn = open_read_only(tmp_path / "market.db")
+    try:
+        echecs, _, _ = etat_broker.lire(conn)
+        assert echecs == 0, "une erreur de schema a ete comptee contre le broker"
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- #
 # Regression : connecte, souscrit a rien, et muet
 # --------------------------------------------------------------------------- #
