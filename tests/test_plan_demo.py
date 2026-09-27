@@ -1733,3 +1733,90 @@ def test_le_solde_du_plan_se_calcule_SANS_relire_le_journal(tmp_path):
     ordre(True, mise=3.0)
     assert journal.profits_du_plan() == pytest.approx(1.84 - 2.0 - 3.0)
     journal.close()
+
+
+# --------------------------------------------------------------------------- #
+# Débit : la règle d'indépendance comptée depuis l'ENTRÉE du pas précédent
+# --------------------------------------------------------------------------- #
+
+class _Horloge:
+    def __init__(self, t=1_790_000_000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+class CourtierQuiDure(CourtierFactice):
+    """Le dénouement prend les quinze minutes de l'option, comme en vrai."""
+
+    def __init__(self, resultats, horloge):
+        super().__init__(resultats)
+        self.horloge = horloge
+
+    def denouer(self, ex):
+        self.horloge.t += 900
+        return super().denouer(ex)
+
+
+def test_le_pas_suivant_se_joue_DES_LE_DENOUEMENT_sur_un_autre_actif(
+        tmp_path, monkeypatch):
+    """La règle #68 : un AUTRE actif, au moins quinze minutes après le pas
+    précédent. Avec une échéance de 900 s, c'est le dénouement. Datée du
+    retour de `jouer_un_pas`, elle imposait trente minutes entre deux
+    entrées — deux fois la règle mesurée et pré-inscrite."""
+    horloge = _Horloge()
+    monkeypatch.setattr("maxprofit.live.plan_demo.time.time", horloge)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierQuiDure(["loose", "win"],
+                                                         horloge),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    paires = iter(["AUDCAD_otc", "EURUSD_otc"])
+
+    def signal_scripte():
+        return Signal(pair=next(paires), direction=Direction.CALL,
+                      decided_at_ms=T0_MS, expiry_sec=900, reason="script")
+
+    c.chercher_un_signal = signal_scripte
+    entree = int(horloge.t)
+    assert c.tour() is True                      # pas 1, perdu, 15 min
+    assert c.etat.dernier_trade == ("AUDCAD_otc", entree), (
+        "daté de l'ENTRÉE, pas du dénouement")
+    horloge.t += 5                               # la bougie suivante
+    assert c.tour() is True, (
+        "autre actif, quinze minutes après l'entrée : le pas 2 doit partir")
+    assert c.etat.pas_sautes_independance == 0
+    journal.close()
+
+
+def test_un_ordre_REFUSE_ne_compte_pas_comme_pas_joue(tmp_path):
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["refus"]),
+                       journal, _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = lambda: Signal(
+        pair="AUDCAD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    c.tour()
+    assert c.etat.dernier_trade is None, "un refus n'a engagé aucun pari"
+    journal.close()
+
+
+def test_la_recherche_ECARTE_l_actif_du_pas_precedent(tmp_path):
+    """Sinon elle s'arrête sur un signal que `tour()` refusera, et le signal
+    valide d'un autre actif, dans le même passage, est perdu."""
+    from maxprofit.plan import Echelle, Session
+
+    six = ("A_otc", "B_otc", "C_otc")
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurAvecBougies(), CourtierFactice([]),
+                       journal, _plan(sessions=18), six)
+    c.univers = lambda: list(six)
+    c.etat.session = Session(echelle=Echelle(payout_pct=92, gain_vise=1.0))
+    c.etat.session.pas_joues = 1
+    c.etat.dernier_trade = ("B_otc", int(time.time()))
+    vues = []
+    vraie = c.bougies_collectees
+    c.bougies_collectees = lambda p, n: (vues.append(p) or vraie(p, n))
+    c.chercher_un_signal()
+    assert "B_otc" not in vues and set(vues) == {"A_otc", "C_otc"}
+    journal.close()
