@@ -185,8 +185,15 @@ services:
       # ~26 signaux/jour et une session en consomme 1,6, donc ~16 sessions
       # sont réellement atteignables. Les journées se termineront sur
       # SESSIONS_EPUISEES faute de signaux, pas faute d'objectif.
+      # ⚠ SIX, PARCE QU'UN JOUR DU PLAN SE COMPTE EN SESSIONS.
+      #
+      # Valait 18, et c'était la confusion : 18 est le nombre de sessions qu'on
+      # joue par journée CALENDAIRE pour finir les trente jours du plan en dix.
+      # Un JOUR DU PLAN, lui, vaut six sessions — trois jours de plan par
+      # journée calendaire. À 18 ici, un jour du plan durait dix-huit sessions
+      # et son objectif devenait 10,5 % au lieu de 3,50 %.
       - key: PLAN_SESSIONS
-        value: "18"
+        value: "6"
       - key: PLAN_JOURS
         value: "30"
       # L'UNIVERS, et c'est la variable qui décide de ce que la course prouve.

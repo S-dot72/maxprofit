@@ -317,15 +317,26 @@ class Journee:
         """
         if self.arret is not None:
             return self.arret
-        if self.sessions_jouees >= self.plan.sessions_par_jour:
-            return Arret.SESSIONS_EPUISEES
+        # ⚠ L'OBJECTIF SE TESTE EN PREMIER, ET L'ORDRE EST TOUT LE SENS.
+        #
+        # Il était testé en dernier, donc `SESSIONS_EPUISEES` le masquait :
+        # atteindre la cible à la dernière session prévue rendait « toutes les
+        # sessions ont été jouées » au lieu de « objectif atteint ». Les deux
+        # arrêtent la journée, mais ils ne disent pas la même chose — le premier
+        # veut dire que le jour du plan est ACCOMPLI, le second qu'il a épuisé
+        # son chemin nominal sans y arriver. C'est sur cette différence que le
+        # passage au jour suivant se décide.
+        objectif = self.plan.objectif_journalier_pct
+        if objectif is not None and self.resultat_pct >= objectif - TOLERANCE:
+            return Arret.OBJECTIF_ATTEINT
+        # Les pertes passent avant le décompte : une journée arrêtée pour perte
+        # ne doit pas se raconter qu'elle a simplement fini ses sessions.
         if self.sessions_perdues_daffilee >= self.plan.sessions_perdues_max:
             return Arret.SESSIONS_PERDUES
         if -self.resultat_pct >= self.plan.perte_journaliere_max_pct - TOLERANCE:
             return Arret.PERTE_MAXIMALE
-        objectif = self.plan.objectif_journalier_pct
-        if objectif is not None and self.resultat_pct >= objectif - TOLERANCE:
-            return Arret.OBJECTIF_ATTEINT
+        if self.sessions_jouees >= self.plan.sessions_par_jour:
+            return Arret.SESSIONS_EPUISEES
         return None
 
     # --- écriture -----------------------------------------------------------

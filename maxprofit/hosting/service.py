@@ -105,6 +105,29 @@ _course: dict = {}
 #: la course sur un univers différent de celui qui a été pré-inscrit.
 PAIRES_PAR_DEFAUT = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc")
 
+#: Combien de sessions font UN JOUR DU PLAN.
+#:
+#: ⚠ EN DUR, ET NON DANS `PLAN_SESSIONS`. Deux nombres différents se sont
+#: retrouvés sous le même nom, et c'est ce qui a fait annoncer « Jour 2/30 » à
+#: 258,67 $ quand le jour 1 demandait 258,70.
+#:
+#:   - SIX est la définition d'un jour du plan. Six sessions à 0,5834 % font
+#:     l'objectif de 3,50 %, et trente jours de six sessions font les 180
+#:     sessions du plan. C'est de la spécification, pas un réglage.
+#:   - DIX-HUIT est la CADENCE : le nombre de sessions qu'on joue par journée
+#:     calendaire pour boucler les trente jours en dix. C'est trois jours de
+#:     plan par journée calendaire.
+#:
+#: `PLAN_SESSIONS` valait 18 dans le tableau de bord — donc un jour du plan
+#: durait dix-huit sessions et son objectif devenait 10,5 %. Mettre 6 dans
+#: `render.yaml` n'y aurait rien changé : sur Render, une variable réglée à la
+#: main l'emporte sur le fichier. D'où la constante.
+#:
+#: Aucune cadence n'est plafonnée ici : si les signaux permettent plus de trois
+#: jours de plan dans une journée, tant mieux — c'était tout l'objet de la
+#: compression.
+SESSIONS_PAR_JOUR_DU_PLAN = 6
+
 
 def univers_trade(cfg) -> tuple[str, ...]:
     """Les paires sur lesquelles la course prend des positions.
@@ -216,7 +239,7 @@ async def _servir(args) -> int:
                 resoudre_ssid(demo=True),
                 campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v1"),
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
-                sessions_par_jour=int(os.environ.get("PLAN_SESSIONS", "18")),
+                sessions_par_jour=SESSIONS_PAR_JOUR_DU_PLAN,
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
                 # ⚠ ON TRADE TOUT CE QUE L'ON COLLECTE. C'EST UNE DÉCISION,
                 # PRISE LE 2026-09-24, ET ELLE A UN COÛT.

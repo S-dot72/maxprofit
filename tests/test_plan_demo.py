@@ -16,6 +16,7 @@ c'est la martingale ou la zone qui a dérapé.
 from __future__ import annotations
 
 import itertools
+from dataclasses import replace
 import time
 from pathlib import Path
 
@@ -41,11 +42,23 @@ def _ordre_en_vol(order_id="abc"):
         order_id=order_id)
 
 
-def _plan(sessions: int = 18, jours: int = 30, **gardes) -> PlanCapital:
+def _plan(sessions: int = 6, jours: int = 30, **gardes) -> PlanCapital:
+    """Le plan des tests, construit comme celui de la production.
+
+    ⚠ `objectif_journalier_pct` est posé ici, et il doit l'être : c'est lui qui
+    definit la fin d'un jour du plan. Sans lui, le plan de test n'avait aucune
+    cible, un jour ne pouvait s'achever que sur SESSIONS_EPUISEES, et les tests
+    validaient un comportement que la production n'a pas.
+    """
     defauts = dict(sessions_perdues_max=2)
-    return PlanCapital.depuis_risque(
+    plan = PlanCapital.depuis_risque(
         capital_initial=CAPITAL, risque=Risque(1, 7), payout_pct=92,
         sessions_par_jour=sessions, jours=jours, **{**defauts, **gardes})
+    if "objectif_journalier_pct" in gardes:
+        return plan
+    return replace(
+        plan,
+        objectif_journalier_pct=sessions * plan.gain_par_session_pct)
 
 
 class CourtierFactice:
@@ -270,11 +283,28 @@ def test_une_session_entamee_a_priorite_sur_une_journee_close(course):
 
 
 def test_la_journee_se_ferme_quand_ses_sessions_sont_epuisees(course):
-    c = course(["win", "win"], plan=_plan(sessions=1))
-    c.tour()
+    """La session est PERDUE, et c'est ce qui isole la garde qu'on teste.
+
+    Avec une session gagnée, l'objectif du jour est atteint du même coup et
+    c'est OBJECTIF_ATTEINT qui répond — un arrêt qui ne veut pas dire la même
+    chose : le jour est accompli, alors qu'ici il a épuisé son chemin nominal
+    sans y arriver.
+    """
+    c = course(["loose", "loose", "loose", "win"], plan=_plan(sessions=1))
+    for _ in range(3):
+        c.tour()
+    assert c.etat.session is None, "trois pas perdus closent la session"
     assert c.peut_ouvrir() is Arret.SESSIONS_EPUISEES
     assert c.tour() is False, "aucun ordre ne doit partir"
-    assert len(c.journal.toutes()) == 1
+    assert len(c.journal.toutes()) == 3
+
+
+def test_une_journee_qui_atteint_sa_CIBLE_le_dit(course):
+    """OBJECTIF_ATTEINT et SESSIONS_EPUISEES arrêtent tous deux la journée,
+    mais c'est sur leur différence que le passage au jour suivant se décide."""
+    c = course(["win"], plan=_plan(sessions=1))
+    c.tour()
+    assert c.peut_ouvrir() is Arret.OBJECTIF_ATTEINT
 
 
 def test_deux_sessions_perdues_daffilee_declenchent_le_reancrage(course):
@@ -1365,6 +1395,55 @@ def test_le_debit_se_taait_sous_une_heure_de_course(course):
     c.etat.demarre_ts = int(_t.time()) - 600
     c.etat.journee.sessions_jouees = 1
     assert "débit" not in c.resume()
+
+
+def test_un_jour_du_plan_se_compte_en_SESSIONS_pas_en_heures(course):
+    """Le passage etait branche sur minuit UTC. Un jour du plan durait donc une
+    journee entiere quoi qu'il arrive : dix-huit sessions comptees dans le meme
+    jour, et « Jour 2/30 » annonce a 258,67 $ quand le jour 1 demandait 258,70.
+
+    Un jour du plan vaut `sessions_par_jour` sessions. Six, et l'on en enchaine
+    trois par journee calendaire — c'est toute la raison du test compresse.
+    """
+    c = course(["win"] * 12, plan=_plan(sessions=3, jours=30))
+    assert c.etat.jour == 1
+    for _ in range(3):
+        c.tour()
+    assert c.etat.journee.sessions_jouees == 3
+    # Trois sessions jouees : le jour est fini, et cela ne depend d'aucune
+    # horloge. On ne passe AUCUN horodatage.
+    assert c.passer_le_jour_si_besoin() is True
+    assert c.etat.jour == 2
+    assert c.etat.journee.sessions_jouees == 0, "compteurs de la journee remis"
+    assert c.etat.solde > CAPITAL, "le solde se conserve d'un jour a l'autre"
+
+
+def test_le_jour_ne_passe_pas_avec_une_session_en_cours(course):
+    """Couper laisserait des mises engagees dans une journee qui n'existe
+    plus."""
+    c = course(["loose", "win"], plan=_plan(sessions=1, jours=30))
+    c.tour()                                     # pas 1 perdu, session OUVERTE
+    assert c.etat.session is not None
+    assert c.passer_le_jour_si_besoin() is False
+    assert c.etat.jour == 1
+
+
+def test_le_jour_ne_passe_pas_tant_qu_il_reste_des_sessions(course):
+    c = course(["win"] * 6, plan=_plan(sessions=6, jours=30))
+    c.tour()
+    assert c.passer_le_jour_si_besoin() is False
+    assert c.etat.jour == 1
+
+
+def test_le_plan_TERMINE_ne_boucle_pas_sur_un_jour_de_plus(course):
+    c = course(["win"] * 6, plan=_plan(sessions=1, jours=2))
+    c.tour()
+    assert c.passer_le_jour_si_besoin() is True
+    assert c.etat.jour == 2
+    c.tour()
+    assert c.passer_le_jour_si_besoin() is False, (
+        "au dernier jour, le plan s'arrete au lieu de compter un 3e")
+    assert c.etat.jour == 2
 
 
 def test_les_compteurs_d_activite_survivent_a_un_redemarrage(tmp_path):

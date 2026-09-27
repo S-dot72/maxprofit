@@ -56,7 +56,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from maxprofit.core.errors import BotError
@@ -1036,60 +1036,92 @@ class CoursePlanDemo:
         self.etat.sessions_interrompues += 1
         self._cloturer_session()
 
-    def passer_le_jour_si_besoin(self, jour_utc_courant: int) -> bool:
-        """Avance d'une journée de plan quand la journée UTC a changé.
+    def passer_le_jour_si_besoin(self, jour_utc_courant: int = 0) -> bool:
+        """Avance d'une journée de plan quand celle en cours est TERMINÉE.
 
-        ⚠ CE PASSAGE N'EXISTAIT PAS. `nouveau_jour()` était écrite, testée, et
-        appelée par personne ; la colonne `jour_utc` était écrite à chaque pas
-        et relue par personne. Le mécanisme était conçu et laissé débranché.
+        ⚠ UN JOUR DU PLAN NE DURE PAS VINGT-QUATRE HEURES. Il dure
+        `sessions_par_jour` sessions — six — et l'on en enchaîne trois par
+        journée calendaire pour finir les trente jours en dix. C'est toute la
+        raison du test compressé.
 
-        Ce que cela coûtait, et qui ne se voyait pas :
+        Le passage était branché sur minuit UTC. Un jour du plan durait donc
+        une journée entière quoi qu'il arrive : dix-huit sessions comptées dans
+        le même jour, et « Jour 2/30 » annoncé à 258,67 $ quand le jour 1
+        demandait 258,70. La détection arrivait en retard parce qu'elle
+        attendait l'horloge au lieu de compter les sessions.
 
-        - le plan restait sur « jour 1/30 » indéfiniment ;
-        - `sessions_jouees` ne repartait jamais de zéro, donc le quota de 18
-          s'appliquait à TOUTE la course et non à la journée. Arrivé à 18, la
-          course se serait arrêtée sur SESSIONS_EPUISEES pour de bon — un arrêt
-          définitif qui ressemble trait pour trait à une journée terminée ;
-        - la garde de perte journalière se calculait sur le cumul, donc elle se
-          serait déclenchée de plus en plus tôt.
+        `jour_utc_courant` n'est plus lu. Il reste dans la signature parce que
+        l'appelant le persiste, et le retirer demanderait de toucher à la
+        table au même moment que la logique.
 
-        Ce qui l'a révélé : le débit affiché à 126,7 sessions/jour, parce qu'il
-        divisait six sessions de la veille par 1,1 h de journée nouvelle. Le
-        chiffre absurde était le symptôme, pas la maladie.
+        Deux défauts ont été corrigés ici l'un après l'autre, et le second est
+        né de ma correction du premier.
+
+        D'ABORD, LE PASSAGE N'EXISTAIT PAS. `nouveau_jour()` était écrite,
+        testée, et appelée par personne ; la colonne `jour_utc` était écrite à
+        chaque pas et relue par personne. Le plan restait sur « jour 1/30 »
+        indéfiniment, `sessions_jouees` ne repartait jamais de zéro — donc le
+        quota s'appliquait à TOUTE la course — et la garde de perte
+        journalière se calculait sur le cumul.
+
+        ENSUITE, JE L'AI BRANCHÉ SUR LA MAUVAISE HORLOGE. Sur minuit UTC, donc
+        sur le calendrier, alors qu'un jour du plan se compte en SESSIONS. Le
+        symptôme était le même à l'écran — un numéro de jour qui n'avance
+        pas quand il faut — mais la cause avait changé de place.
 
         Rend `True` si la journée a tourné, pour que l'appelant persiste.
         """
-        if not self.jour_utc_courant:
-            # Premier passage : on se cale, sans rien avancer. Sans ce cas, un
-            # redémarrage compterait une journée de plan à chaque fois.
-            self.jour_utc_courant = jour_utc_courant
-            return False
-        if jour_utc_courant <= self.jour_utc_courant:
-            return False
+        self.jour_utc_courant = jour_utc_courant or self.jour_utc_courant
         if self.etat.session is not None:
-            # Une martingale à cheval sur minuit finit d'abord. La couper
-            # laisserait des mises engagées dans une journée qui n'existe plus.
-            log.info("Journée UTC changée, mais une session est en cours : "
-                     "le passage attend qu'elle se clôture.")
+            # Une session en cours finit d'abord. La couper laisserait des
+            # mises engagées dans une journée qui n'existe plus.
             return False
-        ecart = jour_utc_courant - self.jour_utc_courant
-        self.jour_utc_courant = jour_utc_courant
-        # UNE journée de plan par changement de journée UTC, même si plusieurs
-        # se sont écoulées. Le plan compte 30 journées TRADÉES ; en sauter
-        # parce que l'hébergeur dormait raccourcirait le test sans le dire.
-        if ecart > 1:
-            log.warning(
-                "%d journées UTC se sont écoulées depuis le dernier passage. "
-                "Le plan n'avance que d'UNE journée : il en compte 30 tradées, "
-                "pas 30 au calendrier.", ecart)
+        if self.etat.jour >= self.etat.plan.jours:
+            return False                 # le plan est fini, on ne boucle pas
+        arret = self.etat.journee.peut_ouvrir_une_session()
+        if arret is None:
+            return False                 # la journée a encore des sessions
+
+        # ⚠ SIX SESSIONS SONT LE CHEMIN NOMINAL, PAS LA CONDITION.
+        #
+        # Un jour du plan est fini quand sa CIBLE est atteinte : +3,50 %, soit
+        # ce que six sessions gagnées rapportent. Si certaines sont perdues, six
+        # sessions n'y suffisent pas — et clore le jour là-dessus le laisserait
+        # en retard pour toujours, chaque jour suivant visant une cible calculée
+        # sur un solde qui n'a jamais atteint la précédente.
+        #
+        # Épuiser les six sessions ne clôt donc PAS le jour : on rouvre le
+        # compteur en gardant la même ancre, et l'on continue à viser la même
+        # cible. C'est le « combien il manque pour compléter le jour ».
+        #
+        # Les deux gardes de PERTE, elles, clôturent pour de bon. Elles existent
+        # précisément pour arrêter d'insister sur une mauvaise journée : les
+        # contourner en rouvrant le compteur les réduirait à de la décoration.
+        if arret is Arret.SESSIONS_EPUISEES:
+            manque = (self.etat.journee.solde_ouverture
+                      * (1 + (self.etat.plan.objectif_journalier_pct or 0) / 100)
+                      - self.etat.solde)
+            self.etat.journee.sessions_jouees = 0
+            self.etat.journee.sessions_perdues_daffilee = 0
+            self.etat.journee.arret = None
+            log.info(
+                "Jour %d : %d sessions jouées sans atteindre la cible, il "
+                "manque %.2f $. On continue le MÊME jour plutôt que de le "
+                "clore en retard.",
+                self.etat.jour, self.etat.plan.sessions_par_jour, manque)
+            return True
+
         ancien = self.etat.jour
         nouveau_jour(self.etat)
-        log.info("Journée de plan %d -> %d. Compteurs remis à zéro, solde "
-                 "conservé à %.2f $.", ancien, self.etat.jour, self.etat.solde)
+        log.info("Journée de plan %d -> %d (%s). Solde %.2f $.",
+                 ancien, self.etat.jour, arret, self.etat.solde)
+        cible = self.etat.solde * (
+            1 + (self.etat.plan.objectif_journalier_pct or 0) / 100)
         self._prevenir(
-            f"📅 <b>Jour {self.etat.jour}/{self.etat.plan.jours}</b>\n"
-            f"solde <b>{self.etat.solde:.2f} $</b>, compteurs de la journée "
-            f"remis à zéro")
+            f"📅 <b>Jour {ancien}/{self.etat.plan.jours} terminé</b> — {arret}\n"
+            f"solde <b>{self.etat.solde:.2f} $</b>\n"
+            f"jour {self.etat.jour} : cible <b>{cible:.2f} $</b> en "
+            f"{self.etat.plan.sessions_par_jour} sessions")
         return True
 
     def _purger_la_quarantaine(self) -> None:
@@ -1430,6 +1462,20 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
         sessions_par_jour=sessions_par_jour, jours=jours,
         sessions_perdues_max=2)
+    # ⚠ L'OBJECTIF DU JOUR EST CE QUE SES SESSIONS DOIVENT RAPPORTER.
+    #
+    # Il valait `None` — aucun arrêt au gain — donc une journée ne s'arrêtait
+    # que sur SESSIONS_EPUISEES, et rien ne disait qu'elle avait ATTEINT sa
+    # cible. Le plan annonçait « Jour 2/30 » avec 258,67 $ quand le jour 1
+    # demandait 258,70 : trois centimes manquants, et personne pour le voir.
+    #
+    # Six sessions à 0,5834 % font 3,50 %. Le chiffre n'est donc pas un réglage
+    # de plus : c'est la définition d'un jour du plan, déduite du nombre de
+    # sessions qui le composent.
+    plan = replace(
+        plan,
+        objectif_journalier_pct=(
+            plan.sessions_par_jour * plan.gain_par_session_pct))
     # Le plafond est le 3e pas AU CAPITAL VISÉ, pas au capital initial.
     #
     # Les mises sont dimensionnées sur le solde COURANT : elles grandissent
