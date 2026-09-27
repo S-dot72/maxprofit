@@ -461,3 +461,39 @@ def test_une_collecte_morte_ne_pretend_pas_etre_en_cours(tmp_path):
     couv = MarketReader(ro).couverture(maintenant=t + 3600 + 4 * 3600)
     assert couv["en_cours"] is False
     ro.close()
+
+
+def test_le_service_s_appelle_lui_meme_pour_ne_pas_s_endormir():
+    """L'offre gratuite endort un service sans requête entrante pendant
+    quinze minutes ; le pingeur externe visait l'adresse de l'ANCIEN
+    service, et le nouveau s'endormait avec sa collecte."""
+    import asyncio
+
+    import aiohttp
+    from aiohttp import web
+
+    from maxprofit.hosting.service import rester_eveille
+
+    async def scenario():
+        appels = []
+
+        async def ping(_requete):
+            appels.append(1)
+            return web.Response(text="pong")
+
+        app = web.Application()
+        app.router.add_get("/ping", ping)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        async with aiohttp.ClientSession() as http:
+            tache = asyncio.create_task(
+                rester_eveille(http, f"http://127.0.0.1:{port}/", 0.05))
+            await asyncio.sleep(0.4)
+            tache.cancel()
+        await runner.cleanup()
+        return len(appels)
+
+    assert asyncio.run(scenario()) >= 3

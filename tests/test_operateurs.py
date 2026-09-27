@@ -299,3 +299,33 @@ def test_un_annuaire_exige_un_chemin_ou_un_depot():
 
     with pytest.raises(ValueError):
         Annuaire()
+
+
+def test_le_MODELE_de_env_example_n_est_pas_inscrit_admin(tmp_path,
+                                                          monkeypatch):
+    """TELEGRAM_CHAT_ID=votre_id_de_conversation, recopié tel quel : inscrit
+    ADMIN, chaque alerte lui échouait sur « chat not found »."""
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "votre_id_de_conversation")
+    a = Annuaire(tmp_path / "operateurs.json")
+    assert not a.est_inscrit("votre_id_de_conversation")
+
+
+def test_un_identifiant_NUMERIQUE_reste_admin(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234567")
+    assert Annuaire(tmp_path / "operateurs.json").role("-1001234567") is Role.ADMIN
+
+
+def test_une_inscription_invalide_DEJA_en_base_est_retiree(tmp_path,
+                                                           monkeypatch):
+    """Inscrit avant la correction, il survivait au retrait de la variable."""
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    fichier = tmp_path / "operateurs.json"
+    fichier.write_text(json.dumps({
+        "votre_id_de_conversation": {"role": "admin", "nom": "configuration",
+                                     "inscrit_ts_sec": 1},
+        "111": {"role": "admin", "nom": "denis", "inscrit_ts_sec": 1}}),
+        encoding="utf-8")
+    a = Annuaire(fichier)
+    assert not a.est_inscrit("votre_id_de_conversation")
+    assert a.role("111") is Role.ADMIN
+    assert "votre_id_de_conversation" not in Annuaire(fichier)._inscrits

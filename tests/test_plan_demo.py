@@ -1820,3 +1820,36 @@ def test_la_recherche_ECARTE_l_actif_du_pas_precedent(tmp_path):
     c.chercher_un_signal()
     assert "B_otc" not in vues and set(vues) == {"A_otc", "C_otc"}
     journal.close()
+
+
+def test_un_ordre_PARTI_mais_non_journalise_ne_fait_pas_tomber_la_course(
+        tmp_path):
+    """« duplicate key value violates unique constraint executions_pkey » :
+    l'écriture échouait APRÈS le départ de l'ordre, la course tombait, et
+    l'ordre courait chez le broker sans trace. On prévient, on suit l'ordre
+    jusqu'au dénouement, et on réessaie."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    alertes: list[str] = []
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(sessions=10), PAIRES_TEST, alerter=alertes.append)
+    vraie = journal.ecrire
+    essais = {"n": 0}
+
+    def ecrire_qui_echoue_une_fois(ex):
+        essais["n"] += 1
+        if essais["n"] == 1:
+            raise RuntimeError("duplicate key value violates unique "
+                               "constraint executions_pkey")
+        return vraie(ex)
+
+    journal.ecrire = ecrire_qui_echoue_une_fois
+    c.chercher_un_signal = lambda: Signal(
+        pair="AUDCAD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    assert c.tour() is True, "la course ne doit pas tomber"
+    ordres = journal.toutes()
+    assert len(ordres) == 1 and ordres[0].resultat == "win", (
+        "l'ordre entre au journal, complet, au dénouement")
+    assert any("NON enregistré" in a for a in alertes)
+    assert c.etat.session is None, "la session gagnée est bien close"
+    journal.close()

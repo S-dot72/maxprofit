@@ -137,3 +137,23 @@ def test_un_compteur_d_ordres_EN_RETARD_est_recale(monkeypatch, tmp_path):
     assert rouverte.execute("SELECT MAX(id) FROM executions").fetchone()[0] == 4
     from maxprofit.store.reparation import recaler_la_numerotation
     assert recaler_la_numerotation(rouverte) is None, "rien de plus à faire"
+
+
+@pytest.mark.skipif(not URL, reason="MAXPROFIT_PG_TEST_URL non défini")
+def test_la_ligne_d_etat_broker_et_les_index_perdus_sont_recrees(
+        monkeypatch, tmp_path):
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_write
+
+    monkeypatch.setenv("DATABASE_URL", URL)
+    conn = open_read_write(tmp_path / "x")
+    conn.execute("DELETE FROM etat_broker")
+    conn.execute("DROP INDEX IF EXISTS idx_payouts_pair")
+    rouverte = open_read_write(tmp_path / "x")
+    etat_broker.noter_echec(rouverte, "essai")
+    assert etat_broker.lire(rouverte)[0] == 1, (
+        "sans la ligne, l'échec n'était écrit nulle part")
+    assert rouverte.execute(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_payouts_pair'"
+    ).fetchone() is not None
+    etat_broker.noter_succes(rouverte)

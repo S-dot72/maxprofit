@@ -48,11 +48,23 @@ import enum
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
 
 log = logging.getLogger("hosting.operateurs")
+
+#: Un identifiant de conversation Telegram est un entier, négatif pour un
+#: groupe. Le modèle de `.env.example`, « votre_id_de_conversation », recopié
+#: tel quel, avait été inscrit ADMIN : chaque alerte lui échouait sur « chat
+#: not found », et il survivait au retrait de la variable, puisqu'inscrit en
+#: base.
+_CHAT_ID = re.compile(r"-?\d+")
+
+
+def chat_id_valide(chat_id: str) -> bool:
+    return bool(_CHAT_ID.fullmatch(str(chat_id).strip()))
 
 ENV_CODE_ADMIN = "TELEGRAM_ACCESS_CODE"
 ENV_CODE_OBSERVATEUR = "TELEGRAM_VIEWER_CODE"
@@ -198,6 +210,13 @@ class Annuaire:
 
     def _charger(self) -> None:
         self._inscrits = self.depot.lire()
+        invalides = [c for c in self._inscrits if not chat_id_valide(c)]
+        if invalides:
+            for chat_id in invalides:
+                del self._inscrits[chat_id]
+            log.warning("Opérateur(s) retiré(s), identifiant non numérique : "
+                        "%s", ", ".join(invalides))
+            self._enregistrer()
 
     def _enregistrer(self) -> None:
         self.depot.ecrire(self._inscrits)
@@ -210,6 +229,12 @@ class Annuaire:
         inscrit. Or c'est précisément le moment où l'on a besoin d'être prévenu.
         """
         historique = os.environ.get(ENV_CHAT_HISTORIQUE, "").strip()
+        if historique and not chat_id_valide(historique):
+            log.warning("%s=%r n'est pas un identifiant de conversation "
+                        "Telegram (un nombre) : ignoré. Retirez-le des "
+                        "réglages ou mettez-y votre vrai identifiant.",
+                        ENV_CHAT_HISTORIQUE, historique)
+            return
         if historique and historique not in self._inscrits:
             self._inscrits[historique] = {
                 "role": Role.ADMIN.value,
