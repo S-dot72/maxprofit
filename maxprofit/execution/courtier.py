@@ -41,8 +41,12 @@ from maxprofit.collect.pocketoption import (
     SessionExpiree,
     SourceIndisponible,
     _forcer_region,
-    points_d_acces,
+    abandonner_client,
+    etat_du_socket,
     installer_boucle_asyncio,
+    installer_connexion_maitrisee,
+    points_d_acces,
+    preparer_client,
     verifier_ssid,
 )
 from maxprofit.core.payout import au_plafond
@@ -118,6 +122,7 @@ class CourtierDemo:
         #
         # Corriger un chemin de connexion sur deux, c'est ne rien corriger :
         # la collecte repartait et la course restait au sol.
+        installer_connexion_maitrisee()
         adresses = points_d_acces(demo=True)
         echecs: list[str] = []
         for rang, nom in enumerate(adresses):
@@ -125,6 +130,7 @@ class CourtierDemo:
             try:
                 # `demo=True` en dur : ce n'est pas un paramètre de la classe.
                 self._client = PocketOption(demo=True, ssid=self.ssid)
+                preparer_client(self._client)
                 self._client.connect()
                 self._attendre_le_socket()
                 # ⚠ L'AUTHENTIFICATION EST DANS LA BOUCLE, ET C'EST TOUT
@@ -172,12 +178,8 @@ class CourtierDemo:
         """Referme un client à moitié ouvert sans lever : on traite déjà un
         échec, et une seconde erreur masquerait la première."""
         client, self._client = self._client, None
-        if client is None:
-            return
-        try:
-            client.close()
-        except Exception:                        # noqa: BLE001
-            log.debug("Fermeture du client du courtier en échec", exc_info=True)
+        if client is not None:
+            abandonner_client(client)
 
     def _attendre_le_socket(self) -> None:
         """Attend l'ouverture du socket, ou lève.
@@ -188,11 +190,11 @@ class CourtierDemo:
         """
         limite = time.monotonic() + DELAI_CONNEXION_SEC
         while time.monotonic() < limite:
-            if getattr(self._globals, "check_websocket_if_error", False):
+            ouvert, erreur = etat_du_socket(self._client, self._globals)
+            if erreur:
                 raise SourceIndisponible(
-                    f"Erreur WebSocket à la connexion : "
-                    f"{self._globals.websocket_error_reason}")
-            if self._client.check_connect():
+                    f"Erreur WebSocket à la connexion : {erreur}")
+            if ouvert:
                 return
             time.sleep(0.2)
         raise SourceIndisponible(
@@ -217,6 +219,9 @@ class CourtierDemo:
 
     def fermer(self) -> None:
         if self._client is not None:
+            # `disconnect()` n'arrête pas la boucle de reconnexion : sans
+            # abandon, le client continuerait de tenir un socket en fantôme.
+            abandonner_client(self._client)
             try:
                 self._client.disconnect()
             except Exception as erreur:      # noqa: BLE001

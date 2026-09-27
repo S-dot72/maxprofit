@@ -182,3 +182,27 @@ def test_aucune_adresse_authentifiante_accuse_le_JETON(courtier_factice,
     message = str(leve.value)
     assert "recapturez le jeton" in message.lower()
     assert "A" in message and "B" in message
+
+
+def test_une_adresse_qui_ne_repond_pas_est_ABANDONNEE(courtier_factice,
+                                                      monkeypatch):
+    """`PocketOption` n'a pas de `close()` : l'appel levait, l'erreur etait
+    avalee, et le client rate continuait de rappeler le broker a vie."""
+    from maxprofit.collect.pocketoption import SessionExpiree
+
+    clients = []
+    vrai_init = _ClientFactice.__init__
+
+    def init_avec_api(self, demo, ssid):
+        vrai_init(self, demo, ssid)
+        self.api = types.SimpleNamespace(websocket_client=types.SimpleNamespace())
+        clients.append(self)
+
+    monkeypatch.setattr(_ClientFactice, "__init__", init_avec_api)
+    _ClientFactice.region_qui_ouvre = "AUCUNE"
+    c = courtier_factice.CourtierDemo(ssid=SSID_VALIDE, plafonds=None)
+    with pytest.raises(SessionExpiree):
+        c.connecter()
+    assert len(clients) == 2
+    assert all(k.api.websocket_client._maxprofit_abandon.is_set()
+               for k in clients), "chaque client rate doit etre arrete"
