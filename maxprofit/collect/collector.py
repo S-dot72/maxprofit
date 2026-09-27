@@ -289,6 +289,20 @@ class Config:
 FATALES = (sqlite3.ProgrammingError, sqlite3.IntegrityError, BotError,
            TypeError, AttributeError, NameError, ImportError)
 
+#: Plafond de la pause qui suit une écriture en base ratée.
+PAUSE_BASE_MAX_SEC = 300
+
+
+def _erreur_de_base(erreur: BaseException) -> bool:
+    """L'erreur vient-elle du pilote de base plutôt que du broker ?
+
+    Depuis le passage à PostgreSQL, une erreur de schéma n'est plus une
+    `sqlite3.ProgrammingError` : elle tombait dans « Connexion perdue » et
+    était comptée comme un refus du broker.
+    """
+    return type(erreur).__module__.split(".")[0] in (
+        "psycopg", "sqlite3", "libsql", "libsql_experimental")
+
 
 class Collector:
     def __init__(self, source: MarketDataSource, cfg: Config):
@@ -319,6 +333,9 @@ class Collector:
         #: légèrement en retard ne trompe personne.
         self.echecs_broker = 0
         self.pause_jusqu_a_sec = 0.0
+        #: Pause qui suit une écriture en base ratée. Distincte du backoff du
+        #: broker, que chaque reconnexion réussie remet à une seconde.
+        self._pause_base = 0
         self._t_dernier_tick = maintenant
 
     def stop(self, *_):
@@ -445,6 +462,7 @@ class Collector:
         valider(self.conn)
         if n_t or n_c:
             log.debug("flush: %d minute(s) de ticks, %d bougies", n_t, n_c)
+        self._pause_base = 0
 
     def _ecrire_les_chemins(self) -> int:
         """Les minutes closes, encodées puis écrites. Zéro si on ne garde pas.
@@ -513,7 +531,7 @@ class Collector:
         panne de stockage — en cessant d'appeler le seul acteur qui n'y est
         pour rien.
         """
-        if not base_vivante:
+        if not base_vivante or _erreur_de_base(erreur):
             log.info("Panne imputée à la base, pas au broker : %s", erreur)
             return
         etat_broker.noter_echec(self.conn, str(erreur))
@@ -642,6 +660,20 @@ class Collector:
                     self._vider_tampons()
                     if not self.running:
                         break
+                    if _erreur_de_base(erreur):
+                        # ⚠ LE BROKER N'Y EST POUR RIEN, ET IL PAYAIT QUAND MÊME.
+                        #
+                        # Chaque reconnexion réussie remet `backoff` à 1 avant
+                        # que l'écriture ne rééchoue : une colonne mal typée
+                        # faisait donc réabonner neuf paires toutes les trois
+                        # secondes, des heures durant. Cette pause-ci ne se
+                        # remet à zéro qu'après une écriture réussie.
+                        self._pause_base = min(
+                            max(self._pause_base * 2, 5), PAUSE_BASE_MAX_SEC)
+                        log.error("Écriture en base impossible : pause de %ds "
+                                  "avant de réessayer.", self._pause_base)
+                        time.sleep(self._pause_base)
+                        continue
                     time.sleep(backoff)
                     backoff = min(backoff * 2, self.cfg.max_backoff_sec)
         finally:
