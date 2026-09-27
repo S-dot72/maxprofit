@@ -1516,3 +1516,24 @@ def test_un_serveur_qui_se_TAIT_apres_la_connexion_est_un_filtrage():
     sondage = po.sonder_le_chemin(url, delai_sec=0.3)
     assert "TCP ok" in sondage and "réponse ✗" in sondage
     assert "filtre" in po.lire_le_sondage(sondage)
+
+
+def test_la_fin_de_session_d_un_client_ne_DECONNECTE_pas_l_autre():
+    """`websocket_is_connected` est unique pour deux clients (collecteur et
+    courtier) : la fin de l'un le remettait a faux sous les pieds de l'autre."""
+    gv = _GlobalsBoucle()
+    po._compter_session(gv, +1)            # le collecteur est connecte
+    try:
+        client, ws_client = _client_prepare()
+        ws_client.globals_ = gv
+
+        @contextlib.asynccontextmanager
+        async def ouvrir(url):
+            yield _SocketFactice()
+
+        asyncio.run(po.boucle_de_connexion(ws_client, ouvrir, gv, _ping_inerte))
+        assert gv.websocket_is_connected is True, (
+            "le courtier a fini sa session, le collecteur est toujours la")
+    finally:
+        po._compter_session(gv, -1)
+    assert gv.websocket_is_connected is False

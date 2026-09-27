@@ -228,13 +228,10 @@ class CourtierDemo:
 
     def fermer(self) -> None:
         if self._client is not None:
-            # `disconnect()` n'arrête pas la boucle de reconnexion : sans
-            # abandon, le client continuerait de tenir un socket en fantôme.
+            # L'abandon referme le socket et termine le thread. `disconnect()`
+            # de la bibliothèque ne faisait ni l'un ni l'autre, et remettait à
+            # faux l'indicateur « connecté » partagé avec le collecteur.
             abandonner_client(self._client)
-            try:
-                self._client.disconnect()
-            except Exception as erreur:      # noqa: BLE001
-                log.warning("Fermeture du courtier : %s", erreur)
             self._client = None
 
     # --- lecture du marché --------------------------------------------------
