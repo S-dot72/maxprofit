@@ -1442,7 +1442,10 @@ def test_la_poignee_de_main_a_son_BUDGET_et_le_thread_se_termine(monkeypatch):
         raise TimeoutError("timed out during opening handshake")
 
     faux_websockets.connect = connect
+    module_api = types.ModuleType("pocketoptionapi.api")
+    module_api.PocketOptionAPI = type("PocketOptionAPI", (), {})
     for nom, module in (("pocketoptionapi", paquet),
+                        ("pocketoptionapi.api", module_api),
                         ("pocketoptionapi.ws", paquet_ws),
                         ("pocketoptionapi.ws.client", module_client),
                         ("websockets", faux_websockets)):
@@ -1463,6 +1466,8 @@ def test_la_poignee_de_main_a_son_BUDGET_et_le_thread_se_termine(monkeypatch):
         asyncio.run(ws_client.connect())
     assert appels[0]["open_timeout"] == po.DELAI_POIGNEE_DE_MAIN_SEC
     assert appels[0]["additional_headers"] == po.EN_TETES_WEBSOCKET
+    assert module_api.PocketOptionAPI.send_websocket_request is not None, (
+        "l'envoi de la bibliothèque doit être remplacé")
 
 
 # --------------------------------------------------------------------------- #
@@ -1537,3 +1542,61 @@ def test_la_fin_de_session_d_un_client_ne_DECONNECTE_pas_l_autre():
     finally:
         po._compter_session(gv, -1)
     assert gv.websocket_is_connected is False
+
+
+# --------------------------------------------------------------------------- #
+# L'envoi : ni verrou global, ni attente sans fin
+# --------------------------------------------------------------------------- #
+
+class _SocketQuiRecoit:
+    def __init__(self, bloque=False):
+        self.recu: list[str] = []
+        self.bloque = bloque
+
+    async def send(self, data):
+        if self.bloque:
+            await asyncio.sleep(3600)
+        self.recu.append(data)
+
+
+def _client_sur_sa_boucle(ws, ouvert=True):
+    boucle = asyncio.new_event_loop()
+    threading.Thread(target=boucle.run_forever, daemon=True).start()
+    return types.SimpleNamespace(websocket=ws, _maxprofit_boucle=boucle,
+                                 _maxprofit_thread=-1,
+                                 _maxprofit_ouvert=ouvert), boucle
+
+
+def test_une_trame_part_par_la_boucle_DU_SOCKET():
+    ws = _SocketQuiRecoit()
+    client, boucle = _client_sur_sa_boucle(ws)
+    try:
+        assert po.envoyer_sur_le_socket(client, '42["x"]', _GlobalsBoucle())
+        assert ws.recu == ['42["x"]']
+    finally:
+        boucle.call_soon_threadsafe(boucle.stop)
+
+
+def test_un_socket_ferme_refuse_l_envoi_TOUT_DE_SUITE():
+    """La bibliothèque attendait sans limite que « connecté » repasse à vrai,
+    verrou global en main : tous les autres envois tournaient à vide."""
+    ws = _SocketQuiRecoit()
+    client, boucle = _client_sur_sa_boucle(ws, ouvert=False)
+    try:
+        debut = time.monotonic()
+        assert not po.envoyer_sur_le_socket(client, "42[]", _GlobalsBoucle())
+        assert time.monotonic() - debut < 1 and ws.recu == []
+    finally:
+        boucle.call_soon_threadsafe(boucle.stop)
+
+
+def test_un_envoi_qui_ne_revient_pas_est_ABANDONNE(monkeypatch):
+    monkeypatch.setattr(po, "DELAI_ENVOI_SEC", 0.2)
+    client, boucle = _client_sur_sa_boucle(_SocketQuiRecoit(bloque=True))
+    try:
+        assert not po.envoyer_sur_le_socket(client, "42[]", _GlobalsBoucle())
+        # Le verrou est rendu : l'envoi suivant n'attend pas le premier.
+        client.websocket = _SocketQuiRecoit()
+        assert po.envoyer_sur_le_socket(client, "42[1]", _GlobalsBoucle())
+    finally:
+        boucle.call_soon_threadsafe(boucle.stop)

@@ -981,3 +981,13 @@ def test_la_pause_s_ARRETE_quand_un_autre_client_joint_le_broker(tmp_path):
 
     assert src.connexions >= 1, "le broker doit être rappelé sans attendre"
     assert time.monotonic() - debut < 5
+
+
+def test_BTCUSD_n_est_plus_collectee_par_defaut():
+    """Retirée « hors calibration » le 2026-09-27, mais seulement dans un
+    commentaire : elle restait dans la liste, et l'ôter de PAIRES_FIXES ne
+    changeait rien — l'élargissement par défaut la rajoutait."""
+    from maxprofit.collect.collector import PAIRES_EN_PLUS_PAR_DEFAUT
+
+    assert "BTCUSD_otc" not in PAIRES_EN_PLUS_PAR_DEFAUT
+    assert "AUDNZD_otc" in PAIRES_EN_PLUS_PAR_DEFAUT

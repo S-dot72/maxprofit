@@ -881,7 +881,7 @@ PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
     # couverture est restée à 100 %. L'ancienne note « 4 est le seul nombre
     # observé en train de livrer des ticks » mesurait donc une CADENCE, pas un
     # nombre — elle précède l'espacement de 0,4 s entre `changeSymbol`.
-    "CHFJPY_otc", "BTCUSD_otc",
+    "CHFJPY_otc",
     # Palier 6 -> 9. Le chiffre vient de l'arithmétique, pas d'une envie :
     # six paires donnent 3,33 actifs au plafond en moyenne (mesuré sur 2 613
     # relevés), soit 0,555 par paire ; la stratégie rend un signal toutes les
