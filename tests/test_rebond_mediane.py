@@ -32,8 +32,14 @@ def _figure(pas=0.0004, cloture_rouge=None, rouges=2, verte=True):
         m, _ = _mediane_et_sigma(tuple(b + [_c(len(b), haut, haut)]),
                                  len(b), 20)
         derniere = k == rouges - 1
-        cl = (cloture_rouge if derniere and cloture_rouge is not None
-              else haut - (haut - m) * (0.9 if derniere else 0.5))
+        # Toujours une vraie rouge (clôture sous l'ouverture) : les
+        # intermédiaires se rapprochent de la médiane, la dernière la frôle.
+        if derniere and cloture_rouge is not None:
+            cl = cloture_rouge
+        elif derniere:
+            cl = min(haut - 0.00005, haut - (haut - m) * 0.9)
+        else:
+            cl = haut - max(abs(haut - m) * 0.3, 0.00005)
         b.append(_c(len(b), haut, cl,
                     bas=min(m, cl) if derniere else None))
     o = b[-1].close
@@ -56,9 +62,14 @@ def test_une_seule_rouge_suffit_aussi():
     assert _evaluer(_figure(rouges=1)).signal is not None
 
 
-def test_trois_rouges_ce_n_est_plus_le_setup():
-    """« Si c'est seulement 2 bougies, le setup reste valable. »"""
-    assert _evaluer(_figure(rouges=3)).signal is None
+def test_trois_ou_quatre_rouges_restent_le_setup():
+    """« Trois rouges ou quatre rouges font également partie du setup. »"""
+    assert _evaluer(_figure(rouges=3)).signal is not None
+    assert _evaluer(_figure(rouges=4)).signal is not None
+
+
+def test_cinq_rouges_ce_n_est_plus_le_setup():
+    assert _evaluer(_figure(rouges=5)).signal is None
 
 
 def test_une_rouge_qui_CLOTURE_sous_la_mediane_casse_le_setup():
