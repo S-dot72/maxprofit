@@ -124,3 +124,61 @@ def test_aucune_adresse_qui_repond_leve_en_les_NOMMANT(courtier_factice):
     message = str(leve.value)
     assert "A" in message and "B" in message
     assert _ClientFactice.tentatives == ["A", "B"]
+
+
+def test_une_adresse_qui_ouvre_SANS_authentifier_est_un_echec_d_adresse(
+        courtier_factice, monkeypatch):
+    """Les deux adresses demo ne sont pas equivalentes.
+
+    `try-demo-eu` ouvre le socket et sert le catalogue des actifs — qui est
+    public — sans authentifier la session. La cascade basculait dessus quand
+    `demo-api-eu` expirait depuis l'hebergeur, puis levait `SessionExpiree` en
+    accusant le jeton — lequel authentifiait parfaitement depuis un poste
+    local, solde recu a l'appui.
+
+    J'avais place la verification d'authentification HORS de la boucle, en
+    raisonnant qu'« un jeton refuse ne se repare pas en changeant d'adresse ».
+    Vrai pour un jeton perime. Faux pour une adresse qui n'authentifie pas.
+    """
+    mod = courtier_factice
+    _ClientFactice.region_qui_ouvre = "TOUTES"
+    monkeypatch.setattr(_ClientFactice, "check_connect", lambda self: True)
+
+    # Seule la SECONDE adresse donne un solde.
+    faux = sys.modules["pocketoptionapi"].global_value
+    faux.balance = None
+    faux.balance_updated = False
+
+    vraie = mod.CourtierDemo._attendre_le_socket
+
+    def socket_puis_solde(self):
+        vraie(self)
+        if _region_courante["nom"] == "B":
+            faux.balance = 250.0
+
+    monkeypatch.setattr(mod.CourtierDemo, "_attendre_le_socket",
+                        socket_puis_solde)
+    c = mod.CourtierDemo(ssid=SSID_VALIDE, plafonds=None)
+    c.connecter()
+    assert _ClientFactice.tentatives == ["A", "B"], (
+        "A ouvre mais n'authentifie pas : il faut passer a B")
+
+
+def test_aucune_adresse_authentifiante_accuse_le_JETON(courtier_factice,
+                                                       monkeypatch):
+    """Quand toutes les adresses ouvrent sans authentifier, c'est le jeton
+    qu'il faut recapturer — et le message doit le dire, pas parler de reseau."""
+    from maxprofit.collect.pocketoption import SessionExpiree
+
+    mod = courtier_factice
+    monkeypatch.setattr(_ClientFactice, "check_connect", lambda self: True)
+    faux = sys.modules["pocketoptionapi"].global_value
+    faux.balance = None
+    faux.balance_updated = False
+
+    c = mod.CourtierDemo(ssid=SSID_VALIDE, plafonds=None)
+    with pytest.raises(SessionExpiree) as leve:
+        c.connecter()
+    message = str(leve.value)
+    assert "recapturez le jeton" in message.lower()
+    assert "A" in message and "B" in message

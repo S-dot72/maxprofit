@@ -660,6 +660,22 @@ class PocketOptionSource:
                 self._client.connect()
                 self._verifier_point_d_acces()
                 self._attendre_le_socket()
+                # ⚠ UNE ADRESSE QUI OUVRE SANS AUTHENTIFIER EST UN ÉCHEC DE
+                # CETTE ADRESSE.
+                #
+                # Les deux adresses démo ne sont pas équivalentes :
+                # `try-demo-eu` ouvre le socket et sert le catalogue — qui est
+                # public — sans authentifier la session. S'y résigner donnerait
+                # une collecte connectée qui ne recevra jamais un tick.
+                #
+                # On ne lève QUE s'il reste une adresse à essayer. Sur la
+                # dernière, on garde le comportement d'origine : avertir sans
+                # tuer, parce que le solde peut tarder et qu'arrêter une
+                # collecte valide sur un signal indirect serait pire que le mal.
+                if rang + 1 < len(adresses) and not self._authentifie_a_temps():
+                    raise SourceIndisponible(
+                        "socket ouvert mais session non authentifiée — le "
+                        "catalogue est public, cette adresse ne sert à rien")
             except (SourceIndisponible, BrokerInjoignable) as erreur:
                 echecs.append(f"{nom} ({type(erreur).__name__}: {erreur})")
                 log.warning("Point d'accès %s injoignable (%d/%d) : %s",
@@ -943,6 +959,24 @@ class PocketOptionSource:
         if vu or solde is not None:
             return True
         return False
+
+    def _authentifie_a_temps(self) -> bool:
+        """Le solde arrive-t-il dans le délai imparti ?
+
+        Extrait pour que la cascade de points d'accès puisse s'en servir sans
+        dupliquer le délai : deux implémentations de la même attente
+        divergeraient, et celle-ci décide si l'on change d'adresse.
+        """
+        delai = (DELAI_AUTHENTIFICATION_SEC
+                 if self.delai_authentification_sec is None
+                 else self.delai_authentification_sec)
+        limite = time.monotonic() + delai
+        while True:
+            if self.authentifie():
+                return True
+            if time.monotonic() >= limite:
+                return False
+            time.sleep(0.5)
 
     def _signaler_si_non_authentifie(self) -> None:
         """Le dire fort, une fois, au moment où c'est constatable.

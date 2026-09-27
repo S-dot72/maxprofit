@@ -127,7 +127,26 @@ class CourtierDemo:
                 self._client = PocketOption(demo=True, ssid=self.ssid)
                 self._client.connect()
                 self._attendre_le_socket()
-            except SourceIndisponible as erreur:
+                # ⚠ L'AUTHENTIFICATION EST DANS LA BOUCLE, ET C'EST TOUT
+                # L'ENJEU.
+                #
+                # Elle était en dehors, et je l'y avais mise en raisonnant
+                # qu'« un jeton refusé ne se répare pas en changeant
+                # d'adresse ». Vrai pour un jeton périmé. Faux pour une adresse
+                # qui n'authentifie pas.
+                #
+                # Car les deux adresses démo ne sont pas équivalentes :
+                # `try-demo-eu` ouvre le socket et sert le catalogue des actifs
+                # sans authentifier la session. Quand `demo-api-eu` expirait
+                # depuis l'hébergeur, la cascade basculait dessus, le socket
+                # s'ouvrait, et l'on levait `SessionExpiree` en accusant le
+                # jeton — lequel authentifiait parfaitement depuis un poste
+                # local, solde reçu à l'appui.
+                #
+                # Une adresse qui ouvre sans authentifier est donc un ÉCHEC de
+                # cette adresse, pas du jeton. On passe à la suivante.
+                self._verifier_authentification()
+            except (SourceIndisponible, SessionExpiree) as erreur:
                 echecs.append(f"{nom} ({erreur})")
                 log.warning("Point d'accès %s injoignable (%d/%d) : %s",
                             nom, rang + 1, len(adresses), erreur)
@@ -138,11 +157,16 @@ class CourtierDemo:
                             "échec(s).", nom, rang)
             break
         else:
-            raise SourceIndisponible(
-                "Aucun point d'accès n'a répondu. Tentés : "
-                + " | ".join(echecs or ["aucun"]))
-
-        self._verifier_authentification()
+            # Toutes les adresses ont échoué. Si l'une au moins a ouvert son
+            # socket sans authentifier, c'est le jeton qu'il faut recapturer ;
+            # si aucune n'a ouvert, c'est le réseau. Le message porte les deux
+            # cas parce qu'ils appellent des gestes opposés.
+            raise SessionExpiree(
+                "Aucun point d'accès n'a authentifié la session. Tentés : "
+                + " | ".join(echecs or ["aucun"])
+                + ". Si l'un a ouvert son socket sans donner de solde, "
+                  "recapturez le jeton ; si aucun n'a ouvert, c'est le réseau "
+                  "vers le broker.")
 
     def _fermer_client_sans_bruit(self) -> None:
         """Referme un client à moitié ouvert sans lever : on traite déjà un
