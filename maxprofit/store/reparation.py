@@ -98,6 +98,32 @@ def _conversion(colonne: str, actuel: str, attendu: str) -> str:
     return f"{source}::{attendu}"
 
 
+def _index(nom: str, table: str, colonnes: str):
+    return (f"index {nom} recréé",
+            (("SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() "
+              "AND indexname = ?", (nom,)),
+             f"CREATE INDEX IF NOT EXISTS {nom} ON {table}({colonnes})"))
+
+
+#: Ce qu'un dump peut perdre sans qu'aucune erreur ne le dise.
+#:
+#: La ligne unique d'`etat_broker` : sans elle, chaque `UPDATE ... WHERE id =
+#: 1` ne touche aucune ligne, en silence, et le compteur d'échecs du broker
+#: n'est jamais écrit. Les index : sans eux rien ne casse, mais chaque lecture
+#: de payouts ou de bougies parcourt toute la table.
+_ELEMENTS_INDISPENSABLES = (
+    ("etat_broker : ligne unique recréée",
+     (("SELECT 1 FROM etat_broker WHERE id = 1", ()),
+      "INSERT INTO etat_broker (id, echecs_consecutifs) VALUES (1, 0) "
+      "ON CONFLICT DO NOTHING")),
+    _index("idx_ticks_ts", "ticks", "ts_ms"),
+    _index("idx_candles_ts", "candles", "ts_sec"),
+    _index("idx_payouts_pair", "payouts", "pair, ts_sec"),
+    _index("idx_tick_paths_minute", "tick_paths", "minute_sec"),
+    _index("idx_exec_campagne", "executions", "campagne"),
+)
+
+
 def planifier(colonnes: dict[str, dict[str, str]],
               uniques: dict[str, list[frozenset[str]]],
               defaut_id_executions: bool) -> list[tuple[str, list[str]]]:
@@ -182,6 +208,16 @@ def reparer_le_schema(conn) -> list[str]:
                 conn.execute(sql)
             log.warning("Schéma réparé — %s", description)
             bilan.append(description)
+        except Exception as erreur:                      # noqa: BLE001
+            log.error("Réparation du schéma échouée — %s : %s",
+                      description, erreur)
+            bilan.append(f"ÉCHEC {description} : {erreur}")
+    for description, sql in _ELEMENTS_INDISPENSABLES:
+        try:
+            if conn.execute(*sql[0]).fetchone() is None:
+                conn.execute(sql[1])
+                log.warning("Schéma réparé — %s", description)
+                bilan.append(description)
         except Exception as erreur:                      # noqa: BLE001
             log.error("Réparation du schéma échouée — %s : %s",
                       description, erreur)

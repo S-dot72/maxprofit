@@ -146,6 +146,39 @@ def univers_trade(cfg) -> tuple[str, ...]:
     return tuple(cfg.paires_fixes or PAIRES_PAR_DEFAUT)
 
 
+#: L'adresse publique que Render donne à chaque service.
+ENV_ADRESSE_PUBLIQUE = "RENDER_EXTERNAL_URL"
+
+#: Sous les quinze minutes au-delà desquelles l'offre gratuite endort le
+#: service faute de requête entrante.
+INTERVALLE_EVEIL_SEC = 600
+
+
+async def rester_eveille(http, adresse: str,
+                         intervalle_sec: float = INTERVALLE_EVEIL_SEC) -> None:
+    """S'appelle soi-même par l'adresse publique, pour ne pas s'endormir.
+
+    ⚠ LE NOUVEAU SERVICE S'ENDORMAIT AU BOUT D'UN QUART D'HEURE. L'offre
+    gratuite met en veille un service qui ne reçoit aucune requête pendant
+    quinze minutes — collecte et course comprises. Un pingeur EXTERNE le
+    gardait éveillé, mais il vise une adresse fixe : en changeant de service,
+    l'adresse change, et le nouveau s'endormait. Symptôme : collecte
+    « en cours », dernier battement vieux de quatorze minutes.
+
+    La requête passe par l'adresse publique, donc par le frontal de
+    l'hébergeur : c'est une requête ENTRANTE, celle qui compte. Une erreur
+    ne fait qu'attendre le tour suivant.
+    """
+    url = adresse.rstrip("/") + "/ping"
+    while True:
+        await asyncio.sleep(intervalle_sec)
+        try:
+            async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)):
+                pass
+        except Exception as erreur:                      # noqa: BLE001
+            log.warning("Réveil par %s en échec : %s", url, erreur)
+
+
 def _alerte_synchrone(bot):
     """Un pont thread -> boucle asyncio pour que la course puisse alerter.
 
@@ -222,6 +255,10 @@ async def _servir(args) -> int:
             boucle.call_later(args.duration, _arreter)
 
         taches = [asyncio.create_task(superviseur.boucler(), name="superviseur")]
+        adresse = os.environ.get(ENV_ADRESSE_PUBLIQUE, "").strip()
+        if adresse:
+            taches.append(asyncio.create_task(
+                rester_eveille(http, adresse), name="eveil"))
         if bot is not None:
             await bot.alerter("🟢 <b>Collecte démarrée</b>")
             taches.append(asyncio.create_task(bot.boucler(), name="telegram"))

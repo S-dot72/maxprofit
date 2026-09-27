@@ -928,7 +928,7 @@ class CoursePlanDemo:
             log.warning("Ordre refusé (%s) : le pas n'est pas joué.",
                         execution.refus)
             self.etat.trade_en_cours = None
-            self.journal.ecrire(execution)
+            self._journaliser(execution)
             self._noter_un_refus(signal.pair, execution.refus)
             return
         # ⚠ ÉCRIRE MAINTENANT, avant les quinze minutes d'attente.
@@ -939,7 +939,7 @@ class CoursePlanDemo:
         # dénouement — cinq ordres exécutés chez le broker, zéro dans nos
         # livres, et un solde de plan resté à 250 $ pendant que le compte
         # réel bougeait.
-        self.journal.ecrire(execution)
+        journalise = self._journaliser(execution)
         # ⚠ DATÉ DE L'ENTRÉE, PAS DU DÉNOUEMENT.
         #
         # La règle d'indépendance (#68) veut le pas suivant « au moins quinze
@@ -959,7 +959,22 @@ class CoursePlanDemo:
         self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
         execution = self.courtier.denouer(execution)
-        self.journal.mettre_a_jour(execution)
+        if not journalise:
+            # Second essai, avec le dénouement : l'ordre entre au journal
+            # complet, et le solde du plan en tient compte.
+            self._journaliser(execution)
+        else:
+            try:
+                self.journal.mettre_a_jour(execution)
+            except Exception as erreur:          # noqa: BLE001
+                # L'ordre reste « en vol » au journal : la reprise suivante
+                # le résoudra auprès du broker. Tomber ici ferait perdre la
+                # session en cours, qui connaît déjà son résultat.
+                log.exception("Dénouement de %s non journalisé",
+                              execution.order_id)
+                self._prevenir(
+                    f"⚠ Dénouement de l'ordre {execution.order_id} non "
+                    f"enregistré : {erreur}")
 
         self.etat.trade_en_cours = None
         if execution.resultat not in ("win", "loose", "draw"):
@@ -1104,6 +1119,27 @@ class CoursePlanDemo:
             return False
         self.jouer_un_pas(signal)
         return True
+
+    def _journaliser(self, execution) -> bool:
+        """Écrit l'ordre au journal. Rend False si l'écriture a échoué.
+
+        ⚠ NE LÈVE PAS, PARCE QUE L'ORDRE EST DÉJÀ PARTI. Une écriture ratée
+        après `placer()` faisait tomber la course : l'ordre courait chez le
+        broker sans trace dans le journal, et la session en cours était
+        perdue (« duplicate key value violates unique constraint
+        executions_pkey », 2026-09-28). On prévient, on suit l'ordre jusqu'à
+        son dénouement, et l'on réessaie alors.
+        """
+        try:
+            self.journal.ecrire(execution)
+            return True
+        except Exception as erreur:              # noqa: BLE001
+            log.exception("Ordre %s NON journalisé", execution.order_id)
+            self._prevenir(
+                f"⚠ Ordre {execution.pair} {execution.sens} "
+                f"{execution.mise:.2f} $ (id {execution.order_id}) parti "
+                f"chez le broker mais NON enregistré au journal : {erreur}")
+            return False
 
     def _sauvegarder(self) -> None:
         """Fige l'état tout de suite. Ne doit jamais faire tomber la course."""
