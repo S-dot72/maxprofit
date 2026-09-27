@@ -917,6 +917,18 @@ PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
     # en rend un toutes les 35. On gagne de la disponibilité, pas de la
     # fréquence.
     "AUDNZD_otc",
+    # Dixième abonnement : le socket en a tenu dix (BTCUSD_otc compris), et
+    # BTCUSD_otc sortie laisse la place.
+    #
+    # EURGBP_otc, parce que le débit de signaux suit le rapport
+    # tolérance/amplitude, et que EURUSD_otc — la majeure la plus calme —
+    # donne le meilleur : un signal toutes les 35 bougies, contre 304 pour
+    # AUDCAD_otc. Une autre majeure peu volatile vise le même côté de la
+    # plage. Choisie sur ce raisonnement, pas sur une mesure de sa
+    # disponibilité au plafond : `outils/classer_paires.py` la donne, et la
+    # garde de calibration de la course l'écarte d'elle-même si son amplitude
+    # sort de la plage.
+    "EURGBP_otc",
 )
 
 
