@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import threading
 import time
 from typing import Iterator, List, Sequence
@@ -396,6 +397,86 @@ async def boucle_de_connexion(ws_client, ouvrir, global_value,
                     global_value.websocket_is_connected = False
         if not abandon.is_set():
             await asyncio.sleep(PAUSE_ENTRE_TENTATIVES_SEC)
+
+
+def sonder_le_chemin(url: str, delai_sec: float = 10.0) -> str:
+    """Refait la connexion à la main, étape par étape, et dit laquelle cède.
+
+    « timed out during opening handshake » couvre DNS, TCP, TLS et la mise à
+    niveau HTTP d'un seul bloc : il ne distingue pas un hébergeur dont l'IP est
+    bloquée (TCP) d'un serveur qui filtre la négociation (TLS, HTTP), ni d'un
+    chemin sain où c'est le client qui fautait. Ce sont trois remèdes opposés.
+    """
+    import base64
+    import ssl
+    from urllib.parse import urlsplit
+
+    morceaux = urlsplit(url)
+    hote = morceaux.hostname or ""
+    securise = morceaux.scheme in ("wss", "https")
+    port = morceaux.port or (443 if securise else 80)
+    chemin = (morceaux.path or "/") + (
+        f"?{morceaux.query}" if morceaux.query else "")
+    etapes: list[str] = []
+    debut = time.monotonic()
+
+    def ecoule() -> str:
+        return f"{time.monotonic() - debut:.2f} s"
+
+    try:
+        adresse = socket.getaddrinfo(hote, port, type=socket.SOCK_STREAM)[0][4][0]
+        etapes.append(f"DNS {adresse} ({ecoule()})")
+        brut = socket.create_connection((adresse, port), timeout=delai_sec)
+        etapes.append(f"TCP ok ({ecoule()})")
+        with brut:
+            flux = brut
+            if securise:
+                contexte = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                contexte.check_hostname = False
+                contexte.verify_mode = ssl.CERT_NONE
+                flux = contexte.wrap_socket(brut, server_hostname=hote)
+                etapes.append(f"TLS ok ({ecoule()})")
+            cle = base64.b64encode(os.urandom(16)).decode()
+            requete = (
+                f"GET {chemin} HTTP/1.1\r\nHost: {hote}\r\n"
+                f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {cle}\r\nSec-WebSocket-Version: 13\r\n"
+                + "".join(f"{k}: {v}\r\n" for k, v in EN_TETES_WEBSOCKET.items())
+                + "\r\n")
+            flux.sendall(requete.encode())
+            reponse = b""
+            while b"\r\n" not in reponse and len(reponse) < 1024:
+                morceau = flux.recv(1024)
+                if not morceau:
+                    break
+                reponse += morceau
+            statut = reponse.split(b"\r\n", 1)[0].decode(errors="replace")
+            etapes.append(f"réponse « {statut or 'vide'} » ({ecoule()})")
+    except Exception as erreur:                      # noqa: BLE001
+        prochaine = ("DNS", "TCP", "TLS" if securise else "réponse",
+                     "réponse")[len(etapes)]
+        etapes.append(f"{prochaine} ✗ {type(erreur).__name__}: "
+                      f"{erreur or 'sans message'} ({ecoule()})")
+    return " → ".join(etapes)
+
+
+def lire_le_sondage(sondage: str) -> str:
+    """Ce que le résultat de `sonder_le_chemin` impose de faire."""
+    if "DNS ✗" in sondage:
+        return "Le nom du serveur ne se résout pas depuis l'hébergeur."
+    if "TCP ✗" in sondage:
+        return ("L'hébergeur n'atteint pas le serveur du broker : blocage "
+                "d'adresse IP ou de route. Aucun changement de code n'y fera "
+                "rien ; il faut sortir par une autre adresse (autre région, "
+                "autre serveur, proxy).")
+    if "TLS ✗" in sondage or "réponse ✗" in sondage:
+        return ("Le serveur accepte la connexion puis ne répond plus : il "
+                "filtre l'adresse de l'hébergeur au niveau applicatif. Même "
+                "remède : sortir par une autre adresse.")
+    if " 101 " in sondage:
+        return ("Le chemin réseau est SAIN : la négociation aboutit à la main. "
+                "La panne est dans le client, pas dans le réseau.")
+    return "Le serveur répond mais refuse la négociation."
 
 
 def installer_connexion_maitrisee() -> None:

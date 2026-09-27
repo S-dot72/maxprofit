@@ -1463,3 +1463,56 @@ def test_la_poignee_de_main_a_son_BUDGET_et_le_thread_se_termine(monkeypatch):
         asyncio.run(ws_client.connect())
     assert appels[0]["open_timeout"] == po.DELAI_POIGNEE_DE_MAIN_SEC
     assert appels[0]["additional_headers"] == po.EN_TETES_WEBSOCKET
+
+
+# --------------------------------------------------------------------------- #
+# Le sondage du chemin : dire QUELLE etape cede
+# --------------------------------------------------------------------------- #
+
+import socket
+import threading
+
+
+def _serveur_local(reponse: bytes | None):
+    """Accepte une connexion ; repond `reponse`, ou se tait si None."""
+    ecoute = socket.socket()
+    ecoute.bind(("127.0.0.1", 0))
+    ecoute.listen(1)
+    port = ecoute.getsockname()[1]
+
+    def servir():
+        conn, _ = ecoute.accept()
+        with conn:
+            conn.recv(4096)
+            if reponse is not None:
+                conn.sendall(reponse)
+            else:
+                time.sleep(1.0)
+        ecoute.close()
+
+    threading.Thread(target=servir, daemon=True).start()
+    return f"ws://127.0.0.1:{port}/socket.io/?EIO=4&transport=websocket"
+
+
+def test_un_chemin_sain_est_declare_SAIN_et_accuse_le_client():
+    url = _serveur_local(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+    sondage = po.sonder_le_chemin(url, delai_sec=2)
+    assert "TCP ok" in sondage and "101" in sondage
+    assert "SAIN" in po.lire_le_sondage(sondage)
+
+
+def test_un_port_injoignable_accuse_le_RESEAU_pas_le_code():
+    bouchon = socket.socket()
+    bouchon.bind(("127.0.0.1", 0))
+    port = bouchon.getsockname()[1]
+    bouchon.close()
+    sondage = po.sonder_le_chemin(f"ws://127.0.0.1:{port}/", delai_sec=2)
+    assert "TCP ✗" in sondage
+    assert "Aucun changement de code" in po.lire_le_sondage(sondage)
+
+
+def test_un_serveur_qui_se_TAIT_apres_la_connexion_est_un_filtrage():
+    url = _serveur_local(None)
+    sondage = po.sonder_le_chemin(url, delai_sec=0.3)
+    assert "TCP ok" in sondage and "réponse ✗" in sondage
+    assert "filtre" in po.lire_le_sondage(sondage)

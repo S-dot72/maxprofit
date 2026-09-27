@@ -45,8 +45,10 @@ from maxprofit.collect.pocketoption import (
     etat_du_socket,
     installer_boucle_asyncio,
     installer_connexion_maitrisee,
+    lire_le_sondage,
     points_d_acces,
     preparer_client,
+    sonder_le_chemin,
     verifier_ssid,
 )
 from maxprofit.core.payout import au_plafond
@@ -125,8 +127,10 @@ class CourtierDemo:
         installer_connexion_maitrisee()
         adresses = points_d_acces(demo=True)
         echecs: list[str] = []
+        premiere_url: str | None = None
         for rang, nom in enumerate(adresses):
-            _forcer_region(demo=True, nom=nom)
+            url = _forcer_region(demo=True, nom=nom)
+            premiere_url = premiere_url or url
             try:
                 # `demo=True` en dur : ce n'est pas un paramètre de la classe.
                 self._client = PocketOption(demo=True, ssid=self.ssid)
@@ -167,12 +171,17 @@ class CourtierDemo:
             # socket sans authentifier, c'est le jeton qu'il faut recapturer ;
             # si aucune n'a ouvert, c'est le réseau. Le message porte les deux
             # cas parce qu'ils appellent des gestes opposés.
+            diagnostic = ""
+            if premiere_url:
+                sondage = sonder_le_chemin(premiere_url)
+                diagnostic = (f"\nDiagnostic depuis l'hébergeur : {sondage}.\n"
+                              f"{lire_le_sondage(sondage)}")
             raise SessionExpiree(
                 "Aucun point d'accès n'a authentifié la session. Tentés : "
                 + " | ".join(echecs or ["aucun"])
                 + ". Si l'un a ouvert son socket sans donner de solde, "
                   "recapturez le jeton ; si aucun n'a ouvert, c'est le réseau "
-                  "vers le broker.")
+                  "vers le broker." + diagnostic)
 
     def _fermer_client_sans_bruit(self) -> None:
         """Referme un client à moitié ouvert sans lever : on traite déjà un
