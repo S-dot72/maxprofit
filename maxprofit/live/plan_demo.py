@@ -731,8 +731,6 @@ class CoursePlanDemo:
             self.etat.derniere_bougie[paire] = derniere.ts_sec
             self.etat.bougies_evaluees += 1
             self.etat.derniere_evaluation_ts = maintenant
-            self.delais_evaluation.append(
-                time.time() - (derniere.ts_sec + 60))
             # La bougie close à ts_sec couvre [ts_sec, ts_sec+60[. Le signal
             # est donc daté de sa FIN, et c'est de là qu'on compte la
             # fraîcheur — pas de son début.
@@ -744,6 +742,11 @@ class CoursePlanDemo:
             if maintenant - (derniere.ts_sec + 60) > FRAICHEUR_MAX_SEC:
                 self.etat.bougies_perimees += 1
                 continue
+            # Après le filtre de fraîcheur : une bougie vieille de deux jours
+            # parce que la collecte est arrêtée ne dit rien de la vitesse de
+            # la course, et noyait la mesure (« 174 540 s »).
+            self.delais_evaluation.append(
+                time.time() - (derniere.ts_sec + 60))
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
             if signal is None:
@@ -1706,6 +1709,10 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     journal = JournalExecution(ecriture, campagne=campagne)
     courtier = CourtierDemo(ssid, plafonds)
     courtier.connecter()
+    # Une connexion réussie efface la dette d'attente du collecteur, qui lit
+    # le même compteur : sinon il se tairait encore une demi-heure.
+    from maxprofit.store import etat_broker
+    etat_broker.noter_succes(ecriture)
     try:
         return _assembler(courtier, lecteur, ecriture, journal, plan, paires,
                           campagne, mode_univers, paires_collectees, alerter)

@@ -23,6 +23,7 @@ Attendre après coup ne ferait qu'ajouter du silence par-dessus du bruit.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,12 @@ log = logging.getLogger(__name__)
 #: Le compromis est asymétrique et c'est voulu : attendre trop peu coûte
 #: quelques connexions inutiles, attendre trop coûte des heures de marché.
 PALIERS_SEC = (0, 0, 0, 0, 60, 180, 600, 1200, 1800, 1800, 1800)
+
+#: Levé à chaque connexion réussie, par n'importe quel client du processus.
+#: Le collecteur qui purge sa dette d'attente l'écoute : quand le courtier
+#: vient de prouver que le broker répond, rien ne justifie de se taire
+#: encore une demi-heure.
+CONNEXION_PROUVEE = threading.Event()
 
 
 def lire(conn) -> tuple[int, int | None, str | None]:
@@ -114,6 +121,7 @@ def noter_succes(conn) -> None:
         conn.commit()
     except Exception as erreur:                          # noqa: BLE001
         log.warning("Succès broker non mémorisé : %s", erreur)
+    CONNEXION_PROUVEE.set()
 
 
 def resume(conn) -> str:
