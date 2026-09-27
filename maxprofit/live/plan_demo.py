@@ -145,6 +145,38 @@ QUARANTAINE_MAX_SEC = 86400
 #: les minutes.
 QUARANTAINE_SEC = 3600
 
+#: Plage du rapport « tolérance de la stratégie / amplitude d'une bougie »
+#: dans laquelle la stratégie a été calibrée.
+#:
+#: ⚠ CE N'EST PAS UN RÉGLAGE DE CONFORT : HORS DE CETTE PLAGE, LA STRATÉGIE
+#: NE MESURE PLUS CE QU'ELLE CROIT MESURER.
+#:
+#: `tolerance_pct` sert à deux choses à la fois — dire qu'une bougie TOUCHE la
+#: zone, et dire qu'elle la CASSE. C'est un pourcentage du prix, donc il suit
+#: l'échelle des prix ; il ne suit PAS l'amplitude des bougies. Le même 0,02 %
+#: est donc un filtre serré sur un actif agité et un filtre inexistant sur un
+#: actif immobile.
+#:
+#: Mesuré sur les quatre paires où la stratégie a été calibrée : le rapport y
+#: vaut 0,22 à 0,64, et il prédit le débit de signaux à la perfection
+#: (Spearman rho = -1,00). Mesuré sur BTCUSD_otc : **36,01** — une bougie type
+#: y fait 0,0006 % quand EURUSD_otc fait 0,0301 %. Résultat, toute bougie
+#: touche toute zone proche : 820 signaux sur 1 139 bougies, soit un par
+#: minute et demie, contre un pour trente-cinq sur EURUSD_otc.
+#:
+#: Ces 820 signaux sont aujourd'hui inoffensifs parce que le broker refuse
+#: l'échéance de 900 s sur les cryptos. Ils cesseraient de l'être à la première
+#: échéance acceptée — c'est exactement le piège d'une « adaptation aux
+#: cryptos » qui ne changerait que la durée.
+#:
+#: La borne haute est large (4,0) : on écarte un actif hors d'échelle, pas un
+#: actif un peu plus calme que les paires de calibration.
+RAPPORT_TOLERANCE_MIN = 0.05
+RAPPORT_TOLERANCE_MAX = 4.0
+
+#: Bougies sur lesquelles l'amplitude typique est estimée.
+FENETRE_AMPLITUDE = 60
+
 FRAICHEUR_MAX_SEC = 90
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
@@ -294,6 +326,8 @@ class Etat:
     #: espacés d'une semaine finissaient par écarter une paire parfaitement
     #: saine. La suite n'était consécutive que dans le nom.
     dernier_refus_ts: dict[str, int] = field(default_factory=dict)
+    #: Paires écartées parce que la stratégie y est hors de sa calibration.
+    paires_hors_calibration: int = 0
     #: Paires de l'univers dont NOTRE BASE n'a pas encore assez d'historique.
     #:
     #: Une paire qu'on vient d'ajouter à la collecte est éligible au payout et
@@ -586,6 +620,7 @@ class CoursePlanDemo:
 
         examinees = 0
         sans_historique = 0
+        hors_calibration = 0
         for paire in gratuites + payantes:
             payante = paire not in self.paires
             if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
@@ -603,6 +638,9 @@ class CoursePlanDemo:
                 # fermer le socket. Une paire lue dans notre base ne lui
                 # demande rien, et n'a donc rien à attendre.
                 time.sleep(DELAI_ENTRE_ACTIFS_SEC)
+            if not self._dans_sa_plage_de_calibration(paire, bougies):
+                hors_calibration += 1
+                continue
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 # Trop peu d'historique pour même chercher une zone. C'est le
                 # cas normal d'une paire fraîchement ajoutée à la collecte,
@@ -641,8 +679,10 @@ class CoursePlanDemo:
                 continue
             self.etat.signaux_trouves += 1
             self.etat.paires_sans_historique = sans_historique
+            self.etat.paires_hors_calibration = hors_calibration
             return signal
         self.etat.paires_sans_historique = sans_historique
+        self.etat.paires_hors_calibration = hors_calibration
         return None
 
     def _payout_au_maximum(self, paire: str) -> bool:
@@ -1202,6 +1242,40 @@ class CoursePlanDemo:
             f"({motif or 'sans motif'})")
         self._sauvegarder()
 
+    def _dans_sa_plage_de_calibration(self, paire, bougies) -> bool:
+        """La tolérance de la stratégie est-elle à l'échelle de cet actif ?
+
+        Une condition de SÉCURITÉ, pas un filtre de stratégie : elle refuse de
+        jouer là où le réglage ne veut plus rien dire, au lieu de produire des
+        signaux qu'on prendrait pour des signaux.
+
+        Voir `RAPPORT_TOLERANCE_MIN` / `MAX` pour les chiffres et leur origine.
+        """
+        recentes = bougies[-FENETRE_AMPLITUDE:]
+        if len(recentes) < 10:
+            return True             # trop peu pour juger : on ne tranche pas
+        amplitudes = sorted(
+            100.0 * (b.high - b.low) / b.close
+            for b in recentes if b.close)
+        if not amplitudes:
+            return True
+        mediane = amplitudes[len(amplitudes) // 2]
+        if mediane <= 0:
+            # Un actif dont la bougie médiane n'a AUCUNE amplitude n'est pas un
+            # actif calme, c'est un actif dont on ne reçoit pas le prix.
+            log.debug("%s écartée : amplitude médiane nulle.", paire)
+            return False
+        rapport = self.strategie.p.tolerance_pct / mediane
+        if RAPPORT_TOLERANCE_MIN <= rapport <= RAPPORT_TOLERANCE_MAX:
+            return True
+        log.info(
+            "%s écartée : tolérance/amplitude = %.2f, hors de la plage "
+            "[%.2f, %.2f] où la stratégie a été calibrée (bougie médiane "
+            "%.4f %%). Elle y produirait des signaux qui n'en sont pas.",
+            paire, rapport, RAPPORT_TOLERANCE_MIN, RAPPORT_TOLERANCE_MAX,
+            mediane)
+        return False
+
     def _payouts_lisibles(self) -> str:
         return " ".join(
             f"{p.replace('_otc', '')}:{v if v >= 0 else '?'}"
@@ -1292,7 +1366,9 @@ class CoursePlanDemo:
                 f"{e.univers_taille} actif(s) au plafond dont "
                 f"{e.paires_gratuites} en base"
                 f"{f' ({e.paires_sans_historique} sans historique suffisant)'
-                   if e.paires_sans_historique else ''}, "
+                   if e.paires_sans_historique else ''}"
+                f"{f' ({e.paires_hors_calibration} hors calibration)'
+                   if e.paires_hors_calibration else ''}, "
                 f"{vues} bougies vues par la stratégie "
                 f"({e.bougies_perimees} périmées sur {e.bougies_evaluees}), "
                 f"{e.signaux_bruts} signal(aux) bruts dont "

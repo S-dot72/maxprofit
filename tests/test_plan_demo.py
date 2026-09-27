@@ -1570,3 +1570,77 @@ def test_les_recidives_SURVIVENT_a_un_redemarrage(tmp_path):
     assert relu.quarantaines_subies == {"BTCUSD_otc": 3}
     journal.close()
     conn.close()
+
+
+def _bougies_amplitude(pair, n, amplitude_pct, prix=1.0):
+    """n bougies dont l'amplitude relative vaut `amplitude_pct` % du prix."""
+    from maxprofit.core.types import Candle
+    demi = prix * amplitude_pct / 100 / 2
+    return [Candle(pair=pair, tf_sec=60, ts_sec=1789999980 + k * 60,
+                   open=prix, high=prix + demi, low=prix - demi, close=prix,
+                   tick_count=30, complete=True)
+            for k in range(n)]
+
+
+def test_un_actif_HORS_CALIBRATION_est_ecarte(tmp_path):
+    """BTCUSD_otc : 820 signaux sur 1 139 bougies, soit un par minute et demie.
+
+    Sa bougie mediane fait 0,0006 % quand EURUSD_otc fait 0,0301 % : la
+    tolerance de 0,02 % y est 36 fois plus grande qu'une bougie, donc toute
+    bougie touche toute zone proche. Ce ne sont pas des signaux, c'est du bruit
+    — et il est aujourd'hui inoffensif seulement parce que le broker refuse
+    l'echeance de 900 s sur les cryptos.
+    """
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(sessions=6), ("X_otc",))
+    # EURUSD_otc mesure : 0,0301 % -> rapport 0,67. Dans la plage.
+    assert c._dans_sa_plage_de_calibration(
+        "X_otc", _bougies_amplitude("X_otc", 60, 0.0301))
+    # BTCUSD_otc mesure : 0,0006 % -> rapport 33. Hors plage.
+    assert not c._dans_sa_plage_de_calibration(
+        "X_otc", _bougies_amplitude("X_otc", 60, 0.0006))
+    # Un actif BEAUCOUP plus agite que les paires de calibration l'est aussi.
+    assert not c._dans_sa_plage_de_calibration(
+        "X_otc", _bougies_amplitude("X_otc", 60, 5.0))
+    journal.close()
+
+
+def test_un_actif_sans_PRIX_est_ecarte_et_non_pris_pour_calme(tmp_path):
+    """Une bougie mediane d'amplitude nulle ne decrit pas un actif calme : elle
+    decrit un actif dont on ne recoit pas le prix."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(sessions=6), ("X_otc",))
+    assert not c._dans_sa_plage_de_calibration(
+        "X_otc", _bougies_amplitude("X_otc", 60, 0.0))
+    journal.close()
+
+
+def test_trop_peu_de_bougies_ne_fait_pas_ecarter_un_actif(tmp_path):
+    """On ne tranche pas sur cinq bougies : une paire fraichement collectee
+    serait ecartee pour une raison qui n'a rien a voir avec sa calibration."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(sessions=6), ("X_otc",))
+    assert c._dans_sa_plage_de_calibration(
+        "X_otc", _bougies_amplitude("X_otc", 5, 0.0006))
+    journal.close()
+
+
+def test_les_quatre_paires_de_calibration_sont_DANS_la_plage(tmp_path):
+    """Les bornes doivent accueillir ce sur quoi la strategie a ete calibree —
+    sinon la garde ecarterait les paires memes qui l'ont validee."""
+    from maxprofit.live.plan_demo import (RAPPORT_TOLERANCE_MAX,
+                                          RAPPORT_TOLERANCE_MIN)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       _plan(sessions=6), ("X_otc",))
+    # Amplitudes medianes mesurees sur les quatre paires epinglees.
+    for nom, amp in (("EURUSD", 0.0312), ("AUDUSD", 0.0576),
+                     ("GBPAUD", 0.0649), ("AUDCAD", 0.0929)):
+        assert c._dans_sa_plage_de_calibration(
+            "X_otc", _bougies_amplitude("X_otc", 60, amp)), nom
+    assert RAPPORT_TOLERANCE_MIN < 0.02 / 0.0929
+    assert 0.02 / 0.0312 < RAPPORT_TOLERANCE_MAX
+    journal.close()

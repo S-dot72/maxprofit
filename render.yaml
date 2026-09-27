@@ -102,7 +102,9 @@ services:
       # tableau de bord, elle désactive l'élargissement sans commit. C'est le
       # chemin de retour, et il doit rester à une saisie de distance.
       #
-      # Paliers : +CHFJPY_otc +BTCUSD_otc (4 -> 6, tenu, couverture 100 %),
+      # Paliers : +CHFJPY_otc +BTCUSD_otc (4 -> 6, tenu, couverture 100 %) ;
+      # BTCUSD_otc retire ensuite, hors calibration (voir le collecteur) et
+      # remplace par AUDNZD_otc,
       # puis +USDJPY_otc +AUDCHF_otc +GBPUSD_otc (6 -> 9).
       #
       # Neuf n'est pas un chiffre rond choisi au hasard : six paires donnent

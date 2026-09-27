@@ -844,6 +844,29 @@ PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
     # disponibles dans l'absolu sont des devises arrimées (AEDCNY, OMRCNY,
     # SARCNY…) et AEDCNY_otc avait donné zéro signal sur 416 bougies.
     "USDJPY_otc", "AUDCHF_otc", "GBPUSD_otc",
+    # ⚠ BTCUSD_otc RETIRÉ, et pas parce qu'il refusait nos ordres.
+    #
+    # Le refus n'était qu'un symptôme : l'échéance de 900 s n'existe pas sur
+    # une crypto. La cause réelle est que la stratégie n'y mesure RIEN. Sa
+    # bougie médiane fait 0,0006 % quand EURUSD_otc fait 0,0313 %, donc la
+    # tolérance de 0,02 % y est 36 fois plus grande qu'une bougie : toute
+    # bougie touche toute zone proche. 820 signaux sur 1 139 bougies, contre
+    # un pour trente-cinq sur EURUSD_otc.
+    #
+    # Ces signaux étaient inoffensifs UNIQUEMENT parce que le broker les
+    # refusait. Raccourcir l'échéance pour « adapter la stratégie aux
+    # cryptos » les aurait laissés passer — l'inverse de ce qu'on cherchait.
+    #
+    # AUDNZD_otc prend sa place : une vraie paire de devises, disponible 28,5 %
+    # du temps (contre 20,9 % pour GBPAUD_otc) et d'amplitude 0,1106 %, soit
+    # un rapport tolérance/amplitude de 0,18 — dans la plage 0,22-0,75 où la
+    # stratégie a été calibrée.
+    #
+    # Le revers, assumé : ce rapport bas annonce un DÉBIT bas. AUDCAD_otc, à
+    # 0,22, rend un signal toutes les 304 bougies quand EURUSD_otc, à 0,64,
+    # en rend un toutes les 35. On gagne de la disponibilité, pas de la
+    # fréquence.
+    "AUDNZD_otc",
 )
 
 
