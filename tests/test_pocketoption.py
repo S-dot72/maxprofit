@@ -1224,3 +1224,39 @@ def test_un_decalage_impossible_reste_refuse():
     src = _source_horloge()
     with pytest.raises(po.HorlogeIncoherente, match="impossible"):
         src._caler_horloge(horloge.time() + 20 * 3600)
+
+def test_les_points_d_acces_DEMO_sont_essayes_l_un_apres_l_autre():
+    """La bibliotheque n'en connait qu'UN par type de compte, et c'est ce qui a
+    arrete la collecte : « timed out during opening handshake », cinq fois, puis
+    couverture 24 h a 55 %. Le broker publie pourtant deux adresses demo, et
+    l'une repondait en 3,6 s pendant que l'autre expirait.
+    """
+    from maxprofit.collect.pocketoption import REPLIS_DEMO, points_d_acces
+    ordre = points_d_acces(demo=True)
+    assert len(ordre) >= 2, "un seul point d'acces = une seule panne possible"
+    assert ordre[:len(REPLIS_DEMO)] == REPLIS_DEMO
+
+
+def test_une_region_IMPOSEE_passe_en_premier_sans_exclure_les_replis(
+        monkeypatch):
+    """Forcer une adresse reste un choix, pas une exclusivite : l'operateur veut
+    y aller d'abord, pas rester bloque si elle tombe."""
+    from maxprofit.collect.pocketoption import points_d_acces
+    monkeypatch.setenv("POCKET_OPTION_REGION", "DEMO_2")
+    ordre = points_d_acces(demo=True)
+    assert ordre[0] == "DEMO_2"
+    assert "DEMO" in ordre
+    assert len(ordre) == len(set(ordre)), "aucun doublon"
+
+
+def test_une_region_inconnue_est_refusee(monkeypatch):
+    from maxprofit.collect.pocketoption import points_d_acces
+    from maxprofit.core.errors import BotError
+    monkeypatch.setenv("POCKET_OPTION_REGION", "MARS")
+    with pytest.raises(BotError, match="MARS"):
+        points_d_acces(demo=True)
+
+
+def test_les_points_d_acces_REELS_sont_distincts_des_demo():
+    from maxprofit.collect.pocketoption import points_d_acces
+    assert not set(points_d_acces(demo=True)) & set(points_d_acces(demo=False))

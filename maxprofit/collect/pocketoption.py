@@ -174,7 +174,61 @@ DELAI_ENTRE_ABONNEMENTS_SEC = 0.4
 CROISSANCE_THREADS_SUSPECTE = 3
 
 
-def _forcer_region(demo: bool) -> str | None:
+#: Les points d'accès à essayer, dans l'ordre, quand aucun n'est imposé.
+#:
+#: ⚠ LA BIBLIOTHÈQUE N'EN ESSAIE QU'UN, ET C'EST CE QUI A ARRÊTÉ LA COLLECTE.
+#:
+#: `get_regions()` rend une liste figée d'un seul élément : pour un compte démo,
+#: `demo-api-eu.po.market`. Quand cette adresse ne répond pas, la connexion
+#: échoue et rien ne cherche ailleurs — « Erreur WebSocket à la connexion :
+#: timed out during opening handshake », cinq fois, puis course abandonnée et
+#: couverture 24 h tombée à 55 %.
+#:
+#: Le broker publie pourtant DEUX adresses démo. Mesuré au même moment :
+#: `demo-api-eu` répondait en 3,6 s depuis un poste local et expirait depuis
+#: l'hébergeur. Ce n'est donc pas le broker qui est en panne, c'est un chemin
+#: réseau — et un second chemin existait, inutilisé.
+#:
+#: Les adresses réelles ne sont pas écrites ici : elles viennent de la
+#: bibliothèque, qui est la source. Les recopier créerait deux vérités.
+REPLIS_DEMO = ("DEMO", "DEMO_2")
+REPLIS_REEL = ("EUROPA", "FRANCE", "FRANCE2", "SERVER2")
+
+
+def points_d_acces(demo: bool) -> tuple[str, ...]:
+    """Les noms de points d'accès à essayer, dans l'ordre.
+
+    Celui qu'impose `POCKET_OPTION_REGION` passe en premier et les replis le
+    suivent : forcer une adresse reste un choix, pas une exclusivité. Un
+    opérateur qui en désigne une veut y aller d'abord, pas rester bloqué si
+    elle tombe.
+    """
+    try:
+        from pocketoptionapi.constants import REGION
+    except ImportError:
+        # La table des adresses est inaccessible : on ne peut rien forcer, donc
+        # on laisse la bibliothèque choisir — un seul essai, comme avant. Ce
+        # cas existe sous les doubles de test, qui remplacent la bibliothèque
+        # par un module simple, et il ne doit pas faire échouer la connexion.
+        impose = os.environ.get(ENV_REGION, "").strip().upper()
+        return (impose,) if impose else ("",)
+
+    connues = REGION.REGIONS
+    ordre: list[str] = []
+    impose = os.environ.get(ENV_REGION, "").strip().upper()
+    if impose:
+        if impose not in connues:
+            raise BotError(
+                f"{ENV_REGION}={impose} inconnu. Points d'accès disponibles : "
+                f"{', '.join(sorted(connues))}.")
+        ordre.append(impose)
+    for nom in (REPLIS_DEMO if demo else REPLIS_REEL):
+        if nom in connues and nom not in ordre:
+            ordre.append(nom)
+    return tuple(ordre)
+
+
+def _forcer_region(demo: bool, nom: str | None = None) -> str | None:
     """Impose le point d'accès demandé, s'il y en a un. Retourne son URL.
 
     `demo` est passé par l'appelant et non lu dans la bibliothèque. Première
@@ -189,11 +243,14 @@ def _forcer_region(demo: bool) -> str | None:
     figée d'un seul élément, et c'est le seul point où l'on puisse intervenir
     sans réécrire sa boucle de connexion.
     """
-    nom = os.environ.get(ENV_REGION, "").strip().upper()
+    nom = (nom or os.environ.get(ENV_REGION, "")).strip().upper()
     if not nom:
         return None
 
-    from pocketoptionapi.constants import REGION
+    try:
+        from pocketoptionapi.constants import REGION
+    except ImportError:
+        return None
 
     connues = REGION.REGIONS
     if nom not in connues:
@@ -582,11 +639,64 @@ class PocketOptionSource:
         verifier_ssid(ssid)
 
         self._installer_boucle_asyncio()
-        self._url_demandee = _forcer_region(self.demo)
-        self._client = PocketOption(demo=self.demo, ssid=ssid)
-        self._client.connect()
-        self._verifier_point_d_acces()
+        self._connecter_en_essayant(ssid)
 
+    def _connecter_en_essayant(self, ssid: str) -> None:
+        """Essaie les points d'accès l'un après l'autre, et lève si aucun ne
+        répond — en disant lesquels ont été tentés.
+
+        Sans cette boucle, une seule adresse injoignable arrêtait tout : la
+        bibliothèque n'en connaît qu'une par type de compte, et rien ne
+        cherchait ailleurs.
+        """
+        from pocketoptionapi.stable_api import PocketOption
+
+        adresses = points_d_acces(self.demo)
+        echecs: list[str] = []
+        for rang, nom in enumerate(adresses):
+            self._url_demandee = _forcer_region(self.demo, nom)
+            try:
+                self._client = PocketOption(demo=self.demo, ssid=ssid)
+                self._client.connect()
+                self._verifier_point_d_acces()
+                self._attendre_le_socket()
+            except (SourceIndisponible, BrokerInjoignable) as erreur:
+                echecs.append(f"{nom} ({type(erreur).__name__}: {erreur})")
+                log.warning("Point d'accès %s injoignable (%d/%d) : %s",
+                            nom, rang + 1, len(adresses), erreur)
+                self._fermer_sans_bruit()
+                continue
+            if rang:
+                log.warning(
+                    "Connecté par le point d'accès de repli %s après %d "
+                    "échec(s). Le premier de la liste ne répondait pas.",
+                    nom, rang)
+            return
+        raise SourceIndisponible(
+            "Aucun point d'accès n'a répondu. Tentés : "
+            + " | ".join(echecs or ["aucun"]))
+
+    def _fermer_sans_bruit(self) -> None:
+        """Referme un client à moitié ouvert. Ne lève jamais : on est déjà en
+        train de traiter un échec, et une seconde erreur masquerait la
+        première."""
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            client.close()
+        except Exception:                        # noqa: BLE001
+            log.debug("Fermeture du client en échec", exc_info=True)
+
+    def _attendre_le_socket(self) -> None:
+        """Attend que le socket s'ouvre et que le catalogue arrive.
+
+        Extrait de `connect()` pour que `_connecter_en_essayant` puisse le
+        rejouer sur un autre point d'accès : un socket qui n'ouvre pas est
+        exactement le cas où il faut changer d'adresse, et il ne se
+        distinguait pas d'une panne générale tant que tout tenait dans une
+        seule méthode.
+        """
         limite = time.monotonic() + DELAI_CONNEXION_SEC
         while time.monotonic() < limite:
             if self._globals.check_websocket_if_error:
