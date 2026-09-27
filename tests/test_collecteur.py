@@ -955,3 +955,29 @@ def test_des_bougies_CLOSES_ecrites_reveillent_la_course(tmp_path):
     src.collecteur = collecteur = Collector(src, _config(tmp_path))
     collecteur.run()
     assert mod.BOUGIES_ECRITES.is_set()
+
+
+def test_la_pause_s_ARRETE_quand_un_autre_client_joint_le_broker(tmp_path):
+    """Un nouveau service hérite en base des échecs de l'ancien. Son courtier
+    se connecte depuis la nouvelle adresse, et le collecteur se taisait
+    encore une demi-heure."""
+    from maxprofit.store import etat_broker
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "market.db")
+    for _ in range(12):
+        etat_broker.noter_echec(conn, "poignee de main expiree")
+    conn.close()
+    assert etat_broker.PALIERS_SEC[-1] >= 600
+
+    src = SourceScriptee(_ticks(3), lever=KeyboardInterrupt())
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    threading.Timer(0.3, etat_broker.CONNEXION_PROUVEE.set).start()
+    garde = threading.Timer(10, collecteur.stop)
+    garde.start()
+    debut = time.monotonic()
+    collecteur.run()
+    garde.cancel()
+
+    assert src.connexions >= 1, "le broker doit être rappelé sans attendre"
+    assert time.monotonic() - debut < 5

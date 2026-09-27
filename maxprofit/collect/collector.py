@@ -579,8 +579,17 @@ class Collector:
             "rappeler le broker. Dernière raison : %s",
             echecs, int(attente), raison,
         )
+        # ⚠ LA DETTE EST PARTAGÉE, LA PREUVE AUSSI. Le compteur vit en base :
+        # un nouveau service hérite des échecs de l'ancien, et se taisait
+        # jusqu'à trente minutes alors que son courtier venait de se
+        # connecter depuis la nouvelle adresse.
+        etat_broker.CONNEXION_PROUVEE.clear()
         fin = self.pause_jusqu_a_sec
         while self.running and time.time() < fin:
+            if etat_broker.CONNEXION_PROUVEE.is_set():
+                log.info("Le broker vient de répondre à un autre client : "
+                         "fin de la pause.")
+                break
             time.sleep(min(1.0, fin - time.time()))
         self.pause_jusqu_a_sec = 0.0
 
