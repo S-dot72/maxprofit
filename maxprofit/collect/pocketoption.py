@@ -127,6 +127,9 @@ DELAI_POIGNEE_DE_MAIN_SEC = 25.0
 #: rafale continue vers le broker.
 PAUSE_ENTRE_TENTATIVES_SEC = 5.0
 
+#: Au-delà, un envoi sur le socket est abandonné plutôt qu'attendu.
+DELAI_ENVOI_SEC = 10.0
+
 #: Les en-têtes que la bibliothèque envoie, repris à l'identique.
 EN_TETES_WEBSOCKET = {
     "Origin": "https://pocketoption.com",
@@ -384,6 +387,13 @@ async def boucle_de_connexion(ws_client, ouvrir, global_value,
     la boucle se teste sans réseau ni `websockets`.
     """
     abandon = _abandon(ws_client)
+    # Les envois des autres threads passent par CETTE boucle : voir
+    # `envoyer_sur_le_socket`.
+    ws_client._maxprofit_boucle = asyncio.get_running_loop()
+    ws_client._maxprofit_thread = threading.get_ident()
+    # `start_websocket` de la bibliothèque vient de remettre l'indicateur
+    # global à faux, même si l'autre client a sa session ouverte.
+    _compter_session(global_value, 0)
     while not abandon.is_set():
         for url in ws_client.region.get_regions(global_value.DEMO):
             if abandon.is_set():
@@ -492,13 +502,66 @@ def lire_le_sondage(sondage: str) -> str:
     return "Le serveur répond mais refuse la négociation."
 
 
+def envoyer_sur_le_socket(ws_client, data: str, global_value) -> bool:
+    """Envoie une trame sur le socket de CE client. Rend False si elle n'est
+    pas partie.
+
+    ⚠ REMPLACE `send_websocket_request`, QUI POUVAIT FIGER TOUT LE PROCESSUS.
+
+    La version de la bibliothèque attendait en boucle ACTIVE (`while ...:
+    pass`) un verrou GLOBAL, commun au collecteur et au courtier ; envoyait
+    depuis une boucle asyncio neuve, dans le thread appelant, sur un socket qui
+    vit dans un autre ; et attendait SANS LIMITE que l'indicateur « connecté »
+    repasse à vrai. Un seul envoi coincé laissait le verrou pris : tous les
+    suivants tournaient à vide pour toujours — un coeur entier, sur une
+    instance qui en a un dixième — et le collecteur ne revenait jamais de son
+    réabonnement. Symptôme : paires souscrites, plus aucun battement.
+
+    Ici : un verrou PAR CLIENT, l'envoi confié à la boucle du socket, un délai,
+    et un refus immédiat si le socket est fermé.
+    """
+    boucle = getattr(ws_client, "_maxprofit_boucle", None)
+    ws = getattr(ws_client, "websocket", None)
+    if (boucle is None or ws is None or boucle.is_closed()
+            or not getattr(ws_client, "_maxprofit_ouvert", False)):
+        global_value.logger(f"Trame non envoyée, socket fermé : {data[:80]}",
+                            "WARNING")
+        return False
+    if threading.get_ident() == getattr(ws_client, "_maxprofit_thread", None):
+        # Appelé depuis la boucle elle-même : attendre ici l'interblocerait.
+        boucle.create_task(ws.send(data))
+        return True
+    with _VERROU_ETAT:
+        verrou = ws_client.__dict__.setdefault(
+            "_maxprofit_verrou_envoi", threading.Lock())
+    if not verrou.acquire(timeout=DELAI_ENVOI_SEC):
+        global_value.logger(f"Trame non envoyée, socket occupé : {data[:80]}",
+                            "WARNING")
+        return False
+    try:
+        futur = asyncio.run_coroutine_threadsafe(ws.send(data), boucle)
+        try:
+            futur.result(timeout=DELAI_ENVOI_SEC)
+        except Exception as erreur:                  # noqa: BLE001
+            futur.cancel()
+            global_value.logger(
+                f"Trame non envoyée ({type(erreur).__name__}: {erreur}) : "
+                f"{data[:80]}", "WARNING")
+            return False
+        return True
+    finally:
+        verrou.release()
+
+
 def installer_connexion_maitrisee() -> None:
     """Remplace `WebsocketClient.connect` de la bibliothèque. Idempotent."""
     try:
+        import json
         import ssl
 
         import websockets
         from pocketoptionapi import global_value
+        from pocketoptionapi.api import PocketOptionAPI
         from pocketoptionapi.ws import client as module_ws
     except ImportError:
         return
@@ -523,8 +586,14 @@ def installer_connexion_maitrisee() -> None:
         # dans `run_forever()`, ou tomberait dans son attente active.
         raise SystemExit
 
+    def send_websocket_request(self, name, msg, request_id="",
+                               no_force_send=True):
+        envoyer_sur_le_socket(self.websocket_client, f"42{json.dumps(msg)}",
+                              global_value)
+
     connect._maxprofit = True
     module_ws.WebsocketClient.connect = connect
+    PocketOptionAPI.send_websocket_request = send_websocket_request
 
 
 #: La table des adresses TELLE QU'ELLE ÉTAIT, avant qu'on y touche.
