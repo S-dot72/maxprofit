@@ -351,6 +351,32 @@ class MarketReader:
             for r in rows
         ]
 
+    def candles_de(self, pairs: Sequence[str], tf_sec: int,
+                   start_sec: int) -> dict[str, list[Candle]]:
+        """Les bougies de PLUSIEURS paires depuis `start_sec`, en UNE requête.
+
+        Avec une base distante, chaque requête coûte un aller-retour réseau :
+        une par paire et par passage faisait l'essentiel du temps de la course.
+        """
+        sortie: dict[str, list[Candle]] = {p: [] for p in pairs}
+        if not pairs:
+            return sortie
+        marques = ",".join("?" * len(pairs))
+        rows = self.conn.execute(
+            f"""SELECT pair, tf_sec, ts_sec, open, high, low, close,
+                       tick_count, complete
+                FROM candles
+                WHERE tf_sec = ? AND ts_sec >= ? AND pair IN ({marques})
+                ORDER BY pair, ts_sec""",
+            (tf_sec, start_sec, *pairs),
+        ).fetchall()
+        for r in rows:
+            sortie[r[0]].append(Candle(
+                pair=r[0], tf_sec=r[1], ts_sec=r[2],
+                open=r[3], high=r[4], low=r[5], close=r[6],
+                tick_count=r[7], complete=bool(r[8])))
+        return sortie
+
     def tick_paths(self, pair: str, start_sec: int,
                    end_sec: int) -> list[CheminTicks]:
         """Les chemins de `[start_sec, end_sec)`, ordonnés, non décompressés.

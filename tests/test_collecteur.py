@@ -942,3 +942,16 @@ def test_la_liste_est_lue_de_l_environnement(monkeypatch):
     assert _paires_fixes_env("") == ("EURUSD_otc", "GBPUSD_otc")
     # L'argument explicite l'emporte.
     assert _paires_fixes_env("X_otc") == ("X_otc",)
+
+
+def test_des_bougies_CLOSES_ecrites_reveillent_la_course(tmp_path):
+    """La course dort jusqu'à ce signal : sans lui, elle découvrait chaque
+    bougie au bout d'une pause fixe de vingt secondes."""
+    from maxprofit.collect import collector as mod
+
+    mod.BOUGIES_ECRITES.clear()
+    # 400 ticks à 250 ms : cent secondes, donc au moins une minute close.
+    src = SourceScriptee(_ticks(400), lever=KeyboardInterrupt())
+    src.collecteur = collecteur = Collector(src, _config(tmp_path))
+    collecteur.run()
+    assert mod.BOUGIES_ECRITES.is_set()

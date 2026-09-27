@@ -39,7 +39,7 @@ from pathlib import Path
 
 import aiohttp
 
-from maxprofit.collect.collector import build_config
+from maxprofit.collect.collector import BOUGIES_ECRITES, build_config
 from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
 from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
@@ -293,6 +293,7 @@ async def _servir(args) -> int:
             # Le départ est une DATE, pas un geste. Faire dépendre le
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.
             debut_ts_sec=date_de_depart(),
+            reveil=BOUGIES_ECRITES,
         )
         _course["sup"] = course
         if course_activee():

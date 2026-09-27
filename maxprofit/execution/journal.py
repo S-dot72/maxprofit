@@ -310,6 +310,27 @@ class JournalExecution:
         return [e for e in self.toutes()
                 if e.accepte and e.resultat is None]
 
+    def profits_du_plan(self) -> float:
+        """Ce que les ordres de la campagne ont rapporté, en une ligne.
+
+        Un ordre REFUSÉ ne compte pas : rien n'est sorti du compte.
+
+        ⚠ Un ordre PLACÉ mais pas encore dénoué — ou dénoué en « unknown » —
+        compte pour MOINS SA MISE. L'argent est sorti du compte au clic et ne
+        revient qu'à l'échéance ; ne rien compter afficherait, pendant les
+        quinze minutes de l'option, un solde que le compte n'a pas. Un
+        gagnant rend la mise au dénouement avec son gain ; un « unknown » la
+        laisse retirée, la seule lecture qui ne promette rien.
+        """
+        ligne = self.conn.execute(
+            """SELECT COALESCE(SUM(CASE
+                          WHEN resultat IN ('win', 'loose', 'draw')
+                          THEN COALESCE(profit, 0)
+                          ELSE -mise END), 0)
+               FROM executions WHERE campagne = ? AND accepte = 1""",
+            (self.campagne,)).fetchone()
+        return float(ligne[0])
+
     def toutes(self) -> list[Execution]:
         lignes = self.conn.execute(
             """SELECT pair, sens, mise, signal_ts_ms, prix_attendu,

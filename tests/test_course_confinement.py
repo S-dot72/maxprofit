@@ -306,3 +306,26 @@ def test_une_course_connectee_mais_jamais_ASSEMBLEE_rend_sa_connexion(
             "jeton", campagne="t", capital=250.0, sessions_par_jour=6,
             jours=30, paires=("EURUSD_otc",))
     assert len(fermes) == 1
+
+
+def test_la_course_se_REVEILLE_des_que_des_bougies_arrivent():
+    """Une pause fixe de vingt secondes faisait évaluer chaque bougie jusqu'à
+    vingt-deux secondes après sa clôture, alors qu'elle est en base deux
+    secondes après."""
+    reveil = threading.Event()
+    passages: list[float] = []
+
+    class CourseQuiAttend(CourseFactice):
+        def tour(self):
+            passages.append(time.monotonic())
+            return False
+
+    s = SuperviseurCourse(lambda _a=None: CourseQuiAttend(), pause_sec=30,
+                          reveil=reveil)
+    s.demarrer()
+    assert _attendre(lambda: len(passages) >= 1)
+    reveil.set()
+    assert _attendre(lambda: len(passages) >= 2, limite=2.0), (
+        "le réveil doit relancer un passage sans attendre la pause")
+    assert passages[1] - passages[0] < 2.0
+    s.arreter()

@@ -143,6 +143,9 @@ class LecteurFactice:
     def candles(self, *a, **k):
         return []
 
+    def candles_de(self, paires, tf, depuis):
+        return {p: [] for p in paires}
+
 
 #: Deux actifs, alternés par le signal scripté. La règle d'indépendance
 #: interdit de jouer le pas suivant sur le MÊME actif : un montage à une seule
@@ -365,6 +368,11 @@ class LecteurAvecBougies(LecteurFactice):
                        open=1.0, high=1.001, low=0.999, close=1.0,
                        tick_count=30, complete=True)
                 for k in range(n)]
+
+    def candles_de(self, paires, tf, depuis):
+        self.requetes = getattr(self, "requetes", 0) + 1
+        return {p: [b for b in self.candles(p, tf, depuis, None)
+                    if b.ts_sec >= depuis] for p in paires}
 
 
 def test_les_paires_collectees_sont_parcourues_A_TOUR_DE_ROLE(tmp_path):
@@ -1643,4 +1651,85 @@ def test_les_quatre_paires_de_calibration_sont_DANS_la_plage(tmp_path):
             "X_otc", _bougies_amplitude("X_otc", 60, amp)), nom
     assert RAPPORT_TOLERANCE_MIN < 0.02 / 0.0929
     assert 0.02 / 0.0312 < RAPPORT_TOLERANCE_MAX
+    journal.close()
+
+
+# --------------------------------------------------------------------------- #
+# Vitesse : ne relire que ce qui est nouveau
+# --------------------------------------------------------------------------- #
+
+class LecteurQuiCompte:
+    """Une base qui avance d'une minute quand on le lui dit, et qui note ce
+    qu'on lui demande."""
+
+    def __init__(self, fin_ts=1790000040):
+        self.fin = fin_ts
+        self.depuis: list[int] = []
+        self.appels_unitaires = 0
+
+    def last_candle_ts_sec(self):
+        return self.fin
+
+    def candles(self, *a, **k):
+        self.appels_unitaires += 1
+        return []
+
+    def candles_de(self, paires, tf, depuis):
+        from maxprofit.core.types import Candle
+        self.depuis.append(depuis)
+        premiere = max(depuis, self.fin - 400 * 60)
+        return {p: [Candle(pair=p, tf_sec=60, ts_sec=t, open=1.0, high=1.001,
+                           low=0.999, close=1.0, tick_count=30, complete=True)
+                    for t in range(premiere, self.fin + 60, 60)]
+                for p in paires}
+
+
+def test_un_passage_ne_relit_que_les_DERNIERES_minutes(tmp_path):
+    """Chaque paire coûtait deux requêtes et 300 bougies à chaque passage,
+    même quand rien n'avait changé : une vingtaine d'allers-retours vers la
+    base distante pour dix paires. Une requête pour toutes, depuis la
+    dernière bougie connue."""
+    from maxprofit.live.plan_demo import RECOUVREMENT_CACHE_SEC
+
+    paires = ("A_otc", "B_otc", "C_otc")
+    lecteur = LecteurQuiCompte()
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(lecteur, CourtierFactice([]), journal, _plan(), paires)
+    c.univers = lambda: list(paires)
+    lookback = c.strategie.p.lookback
+
+    c.chercher_un_signal()
+    lecteur.fin += 60
+    c.chercher_un_signal()
+
+    assert lecteur.appels_unitaires == 0, "plus de requête par paire"
+    assert lecteur.depuis == [
+        1790000040 - lookback * 60,
+        1790000040 - RECOUVREMENT_CACHE_SEC], (
+        "une requête par passage : la fenêtre complète, puis les seules "
+        "dernières minutes")
+    for p in paires:
+        bougies = c.bougies_collectees(p, lookback)
+        assert bougies[-1].ts_sec == lecteur.fin, "la nouvelle bougie est vue"
+        assert len(bougies) == lookback + 1, "la fenêtre ne grossit pas"
+        assert len({b.ts_sec for b in bougies}) == len(bougies), "sans doublon"
+    journal.close()
+
+
+def test_le_solde_du_plan_se_calcule_SANS_relire_le_journal(tmp_path):
+    """Refusé : ne compte pas. Dénoué : son profit. En vol : moins sa mise."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+
+    def ordre(accepte, resultat=None, profit=None, mise=2.0):
+        ex = Execution(pair="A_otc", sens="call", mise=mise, signal_ts_ms=1,
+                       prix_attendu=1.0, payout_flux_pct=92,
+                       expiration_sec=900, clic_ts_ms=2, accepte=accepte,
+                       resultat=resultat, profit=profit)
+        journal.ecrire(ex)
+
+    ordre(True, "win", 1.84)
+    ordre(True, "loose", -2.0)
+    ordre(False)
+    ordre(True, mise=3.0)
+    assert journal.profits_du_plan() == pytest.approx(1.84 - 2.0 - 3.0)
     journal.close()
