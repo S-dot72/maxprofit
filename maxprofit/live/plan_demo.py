@@ -132,7 +132,11 @@ ECART_DEBIT_PAR_JOUR = 6.5
 #: décision et le clic), et bannir sur un accident coûterait une paire saine.
 REFUS_AVANT_QUARANTAINE = 3
 
-#: Combien de temps une paire refusée reste écartée.
+#: Plafond de la quarantaine quand elle double. Vingt-quatre heures : au-delà
+#: on ne réessaie plus assez souvent pour rattraper une cause qui a disparu.
+QUARANTAINE_MAX_SEC = 86400
+
+#: Combien de temps une paire refusée reste écartée, la PREMIÈRE fois.
 #:
 #: Une heure, parce que les causes plausibles se résolvent à cette échelle —
 #: une mise sous le minimum de l'actif, une échéance que le broker n'accepte
@@ -279,6 +283,10 @@ class Etat:
     quarantaine: dict[str, int] = field(default_factory=dict)
     #: Refus d'affilée par paire, remis à zéro dès qu'un ordre passe.
     refus_daffilee: dict[str, int] = field(default_factory=dict)
+    #: Combien de fois une paire a DÉJÀ été écartée. La peine double à chaque
+    #: récidive : réessayer toutes les heures une paire dont la cause de refus
+    #: est permanente ne mène qu'à trois alertes par matinée.
+    quarantaines_subies: dict[str, int] = field(default_factory=dict)
     #: Quand le dernier refus a eu lieu, par paire.
     #:
     #: ⚠ SANS LUI, « D'AFFILÉE » NE VEUT RIEN DIRE. Le compteur ne décroissait
@@ -1132,7 +1140,11 @@ class CoursePlanDemo:
             del self.etat.quarantaine[paire]
             self.etat.refus_daffilee.pop(paire, None)
             self.etat.dernier_refus_ts.pop(paire, None)
-            log.info("Quarantaine levée sur %s : on réessaie.", paire)
+            # `quarantaines_subies` n'est PAS effacé : c'est lui qui porte
+            # l'escalade. Le remettre à zéro à chaque levée ferait repartir la
+            # peine à une heure, indéfiniment.
+            log.info("Quarantaine levée sur %s : on réessaie (récidives : %d).",
+                     paire, self.etat.quarantaines_subies.get(paire, 0))
 
     def _noter_un_refus(self, paire: str, motif: str | None) -> None:
         """Compte les refus d'affilée et met la paire de côté au troisième.
@@ -1157,15 +1169,35 @@ class CoursePlanDemo:
         self.etat.dernier_refus_ts[paire] = maintenant
         if n < REFUS_AVANT_QUARANTAINE:
             return
-        jusqu_a = int(time.time()) + QUARANTAINE_SEC
-        self.etat.quarantaine[paire] = jusqu_a
+        # ⚠ LA PEINE DOUBLE À CHAQUE RÉCIDIVE, et la raison est mesurée.
+        #
+        # À une heure fixe, on réessayait indéfiniment toutes les heures : le
+        # journal de production montre trois quarantaines de suite sur
+        # BTCUSD_otc, à trois payouts différents. Une cause que le temps ne
+        # faisait pas passer.
+        #
+        # Elle est maintenant connue, et elle est PERMANENTE : l'échéance de
+        # 900 s n'existe pas sur cet actif. Mesuré en passant de vrais ordres
+        # sur le compte démo — BTCUSD_otc refuse 900 s à 1,66 $, à 5 $ et à
+        # 20 $, puis accepte 60 s et 300 s aux mêmes mises, quand EURUSD_otc
+        # accepte 900 s. Ce n'était donc ni la mise ni le payout : c'est le
+        # contrat de quinze minutes qui n'est pas proposé sur une crypto.
+        #
+        # On ne bannit pas pour autant. Le broker ne donne pas son motif, et
+        # une cause qui disparaît — actif suspendu, incident passager — mérite
+        # un réessai. La peine double simplement, jusqu'à un jour.
+        rang = self.etat.quarantaines_subies.get(paire, 0)
+        duree = min(QUARANTAINE_MAX_SEC, QUARANTAINE_SEC * (2 ** rang))
+        self.etat.quarantaines_subies[paire] = rang + 1
+        self.etat.quarantaine[paire] = int(time.time()) + duree
         log.warning(
-            "%s écartée pour %d min après %d refus d'affilée (%s). Réessai "
-            "ensuite : on ne bannit pas définitivement une paire sur un motif "
-            "que le broker ne donne pas.",
-            paire, QUARANTAINE_SEC // 60, n, motif)
+            "%s écartée pour %d min après %d refus d'affilée (%s). "
+            "Quarantaine n°%d sur cette paire : la peine double à chaque "
+            "récidive plutôt que de réessayer toutes les heures.",
+            paire, duree // 60, n, motif, rang + 1)
         self._prevenir(
-            f"⏸ <b>{paire}</b> écartée {QUARANTAINE_SEC // 60} min\n"
+            f"⏸ <b>{paire}</b> écartée {duree // 60} min "
+            f"(récidive n°{rang + 1})\n"
             f"{n} ordres refusés d'affilée par le broker "
             f"({motif or 'sans motif'})")
         self._sauvegarder()
@@ -1340,7 +1372,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      # compteurs entiers sans avoir à les énumérer deux fois.
                      "_quarantaine": etat.quarantaine,
                      "_refus": etat.refus_daffilee,
-                     "_refus_ts": etat.dernier_refus_ts}),
+                     "_refus_ts": etat.dernier_refus_ts,
+                     "_quarantaines": etat.quarantaines_subies}),
          etat.demarre_ts),
     )
     valider(conn)
@@ -1394,6 +1427,10 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
                            for k, v in (sauve.get("_refus") or {}).items()}
     etat.dernier_refus_ts = {
         str(k): int(v) for k, v in (sauve.get("_refus_ts") or {}).items()}
+    # Le compte des récidives DOIT survivre : sans lui, chaque redéploiement
+    # ramènerait la peine à une heure et l'escalade ne servirait à rien.
+    etat.quarantaines_subies = {
+        str(k): int(v) for k, v in (sauve.get("_quarantaines") or {}).items()}
     etat.demarre_ts = int(ligne[15] or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:

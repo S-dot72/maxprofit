@@ -1499,3 +1499,74 @@ def test_l_ancre_survit_a_un_redemarrage(course, tmp_path):
     repris, _ = charger_etat(conn, "ancre", c.etat.plan)
     assert repris.solde_broker_ancre == pytest.approx(53170.0)
     conn.close()
+
+
+def test_la_quarantaine_DOUBLE_a_chaque_recidive(course):
+    """Trois quarantaines de suite sur BTCUSD_otc, a trois payouts differents.
+
+    A une heure fixe, on reessayait indefiniment toutes les heures une paire
+    dont la cause de refus ne passait pas avec le temps. Elle est maintenant
+    connue et PERMANENTE : l'echeance de 900 s n'existe pas sur cet actif —
+    mesure en passant de vrais ordres sur le compte demo, BTCUSD_otc refuse
+    900 s a 1,66 $, a 5 $ et a 20 $, puis accepte 60 s et 300 s aux memes
+    mises. Ni la mise ni le payout : le contrat de quinze minutes n'est pas
+    propose sur une crypto.
+    """
+    import time as _t
+
+    from maxprofit.live.plan_demo import (QUARANTAINE_MAX_SEC,
+                                          QUARANTAINE_SEC,
+                                          REFUS_AVANT_QUARANTAINE)
+    paire = PAIRES_TEST[0]
+    c = course(["refus"] * 40, plan=_plan(sessions=18))
+    c.chercher_un_signal = lambda: Signal(
+        pair=paire, direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+
+    durees = []
+    for recidive in range(4):
+        for _ in range(REFUS_AVANT_QUARANTAINE):
+            c.tour()
+        durees.append(c.etat.quarantaine[paire] - int(_t.time()))
+        # On lève la peine à la main pour enchaîner la récidive suivante.
+        c.etat.quarantaine.pop(paire)
+        c.etat.refus_daffilee.pop(paire, None)
+        c.etat.dernier_refus_ts.pop(paire, None)
+
+    assert c.etat.quarantaines_subies[paire] == 4
+    for rang, duree in enumerate(durees):
+        attendu = min(QUARANTAINE_MAX_SEC, QUARANTAINE_SEC * 2 ** rang)
+        assert abs(duree - attendu) <= 2, (
+            f"récidive {rang + 1} : {duree} s au lieu de {attendu} s")
+    assert durees[-1] > durees[0], "la peine doit croître"
+
+
+def test_une_peine_LEVEE_n_efface_pas_le_compte_des_recidives(course):
+    """Sinon l'escalade ne sert a rien : chaque levee ramenerait la peine a une
+    heure, indefiniment."""
+    import time as _t
+    paire = PAIRES_TEST[0]
+    c = course(["win"], plan=_plan(sessions=18))
+    c.etat.quarantaine = {paire: int(_t.time()) - 1}
+    c.etat.quarantaines_subies = {paire: 3}
+    c._purger_la_quarantaine()
+    assert c.etat.quarantaine == {}
+    assert c.etat.quarantaines_subies == {paire: 3}
+
+
+def test_les_recidives_SURVIVENT_a_un_redemarrage(tmp_path):
+    """Sans quoi chaque redeploiement ramenerait la peine a une heure."""
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=6)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.quarantaines_subies = {"BTCUSD_otc": 3}
+    sauver_etat(conn, "t", c.etat, 0)
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.quarantaines_subies == {"BTCUSD_otc": 3}
+    journal.close()
+    conn.close()
