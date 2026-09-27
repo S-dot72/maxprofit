@@ -1260,3 +1260,38 @@ def test_une_region_inconnue_est_refusee(monkeypatch):
 def test_les_points_d_acces_REELS_sont_distincts_des_demo():
     from maxprofit.collect.pocketoption import points_d_acces
     assert not set(points_d_acces(demo=True)) & set(points_d_acces(demo=False))
+
+
+def test_forcer_une_region_NE_DETRUIT_PAS_la_table_d_origine():
+    """Le defaut qui a rendu l'adresse authentifiante inatteignable.
+
+    Forcer une adresse se fait en ecrasant une entree de la table de la
+    bibliotheque — elle n'accepte aucun parametre. Ecraser DETRUIT. Tant qu'on
+    ne forcait qu'une adresse au demarrage, cela ne se voyait pas. Avec une
+    cascade qui essaie DEMO puis DEMO_2, le second appel remplacait
+    REGIONS["DEMO"] par l'URL de DEMO_2 — definitivement, pour tout le
+    processus. L'adresse qui authentifie devenait inatteignable des le premier
+    echec, et le journal accusait un « timeout sur DEMO » qui ne designait plus
+    demo-api-eu.
+    """
+    from pocketoptionapi.constants import REGION
+
+    from maxprofit.collect.pocketoption import _forcer_region
+
+    attendu = _forcer_region(demo=True, nom="DEMO")
+    autre = _forcer_region(demo=True, nom="DEMO_2")
+    assert autre != attendu, "les deux adresses demo doivent differer"
+    retour = _forcer_region(demo=True, nom="DEMO")
+    assert retour == attendu, (
+        "apres un detour par DEMO_2, forcer DEMO doit redonner son URL")
+    assert REGION.REGIONS["DEMO"] == attendu
+
+
+def test_la_liste_des_points_d_acces_survit_aux_forcages():
+    """`points_d_acces` lit la copie d'origine : la table vivante a pu etre
+    ecrasee, et l'on y chercherait des adresses qui n'y sont plus."""
+    from maxprofit.collect.pocketoption import _forcer_region, points_d_acces
+
+    avant = points_d_acces(demo=True)
+    _forcer_region(demo=True, nom="DEMO_2")
+    assert points_d_acces(demo=True) == avant

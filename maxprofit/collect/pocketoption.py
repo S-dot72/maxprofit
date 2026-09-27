@@ -213,7 +213,9 @@ def points_d_acces(demo: bool) -> tuple[str, ...]:
         impose = os.environ.get(ENV_REGION, "").strip().upper()
         return (impose,) if impose else ("",)
 
-    connues = REGION.REGIONS
+    # La copie d'ORIGINE, pas la table vivante : celle-ci a pu être écrasée par
+    # un forçage précédent, et l'on y chercherait des adresses qui n'y sont plus.
+    connues = _regions_origine(REGION.REGIONS)
     ordre: list[str] = []
     impose = os.environ.get(ENV_REGION, "").strip().upper()
     if impose:
@@ -226,6 +228,22 @@ def points_d_acces(demo: bool) -> tuple[str, ...]:
         if nom in connues and nom not in ordre:
             ordre.append(nom)
     return tuple(ordre)
+
+
+#: La table des adresses TELLE QU'ELLE ÉTAIT, avant qu'on y touche.
+#:
+#: Indispensable parce que forcer une adresse se fait en écrasant une entrée de
+#: la table de la bibliothèque — elle n'accepte aucun paramètre — et qu'écraser
+#: détruit. Sans cette copie, `REGIONS["DEMO"]` ne désigne plus `demo-api-eu`
+#: dès le premier forçage, et aucune cascade ne peut y revenir.
+_REGIONS_ORIGINE: dict[str, str] = {}
+
+
+def _regions_origine(connues: dict) -> dict[str, str]:
+    """La copie d'origine, prise au premier appel et jamais réécrite."""
+    if not _REGIONS_ORIGINE:
+        _REGIONS_ORIGINE.update(connues)
+    return _REGIONS_ORIGINE
 
 
 def _forcer_region(demo: bool, nom: str | None = None) -> str | None:
@@ -253,15 +271,31 @@ def _forcer_region(demo: bool, nom: str | None = None) -> str | None:
         return None
 
     connues = REGION.REGIONS
-    if nom not in connues:
+    origine = _regions_origine(connues)
+    if nom not in origine:
         raise BotError(
             f"{ENV_REGION}={nom} inconnu. Points d'accès disponibles : "
-            f"{', '.join(sorted(connues))}."
+            f"{', '.join(sorted(origine))}."
         )
     # La bibliothèque lit REGIONS["DEMO"] pour un compte démo et
     # REGIONS["EUROPA"] sinon : on écrase l'entrée qu'elle consultera.
+    #
+    # ⚠ L'URL EST LUE DANS LA COPIE D'ORIGINE, JAMAIS DANS LA TABLE VIVANTE.
+    #
+    # Écraser `REGIONS["DEMO"]` DÉTRUIT sa valeur. Tant qu'on ne forçait qu'une
+    # adresse au démarrage, cela ne se voyait pas. Avec une cascade qui essaie
+    # `DEMO` puis `DEMO_2`, le second appel remplaçait `REGIONS["DEMO"]` par
+    # l'URL de `DEMO_2` — définitivement, pour tout le processus. L'adresse qui
+    # authentifie devenait donc inatteignable dès le premier échec, et le
+    # journal accusait un « timeout sur DEMO » qui ne désignait plus
+    # `demo-api-eu`.
+    #
+    # Le même défaut a faussé un balayage des dix-neuf adresses : arrivé à
+    # `DEMO`, sa valeur d'origine était écrasée depuis la première itération.
+    # Le balayage n'a jamais testé `demo-api-eu`, et j'en ai conclu à tort
+    # qu'un jeton valide était mort.
     cible = "DEMO" if demo else "EUROPA"
-    url = connues[nom]
+    url = origine[nom]
     connues[cible] = url
     log.info("Point d'accès forcé : %s -> %s", nom, url)
     return url
