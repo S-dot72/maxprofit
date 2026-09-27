@@ -298,6 +298,16 @@ class CourtierDemo:
 
     # --- l'univers : TOUTES les paires au plafond ---------------------------
 
+    def ordres_clotures(self) -> list[dict]:
+        """Les ordres clôturés que le broker a envoyés (« updateClosedDeals »).
+
+        Diffusés à la connexion : c'est ce qui permet de retrouver, après un
+        redémarrage, un ordre parti sans avoir été journalisé.
+        """
+        self._exiger_connecte()
+        deals = self._client.api.GetClosedDeals() or []
+        return [d for d in deals if isinstance(d, dict)]
+
     def paires_au_plafond(self) -> list[str]:
         """Les actifs OUVERTS qui paient le maximum, tous confondus.
 
@@ -657,6 +667,61 @@ class CourtierDemo:
         if ecoule >= self.plafonds.duree_max_sec:
             raise BotError(
                 f"Durée maximale atteinte : {ecoule / 3600:.1f} h.")
+
+
+def execution_depuis_deal(deal: dict) -> Execution | None:
+    """Un ordre clôturé du broker, au format du journal. `None` s'il est
+    illisible.
+
+    Même lecture que `CourtierDemo.denouer` : « profit » est le gain NET ; un
+    ordre perdu en rend zéro et coûte sa mise ; prix de sortie égal au prix
+    d'entrée, c'est une égalité.
+    """
+    mise = _flottant(deal, "amount")
+    pair = deal.get("asset")
+    ouverture = _flottant(deal, "openTimestamp")
+    if mise is None or not pair or ouverture is None or deal.get("id") is None:
+        return None
+    commande = deal.get("command", deal.get("action"))
+    sens = "put" if commande in (1, "1", "put") else "call"
+    fermeture = _flottant(deal, "closeTimestamp")
+    entree = _flottant(deal, "openPrice")
+    sortie = _flottant(deal, "closePrice")
+    if not entree or entree <= 0 or fermeture is None or fermeture <= ouverture:
+        return None
+    net = _flottant(deal, "profit") or 0.0
+    if entree is not None and sortie is not None and entree == sortie:
+        resultat, profit = "draw", 0.0
+    elif net > 0:
+        resultat, profit = "win", net
+    else:
+        resultat, profit = "loose", -mise
+    ouverture_ms = int(ouverture * 1000)
+    return Execution(
+        pair=str(pair), sens=sens, mise=mise, signal_ts_ms=ouverture_ms,
+        prix_attendu=entree,
+        payout_flux_pct=_flottant(deal, "percentProfit") or 0.0,
+        expiration_sec=max(1, int(round(fermeture - ouverture))),
+        clic_ts_ms=ouverture_ms, accepte_ts_ms=ouverture_ms, accepte=True,
+        order_id=str(deal["id"]), prix_entree=entree, prix_sortie=sortie,
+        payout_broker_pct=_flottant(deal, "percentProfit"),
+        ouverture_ts_ms=ouverture_ms,
+        expiration_ts_ms=int(fermeture * 1000),
+        resultat=resultat, profit=profit,
+        brut={"rapatrie_du_broker": deal})
+
+
+def trouver_deal(deals: list[dict], pair: str, mise: float, instant_ms: int,
+                 tolerance_sec: int = 180) -> Execution | None:
+    """L'ordre du broker qui correspond à une réservation : même actif, même
+    mise, ouvert à `tolerance_sec` près."""
+    for deal in deals:
+        ex = execution_depuis_deal(deal)
+        if (ex is not None and ex.pair == pair
+                and abs(ex.mise - mise) < 0.005
+                and abs(ex.clic_ts_ms - instant_ms) <= tolerance_sec * 1000):
+            return ex
+    return None
 
 
 def _texte(valeur) -> str | None:

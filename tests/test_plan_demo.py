@@ -1832,17 +1832,17 @@ def test_un_ordre_PARTI_mais_non_journalise_ne_fait_pas_tomber_la_course(
     alertes: list[str] = []
     c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
                        _plan(sessions=10), PAIRES_TEST, alerter=alertes.append)
-    vraie = journal.ecrire
+    vraie = journal.completer
     essais = {"n": 0}
 
-    def ecrire_qui_echoue_une_fois(ex):
+    def completer_qui_echoue_une_fois(jeton, ex):
         essais["n"] += 1
         if essais["n"] == 1:
             raise RuntimeError("duplicate key value violates unique "
                                "constraint executions_pkey")
-        return vraie(ex)
+        return vraie(jeton, ex)
 
-    journal.ecrire = ecrire_qui_echoue_une_fois
+    journal.completer = completer_qui_echoue_une_fois
     c.chercher_un_signal = lambda: Signal(
         pair="AUDCAD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
         expiry_sec=900, reason="script")
@@ -1852,4 +1852,116 @@ def test_un_ordre_PARTI_mais_non_journalise_ne_fait_pas_tomber_la_course(
         "l'ordre entre au journal, complet, au dénouement")
     assert any("NON enregistré" in a for a in alertes)
     assert c.etat.session is None, "la session gagnée est bien close"
+    journal.close()
+
+
+# --------------------------------------------------------------------------- #
+# Aucun ordre sans sa ligne, aucun pas avant le sort du précédent
+# --------------------------------------------------------------------------- #
+
+def _signal_sur(paire):
+    return lambda: Signal(pair=paire, direction=Direction.CALL,
+                          decided_at_ms=T0_MS, expiry_sec=900,
+                          reason="script")
+
+
+def test_si_le_journal_refuse_la_ligne_l_ordre_ne_part_PAS(tmp_path):
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    courtier = CourtierFactice(["win"])
+    alertes: list[str] = []
+    c = CoursePlanDemo(LecteurFactice(), courtier, journal,
+                       _plan(sessions=10), PAIRES_TEST, alerter=alertes.append)
+
+    def refuse(*a, **k):
+        raise RuntimeError("base indisponible")
+
+    journal.reserver = refuse
+    c.chercher_un_signal = _signal_sur("AUDCAD_otc")
+    c.tour()
+    assert courtier.places == [], "aucun ordre ne part sans sa ligne"
+    assert any("NON envoyé" in a for a in alertes)
+    journal.close()
+
+
+def test_une_reservation_sans_issue_BLOQUE_tout_nouvel_ordre(tmp_path,
+                                                             monkeypatch):
+    """Les deux pas de 3,31 $ à une minute d'intervalle : la course relancée
+    ignorait qu'un ordre courait. Une réservation sans issue l'en empêche."""
+    horloge = _Horloge()
+    monkeypatch.setattr("maxprofit.live.plan_demo.time.time", horloge)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    journal.reserver("EURUSD_otc", "put", 3.31, 900)   # le processus meurt
+    courtier = CourtierFactice(["win"])
+    c = CoursePlanDemo(LecteurFactice(), courtier, journal,
+                       _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = _signal_sur("AUDCAD_otc")
+    horloge.t += 60
+    assert c.tour() is False and courtier.places == []
+    assert "peut-être parti" in c.resume()
+    horloge.t += 900 + 120                             # l'échéance est passée
+    assert c.tour() is True, "introuvable chez le broker : on reprend"
+    assert len(courtier.places) == 1
+    journal.close()
+
+
+def test_un_ordre_RETROUVE_chez_le_broker_entre_au_journal(tmp_path,
+                                                           monkeypatch):
+    horloge = _Horloge()
+    monkeypatch.setattr("maxprofit.live.plan_demo.time.time", horloge)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    instant = int(horloge.t)
+    journal.reserver("EURUSD_otc", "put", 3.31, 900)
+
+    class CourtierQuiSeSouvient(CourtierFactice):
+        def ordres_clotures(self):
+            return [{"id": "po-42", "asset": "EURUSD_otc", "amount": 3.31,
+                     "command": 1, "openTimestamp": instant + 1,
+                     "closeTimestamp": instant + 901, "openPrice": 1.1,
+                     "closePrice": 1.2, "profit": 0}]
+
+    c = CoursePlanDemo(LecteurFactice(), CourtierQuiSeSouvient([]), journal,
+                       _plan(sessions=10), PAIRES_TEST)
+    horloge.t += 900 + 121
+    c.chercher_un_signal = lambda: None
+    c.tour()
+    ordres = journal.toutes()
+    assert [(o.order_id, o.resultat, o.profit) for o in ordres] == [
+        ("po-42", "loose", -3.31)]
+    assert journal.reservations() == []
+    journal.close()
+
+
+def test_un_echec_AVANT_l_envoi_libere_la_reservation(tmp_path):
+    class CourtierSansPrix(CourtierFactice):
+        def placer(self, *a, **k):
+            raise BotError("Aucun tick disponible sur AUDCAD_otc.")
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierSansPrix([]), journal,
+                       _plan(sessions=10), PAIRES_TEST)
+    c.chercher_un_signal = _signal_sur("AUDCAD_otc")
+    with pytest.raises(BotError):
+        c.tour()
+    assert journal.reservations() == [], "pas parti : ne bloque rien"
+    journal.close()
+
+
+def test_rapatrier_liste_seulement_les_ordres_ABSENTS_depuis_le_depart(
+        tmp_path):
+    from maxprofit.live.plan_demo import ordres_absents
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    journal.ecrire(_ordre_en_vol("po-connu"))
+
+    def deal(i, ouverture):
+        return {"id": i, "asset": "EURUSD_otc", "amount": 3.31, "command": 1,
+                "openTimestamp": ouverture, "closeTimestamp": ouverture + 900,
+                "openPrice": 1.1, "closePrice": 1.0, "profit": 3.05}
+
+    courtier = type("C", (), {"ordres_clotures": lambda self: [
+        deal("po-connu", 1_790_000_000), deal("po-avant", 1_700_000_000),
+        deal("po-orphelin", 1_790_000_500)]})()
+    absents = ordres_absents(courtier, journal, 1_789_999_000_000)
+    assert [(e.order_id, e.sens, e.resultat) for e in absents] == [
+        ("po-orphelin", "put", "win")]
     journal.close()
