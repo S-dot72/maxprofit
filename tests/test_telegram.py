@@ -546,9 +546,9 @@ def test_rapatrier_est_reserve_aux_administrateurs(tmp_path):
     assert appels == ["1 2"] and client.envoyes[-1] == (CHAT, "liste")
 
 
-def test_rapatrier_liste_puis_importe_et_clot_la_session(tmp_path):
-    """Les deux pas de 3,31 $ partis sans trace : listés, importés sur choix,
-    et la session en cours close pour repartir du solde réel."""
+def test_rapatrier_liste_puis_importe(tmp_path):
+    """Les deux pas de 3,31 $ partis sans trace : listés, puis importés sur
+    choix ; le solde du plan en tient compte."""
     import sqlite3
     import threading
     from types import SimpleNamespace
@@ -569,7 +569,7 @@ def test_rapatrier_liste_puis_importe_et_clot_la_session(tmp_path):
         etat=SimpleNamespace(demarre_ts=1_790_000_000),
         courtier=SimpleNamespace(ordres_clotures=lambda: [
             deal("po-1", 1_790_000_100), deal("po-2", 1_790_000_160)]),
-        demande_interruption=threading.Event())
+        )
 
     def ouvrir():
         return sqlite3.connect(str(base))
@@ -577,7 +577,6 @@ def test_rapatrier_liste_puis_importe_et_clot_la_session(tmp_path):
     liste = rapatrier(course, "", ouvrir)
     assert "1." in liste and "2." in liste and "EURUSD_otc PUT 3.31" in liste
     assert "importé" in rapatrier(course, "tout", ouvrir)
-    assert course.demande_interruption.is_set()
     relu = JournalExecution(base, campagne="plan")
     assert sorted(e.order_id for e in relu.toutes()) == ["po-1", "po-2"]
     assert relu.profits_du_plan() == -6.62
@@ -593,3 +592,19 @@ def test_diag_refuse_un_observateur_SANS_faire_tomber_le_bot(tmp_path):
         tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
     _traiter(bot, _message("/diag", chat=INTRUS))
     assert client.envoyes and client.envoyes[-1][0] == INTRUS
+
+
+def test_reprendre_est_reserve_aux_administrateurs(tmp_path):
+    client = FauxClient()
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+
+    async def reprendre(argument):
+        appels.append(argument)
+        return "ok"
+
+    bot._reprendre = reprendre
+    _traiter(bot, _message("/reprendre 2", chat=INTRUS))
+    _traiter(bot, _message("/reprendre 2"))
+    assert appels == ["2"]

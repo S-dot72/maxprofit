@@ -261,10 +261,11 @@ RAFRAICHIR_UNIVERS_SEC = 15
 #: regroupent. Il ne vaut rien tant qu'il n'a pas tenu sur des données jamais
 #: vues — c'est ce que cette course doit trancher.
 DELAI_INDEPENDANCE_SEC = 900
-#: Au-delà, une session qui attend un pas éligible est INTERROMPUE. Sans cette
-#: borne elle attendrait indéfiniment, bloquant la journée entière, et ses
-#: mises déjà engagées resteraient hors des comptes.
-ATTENTE_MAX_PAS_SEC = 2 * 3600
+#: ⚠ PLUS D'INTERRUPTION AU BOUT DE DEUX HEURES. Une session qui attendait
+#: un pas indépendant était soldée et abandonnée : la perte du pas 1 restait
+#: sans rattrapage (« Session interrompue en 1 pas, -1,59 $ »). Décision de
+#: l'utilisateur : une session ne reste jamais incomplète. Elle attend son pas
+#: suivant, aussi longtemps qu'il le faut.
 
 #: L'univers sur lequel l'hypothèse a été PRÉ-INSCRITE (registre #58, #59).
 #:
@@ -393,6 +394,9 @@ class Etat:
     dernier_trade: tuple[str, int] | None = None
     pas_sautes_independance: int = 0
     sessions_interrompues: int = 0
+    #: La dernière session interrompue, telle qu'elle était : `/reprendre`
+    #: la remet en route au pas où elle s'était arrêtée.
+    session_suspendue: dict | None = None
     #: L'ordre EN COURS, tant qu'il n'est pas dénoué. Affiché : sans lui,
     #: `/etat` reste muet pendant le quart d'heure où l'option vit, c'est-à-dire
     #: pendant presque tout le temps où il se passe quelque chose.
@@ -463,10 +467,11 @@ class CoursePlanDemo:
         self.delais_evaluation: deque[float] = deque(maxlen=200)
         self.delais_clic: deque[float] = deque(maxlen=50)
         self._fin_bougie_du_signal: int | None = None
-        #: Posé par `/rapatrier` (autre thread) : la session en cours sera
-        #: close au prochain passage, puisque des ordres importés en ont
-        #: changé le solde.
-        self.demande_interruption = threading.Event()
+        #: Posée par `/reprendre` (autre thread), traitée par CE thread au
+        #: passage suivant : l'état de la course n'est touché que d'ici.
+        #: `0` = reprendre la session suspendue telle qu'elle était.
+        self.demande_reprise: int | None = None
+        self._verrou_demandes = threading.Lock()
         #: Pourquoi aucun ordre ne part en ce moment, s'il y a une raison.
         self.attente_confirmation: str | None = None
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
@@ -1016,8 +1021,9 @@ class CoursePlanDemo:
             # disparaître du solde : l'argent serait sorti du compte sans
             # laisser de trace dans le plan.
             session.engager_sans_resoudre(mise)
-            session.interrompre()
-            self._cloturer_session()
+            self._interrompre_la_session(
+                f"dénouement inconnu ({execution.resultat}) — /rapatrier "
+                f"puis /reprendre une fois le résultat connu")
             return
 
         gagne = execution.resultat == "win"
@@ -1126,21 +1132,17 @@ class CoursePlanDemo:
         """
         self.rafraichir_le_solde()
         self._purger_la_quarantaine()
-        if self.demande_interruption.is_set():
-            self.demande_interruption.clear()
-            if self.etat.session is not None and self.etat.trade_en_cours is None:
-                self._interrompre_la_session(
-                    "des ordres rapatriés du broker ont changé le solde")
-                return True
+        with self._verrou_demandes:
+            demande, self.demande_reprise = self.demande_reprise, None
+        if demande is not None:
+            self._prevenir(self._reprendre(demande or None))
+            self._sauvegarder()
         if self._un_ordre_reste_a_confirmer():
             return False
         if self.etat.session is None:
             arret = self.peut_ouvrir()
             if arret is not None:
                 return False
-        elif self._session_a_trop_attendu():
-            self._interrompre_la_session()
-            return True
         signal = self.chercher_un_signal()
         if signal is None:
             return False
@@ -1222,14 +1224,78 @@ class CoursePlanDemo:
                 f"🔎 Ordre retrouvé chez le broker : {pair} {sens} "
                 f"{mise:.2f} $ → {retrouve.resultat} "
                 f"{retrouve.profit or 0:+.2f} $. Il entre au journal.")
-            if self.etat.session is not None and self.etat.trade_en_cours is None:
-                self._interrompre_la_session(
-                    "un ordre retrouvé chez le broker a changé le solde")
+            self._appliquer_a_la_session(retrouve, instant)
             return
         self.journal.annuler_reservation(jeton, "non confirmé par le broker")
         self._prevenir(
             f"⚠ {pair} {sens} {mise:.2f} $ : réservé mais introuvable chez le "
             f"broker, considéré comme non parti. /rapatrier pour vérifier.")
+
+    def _appliquer_a_la_session(self, retrouve, instant_ms: int) -> None:
+        """Un pas retrouvé chez le broker compte pour la session qu'il servait.
+
+        Il la servait si sa mise est celle du pas attendu : la course,
+        relancée, en était restée au pas d'avant. On l'enregistre alors comme
+        s'il venait de se dénouer — la martingale continue, au lieu de rejouer
+        un pas déjà joué ou d'abandonner la session.
+        """
+        session = self.etat.session
+        if (session is None
+                or abs(retrouve.mise - session.mise_courante()) >= 0.005):
+            return
+        self.etat.dernier_trade = (retrouve.pair, instant_ms // 1000)
+        if retrouve.resultat not in ("win", "loose", "draw"):
+            return
+        etat = session.enregistrer(retrouve.resultat == "win")
+        log.warning("Pas %d rattrapé depuis le broker : %s.",
+                    session.pas_joues, retrouve.resultat)
+        if etat.terminee:
+            self._cloturer_session()
+        self._sauvegarder()
+
+    def _reprendre(self, pas_joues: int | None) -> str:
+        """Remet en route la session interrompue, au pas où elle en était.
+
+        Sans session mémorisée — une interruption antérieure à cette
+        mémoire —, il faut dire combien de pas elle avait joués : l'échelle
+        est alors recalculée sur le solde d'ouverture de la journée, comme
+        elle l'avait été à l'ouverture de la session.
+        """
+        if self.etat.session is not None:
+            return "↩️ Reprise refusée : une session est déjà en cours."
+        memo = self.etat.session_suspendue
+        if memo:
+            echelle = Echelle(payout_pct=memo["payout_pct"],
+                              gain_vise=memo["gain_vise"],
+                              pas_max=memo["pas_max"])
+            n = pas_joues if pas_joues is not None else memo["pas_joues"]
+            ouverture = memo["solde_ouverture"]
+        else:
+            if pas_joues is None:
+                return ("↩️ Aucune session mémorisée. Précisez combien de pas "
+                        "elle avait joués : /reprendre 2")
+            ouverture = self.etat.journee.solde_ouverture
+            echelle = Echelle(
+                payout_pct=92,
+                gain_vise=self.etat.plan.gain_par_session_pct / 100 * ouverture)
+            n = pas_joues
+        if not 1 <= n < echelle.pas_max:
+            return (f"↩️ Reprise refusée : {n} pas joué(s), il en faut entre 1 "
+                    f"et {echelle.pas_max - 1} pour qu'il reste un pas à jouer.")
+        session = Session(echelle=echelle)
+        session.pas_joues = n
+        session.engagees = list(echelle.mises()[:n])
+        self.etat.session = session
+        self.etat.solde_ouverture_session = ouverture
+        self.etat.session_suspendue = None
+        if memo:
+            self.etat.sessions_interrompues = max(
+                0, self.etat.sessions_interrompues - 1)
+        return (f"↩️ Session reprise : {n} pas déjà joué(s) "
+                f"({', '.join(f'{m:.2f}' for m in session.engagees)} $). "
+                f"Prochain pas {n + 1}/{echelle.pas_max} : "
+                f"{session.mise_courante():.2f} $, sur un autre actif que le "
+                f"précédent.")
 
     def _sauvegarder(self) -> None:
         """Fige l'état tout de suite. Ne doit jamais faire tomber la course."""
@@ -1271,17 +1337,8 @@ class CoursePlanDemo:
             return False
         return True
 
-    def _session_a_trop_attendu(self) -> bool:
-        session = self.etat.session
-        dernier = self.etat.dernier_trade
-        if session is None or not session.pas_joues or dernier is None:
-            return False
-        return int(time.time()) - dernier[1] > ATTENTE_MAX_PAS_SEC
-
-    def _interrompre_la_session(self, motif: str | None = None) -> None:
-        """On solde et on repart — faute de pas éligible depuis trop
-        longtemps, ou parce que des ordres retrouvés chez le broker ont
-        changé le solde sous la session.
+    def _interrompre_la_session(self, motif: str) -> None:
+        """On solde, et l'on garde de quoi reprendre (`/reprendre`).
 
         Interrompue et non perdue : elle n'a coûté que les pas déjà joués.
         Mais elle EST comptée — une session abandonnée dont les mises
@@ -1290,9 +1347,15 @@ class CoursePlanDemo:
         session = self.etat.session
         log.warning(
             "Session interrompue : %s. %d pas joué(s), %.2f $ engagé(s).",
-            motif or f"aucun pas indépendant depuis "
-                     f"{ATTENTE_MAX_PAS_SEC / 60:.0f} min",
-            session.pas_joues, session.engage)
+            motif, session.pas_joues, session.engage)
+        self.etat.session_suspendue = {
+            "payout_pct": session.echelle.payout_pct,
+            "gain_vise": session.echelle.gain_vise,
+            "pas_max": session.echelle.pas_max,
+            "pas_joues": session.pas_joues,
+            "engagees": list(session.engagees),
+            "solde_ouverture": self.etat.solde_ouverture_session,
+        }
         session.interrompre()
         self.etat.sessions_interrompues += 1
         self._cloturer_session()
@@ -1597,7 +1660,8 @@ class CoursePlanDemo:
                 f"{e.signaux_bruts} signal(aux) bruts dont "
                 f"{e.signaux_trouves} retenu(s), {e.pas_sautes_independance} "
                 f"pas sauté(s), {e.sessions_interrompues} interrompue(s), "
-                f"lecture il y a {age} s{ecartees}{debit}"
+                f"{f'lecture il y a {age} s' if e.derniere_evaluation_ts else 'aucune lecture encore'}"
+                f"{ecartees}{debit}"
                 f"{self._reactivite()}"
                 f"{' | ' + attente if attente else ''}")
 
@@ -1687,7 +1751,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      "_quarantaine": etat.quarantaine,
                      "_refus": etat.refus_daffilee,
                      "_refus_ts": etat.dernier_refus_ts,
-                     "_quarantaines": etat.quarantaines_subies}),
+                     "_quarantaines": etat.quarantaines_subies,
+                     "_session_suspendue": etat.session_suspendue}),
          etat.demarre_ts),
     )
     valider(conn)
@@ -1745,6 +1810,7 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     # ramènerait la peine à une heure et l'escalade ne servirait à rien.
     etat.quarantaines_subies = {
         str(k): int(v) for k, v in (sauve.get("_quarantaines") or {}).items()}
+    etat.session_suspendue = sauve.get("_session_suspendue") or None
     etat.demarre_ts = int(ligne[15] or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
@@ -1820,13 +1886,28 @@ def rapatrier(course, argument: str, ouvrir=None) -> str:
                 return f"Numéros entre 1 et {len(absents)}, s'il vous plaît."
         for i in choix:
             journal.ecrire(absents[i - 1])
-        course.demande_interruption.set()
         total = sum(absents[i - 1].profit or 0 for i in choix)
         return (f"✅ {len(choix)} ordre(s) importé(s), {total:+.2f} $ au "
-                f"total. La session en cours sera close au prochain passage : "
-                f"le plan repart du solde réel.")
+                f"total : le solde du plan en tient compte dès le prochain "
+                f"passage. Si une session avait été interrompue, /reprendre "
+                f"la remet en route.")
     finally:
         conn.close()
+
+
+def demander_reprise(course, argument: str) -> str:
+    """`/reprendre [pas]` : demande à la course de remettre en route la
+    session interrompue. Appliquée par le thread de la course au passage
+    suivant — c'est lui seul qui touche à son état."""
+    if course is None:
+        return "La course n'est pas connectée : rien à reprendre."
+    argument = argument.strip()
+    if argument and not argument.isdigit():
+        return "Nombre de pas illisible. Exemple : /reprendre 2"
+    with course._verrou_demandes:
+        course.demande_reprise = int(argument) if argument else 0
+    return ("↩️ Reprise demandée : elle sera appliquée au prochain passage de "
+            "la course, et vous recevrez la confirmation ici.")
 
 
 def _resoudre_les_ordres_en_vol(course, courtier, journal) -> None:

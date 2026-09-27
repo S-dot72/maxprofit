@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from maxprofit.core.config import charger_env_local                # noqa: E402
 from maxprofit.live.plan_demo import (                             # noqa: E402
-    ATTENTE_MAX_PAS_SEC, DELAI_INDEPENDANCE_SEC, CoursePlanDemo)
+    DELAI_INDEPENDANCE_SEC, CoursePlanDemo)
 from maxprofit.research.rejeu import (                             # noqa: E402
     FENETRE_SEC, IndexBougies, IndexPayouts, generer_signaux, rejouer)
 from maxprofit.store.db import chemin_donnees, open_read_only      # noqa: E402
@@ -212,8 +212,7 @@ def main() -> int:
                   f"{'fen.':>4}  {'perdues':>6}")
             for echeance in echeances:
                 r = rejouer(sous, index, payouts, echeance_sec=echeance,
-                            independance_sec=args.independance,
-                            attente_max_sec=ATTENTE_MAX_PAS_SEC)
+                            independance_sec=args.independance)
                 repere = "  <- actuel" if (
                     strategie.params == ZoneH1().params
                     and getattr(strategie.p, "entrees_max_par_zone", None)

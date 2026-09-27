@@ -1600,3 +1600,20 @@ def test_un_envoi_qui_ne_revient_pas_est_ABANDONNE(monkeypatch):
         assert po.envoyer_sur_le_socket(client, "42[1]", _GlobalsBoucle())
     finally:
         boucle.call_soon_threadsafe(boucle.stop)
+
+
+def test_les_ordres_clotures_sont_ramenes_en_UTC_vrai():
+    """`/rapatrier` annonçait 00:37 UTC un ordre ouvert à 22:37 UTC : l'horloge
+    du broker avance de deux heures, et la réservation ne retrouvait jamais
+    son ordre."""
+    from maxprofit.execution.courtier import ramener_en_utc, trouver_deal
+
+    deal = {"id": "po-1", "asset": "EURUSD_otc", "amount": 3.31,
+            "command": 1, "openTimestamp": 1_790_555_820 + 7200,
+            "closeTimestamp": 1_790_556_720 + 7200, "openPrice": 1.1,
+            "closePrice": 1.2, "profit": 0}
+    ramenes = ramener_en_utc([deal], 7200)
+    assert ramenes[0]["openTimestamp"] == 1_790_555_820
+    assert deal["openTimestamp"] == 1_790_555_820 + 7200, "l'original intact"
+    assert trouver_deal(ramenes, "EURUSD_otc", 3.31, 1_790_555_800_000)
+    assert trouver_deal([deal], "EURUSD_otc", 3.31, 1_790_555_800_000) is None

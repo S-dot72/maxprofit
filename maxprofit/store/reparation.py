@@ -137,6 +137,8 @@ def planifier(colonnes: dict[str, dict[str, str]],
             actuel = reelles.get(colonne)
             if actuel is None or _compatible(colonne, actuel, attendu):
                 continue
+            if attendu == _O and actuel in _COMPATIBLES[_T]:
+                continue                # voir `convertir_les_chemins`
             if attendu == _O:
                 log.error("%s.%s est en %s au lieu de bytea : conversion "
                           "impossible sans connaître l'encodage, à réparer à "
@@ -223,6 +225,13 @@ def reparer_le_schema(conn) -> list[str]:
                       description, erreur)
             bilan.append(f"ÉCHEC {description} : {erreur}")
     try:
+        converti = convertir_les_chemins(conn)
+    except Exception as erreur:                          # noqa: BLE001
+        converti = f"ÉCHEC tick_paths.chemin : {erreur}"
+        log.error("Réparation du schéma échouée — %s", converti)
+    if converti:
+        bilan.append(converti)
+    try:
         recale = recaler_la_numerotation(conn)
     except Exception as erreur:                          # noqa: BLE001
         log.error("Numérotation des ordres non vérifiée : %s", erreur)
@@ -231,6 +240,35 @@ def reparer_le_schema(conn) -> list[str]:
         log.warning("Schéma réparé — %s", recale)
         bilan.append(recale)
     return bilan
+
+
+def convertir_les_chemins(conn) -> str | None:
+    """`tick_paths.chemin` en texte : le rendre binaire, si c'est sûr.
+
+    Écrire des octets dans une colonne texte ne lève pas — PostgreSQL les
+    range sous leur forme hexadécimale « \\x… » —, mais ils reviennent en
+    texte à la lecture et le chemin ne se décode plus. On ne convertit que
+    si TOUTES les lignes ont cette forme ; sinon l'encodage est inconnu, et
+    deviner détruirait des données.
+    """
+    ligne = conn.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'tick_paths' "
+        "AND column_name = 'chemin'").fetchone()
+    if ligne is None or ligne[0] not in _COMPATIBLES[_T]:
+        return None
+    illisibles = conn.execute(
+        "SELECT COUNT(*) FROM tick_paths WHERE chemin IS NOT NULL "
+        "AND chemin !~ '^\\\\x([0-9a-fA-F][0-9a-fA-F])*$'").fetchone()[0]
+    if illisibles:
+        log.error("tick_paths.chemin en texte, %d ligne(s) hors du format "
+                  "hexadécimal : conversion refusée, à examiner à la main.",
+                  illisibles)
+        return f"ÉCHEC tick_paths.chemin : {illisibles} ligne(s) illisible(s)"
+    conn.execute("ALTER TABLE tick_paths ALTER COLUMN chemin TYPE bytea "
+                 "USING decode(substr(chemin, 3), 'hex')")
+    log.warning("Schéma réparé — tick_paths.chemin : text -> bytea")
+    return "tick_paths.chemin : text -> bytea"
 
 
 def recaler_la_numerotation(conn) -> str | None:
