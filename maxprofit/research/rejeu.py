@@ -9,7 +9,8 @@ niveau du plan :
   perdus ;
 - la règle d'indépendance (#68) : le pas suivant d'une martingale se joue sur
   un AUTRE actif, au moins `independance_sec` après l'entrée du précédent ;
-- une session qui attend un pas plus de `attente_max_sec` est interrompue ;
+- une session attend son pas suivant sans limite, comme en direct
+  (`attente_max_sec` ne sert qu'à mesurer l'effet d'une borne) ;
 - une session s'arrête au premier pas gagné, ou après `pas_max` pertes.
 
 C'est la seule façon de répondre à « 18 sessions en 12 h sont-elles
@@ -160,7 +161,7 @@ class Rejeu:
 
 def rejouer(signaux: Sequence[SignalRejoue], bougies: IndexBougies,
             payouts: IndexPayouts, *, echeance_sec: int,
-            independance_sec: int = 900, attente_max_sec: int = 7200,
+            independance_sec: int = 900, attente_max_sec: int | None = None,
             pas_max: int = 3) -> Rejeu:
     """Joue le plan, signal après signal, dans l'ordre du temps."""
     r = Rejeu(echeance_sec=echeance_sec, signaux=len(signaux))
@@ -176,8 +177,8 @@ def rejouer(signaux: Sequence[SignalRejoue], bougies: IndexBougies,
 
     for s in signaux:
         t = s.fin_sec
-        if session_debut is not None and dernier is not None \
-                and t - dernier[1] > attente_max_sec:
+        if attente_max_sec is not None and session_debut is not None \
+                and dernier is not None and t - dernier[1] > attente_max_sec:
             clore("interrompue")
         if t < libre_a:
             r.pendant_un_ordre += 1

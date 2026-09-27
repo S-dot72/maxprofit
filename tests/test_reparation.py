@@ -157,3 +157,31 @@ def test_la_ligne_d_etat_broker_et_les_index_perdus_sont_recrees(
         "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_payouts_pair'"
     ).fetchone() is not None
     etat_broker.noter_succes(rouverte)
+
+
+@pytest.mark.skipif(not URL, reason="MAXPROFIT_PG_TEST_URL non défini")
+def test_les_chemins_de_ticks_en_TEXTE_redeviennent_binaires(monkeypatch,
+                                                              tmp_path):
+    """Production : « tick_paths.chemin est en text au lieu de bytea ». Les
+    octets écrits là revenaient en texte, et plus aucun chemin ne se
+    décodait."""
+    from maxprofit.core.types import Tick
+    from maxprofit.store.chemin_ticks import encoder
+    from maxprofit.store.db import open_read_write
+    from maxprofit.store.market import MarketReader, MarketWriter
+
+    monkeypatch.setenv("DATABASE_URL", URL)
+    conn = open_read_write(tmp_path / "x")
+    conn.execute("TRUNCATE tick_paths")
+    t0 = 1_790_000_040_000
+    ticks = [Tick("EURUSD_otc", t0 + 250 * i, round(1.1 + i / 10_000, 5))
+             for i in range(20)]
+    MarketWriter(conn).insert_tick_paths([encoder(ticks)])
+    conn.execute("ALTER TABLE tick_paths ALTER COLUMN chemin TYPE text "
+                 "USING chemin::text")
+
+    rouverte = open_read_write(tmp_path / "x")
+    relus = MarketReader(rouverte).ticks("EURUSD_otc", t0 // 1000 - 60,
+                                         t0 // 1000 + 120)
+    assert [(t.ts_ms, t.price) for t in relus] == [
+        (t.ts_ms, t.price) for t in ticks]

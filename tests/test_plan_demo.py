@@ -1038,60 +1038,34 @@ def test_le_PREMIER_pas_n_a_rien_a_respecter(course):
     assert len(c.journal.toutes()) == 2
 
 
-def test_une_session_qui_attend_trop_longtemps_est_INTERROMPUE(tmp_path,
-                                                               monkeypatch):
-    """Sans cette borne, une session attendrait indéfiniment un pas éligible,
-    bloquant la journée — et ses mises déjà engagées resteraient hors des
-    comptes."""
-    # -1 et non 0 : le pas vient d'être joué, l'écoulé vaut zéro
-    # seconde, et « zéro > zéro » est faux.
-    monkeypatch.setattr("maxprofit.live.plan_demo.ATTENTE_MAX_PAS_SEC", -1)
+def test_une_session_qui_attend_longtemps_n_est_PLUS_interrompue(
+        tmp_path, monkeypatch):
+    """« On ne peut pas laisser la session incomplète » : elle était soldée
+    au bout de deux heures sans pas indépendant, et la perte du pas 1 restait
+    sans rattrapage. Elle attend désormais son pas suivant."""
+    horloge = _Horloge()
+    monkeypatch.setattr("maxprofit.live.plan_demo.time.time", horloge)
     journal = JournalExecution(tmp_path / "e.db", campagne="t")
     c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose"]),
                        journal, _plan(sessions=10), PAIRES_TEST)
-    c.chercher_un_signal = lambda: Signal(
-        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
-        expiry_sec=900, reason="script")
-
-    c.tour()                                     # pas 1, perdu
-    engage = c.etat.session.engage
-    assert c.tour() is True, "l'interruption est un événement, pas un silence"
-    assert c.etat.session is None
-    assert c.etat.sessions_interrompues == 1
-    # La mise engagée est COMPTÉE : une session abandonnée dont les mises
-    # disparaîtraient ferait croire à un solde qu'on n'a pas.
-    assert c.etat.solde == pytest.approx(CAPITAL - engage)
-    # ⚠ MAIS ELLE NE CONSOMME PAS DE CRÉNEAU, et ce n'est pas la même chose.
-    #
-    # Elle en consommait un, et cela coûtait deux fois : un créneau sur les
-    # dix-huit de la journée, et une perte consécutive — donc deux
-    # interruptions auraient déclenché un réancrage. Interrompue veut dire NI
-    # gagnée NI perdue.
-    #
-    # Repéré en production : sept sessions terminées chez le broker, huit
-    # annoncées par le plan.
-    assert c.etat.journee.sessions_jouees == 0, (
-        "une session abandonnée après un seul pas n'est pas une session jouée")
-    assert c.etat.journee.sessions_perdues_daffilee == 0, (
-        "ni une session perdue : elle n'a pas déroulé son échelle")
-    assert len(c.etat.reancrages) == 0
+    c.chercher_un_signal = _signal_sur("EURUSD_otc")   # le même actif
+    c.tour()                                           # pas 1, perdu
+    horloge.t += 24 * 3600
+    assert c.tour() is False, "même actif : le pas 2 attend"
+    assert c.etat.session is not None and c.etat.session.pas_joues == 1
+    assert c.etat.sessions_interrompues == 0
     journal.close()
 
 
-def test_deux_interruptions_ne_declenchent_pas_un_REANCRAGE(tmp_path,
-                                                            monkeypatch):
-    """Le réancrage répond à deux sessions PERDUES d'affilée — c'est-à-dire
-    deux échelles descendues jusqu'au bout. Deux sessions abandonnées faute de
-    pas indépendant ne disent rien de la stratégie, et remettre le capital à
-    l'ancre sur elles serait une réaction à du vide."""
-    monkeypatch.setattr("maxprofit.live.plan_demo.ATTENTE_MAX_PAS_SEC", -1)
+def test_deux_interruptions_ne_declenchent_pas_un_REANCRAGE(tmp_path):
+    """Le réancrage répond à deux sessions PERDUES d'affilée — deux échelles
+    descendues jusqu'au bout. Deux sessions interrompues sur un dénouement
+    inconnu ne disent rien de la stratégie."""
     journal = JournalExecution(tmp_path / "e.db", campagne="t")
-    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["loose"] * 6),
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["unknown"] * 2),
                        journal, _plan(sessions=10), PAIRES_TEST)
-    c.chercher_un_signal = lambda: Signal(
-        pair="EURUSD_otc", direction=Direction.CALL, decided_at_ms=T0_MS,
-        expiry_sec=900, reason="script")
-    for _ in range(4):
+    c.chercher_un_signal = _signal_sur("EURUSD_otc")
+    for _ in range(2):
         c.tour()
     assert c.etat.sessions_interrompues == 2
     assert c.etat.journee.sessions_jouees == 0
@@ -1965,3 +1939,97 @@ def test_rapatrier_liste_seulement_les_ordres_ABSENTS_depuis_le_depart(
     assert [(e.order_id, e.sens, e.resultat) for e in absents] == [
         ("po-orphelin", "put", "win")]
     journal.close()
+
+
+# --------------------------------------------------------------------------- #
+# Une session ne reste jamais incomplète : /reprendre, et le pas rattrapé
+# --------------------------------------------------------------------------- #
+
+def test_reprendre_une_session_interrompue_la_ou_elle_en_etait(tmp_path):
+    from maxprofit.live.plan_demo import demander_reprise
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    alertes: list[str] = []
+    c = CoursePlanDemo(LecteurFactice(),
+                       CourtierFactice(["loose", "unknown", "win"]), journal,
+                       _plan(sessions=10), PAIRES_TEST, alerter=alertes.append)
+    paires = iter(["AUDCAD_otc", "EURUSD_otc"])
+    c.chercher_un_signal = lambda: Signal(
+        pair=next(paires), direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="script")
+    c.tour()                               # pas 1, perdu
+    c.etat.dernier_trade = ("AUDCAD_otc", 0)
+    c.tour()                               # pas 2, dénouement inconnu
+    memo = c.etat.session_suspendue
+    assert c.etat.session is None
+    assert memo["pas_joues"] == 1 and len(memo["engagees"]) == 2, (
+        "le pas 2 est engagé, pas résolu")
+
+    # Le broker dit que le pas 2 a été perdu : on reprend après deux pas.
+    assert "demandée" in demander_reprise(c, "2")
+    c.chercher_un_signal = lambda: None
+    c.tour()
+    session = c.etat.session
+    assert session is not None and session.pas_joues == 2
+    assert any("Session reprise" in a for a in alertes)
+    assert c.etat.sessions_interrompues == 0
+    journal.close()
+
+
+def test_reprendre_SANS_memoire_exige_le_nombre_de_pas(tmp_path):
+    """La session interrompue en production l'a été avant cette mémoire :
+    l'échelle est recalculée sur le solde d'ouverture de la journée."""
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice([]), journal,
+                       _plan(sessions=6), PAIRES_TEST)
+    assert "Précisez" in c._reprendre(None)
+    message = c._reprendre(2)
+    assert c.etat.session.pas_joues == 2
+    assert c.etat.session.engagees == pytest.approx([1.59, 3.31], abs=0.005)
+    assert c.etat.session.mise_courante() == pytest.approx(6.90, abs=0.005)
+    assert "6.90" in message
+    assert "déjà en cours" in c._reprendre(1)
+    journal.close()
+
+
+def test_un_pas_RETROUVE_chez_le_broker_fait_avancer_la_session(tmp_path,
+                                                                monkeypatch):
+    """Relancée après un pas parti sans trace, la course en était au pas
+    d'avant : le pas retrouvé compte pour la session, qui continue au lieu de
+    rejouer ce pas ou d'être abandonnée."""
+    horloge = _Horloge()
+    monkeypatch.setattr("maxprofit.live.plan_demo.time.time", horloge)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    instant = int(horloge.t)
+
+    class CourtierQuiSeSouvient(CourtierFactice):
+        def ordres_clotures(self):
+            return [{"id": "po-7", "asset": "EURUSD_otc", "amount": 3.31,
+                     "command": 0, "openTimestamp": instant + 1,
+                     "closeTimestamp": instant + 901, "openPrice": 1.1,
+                     "closePrice": 1.0, "profit": 0}]
+
+    c = CoursePlanDemo(LecteurFactice(), CourtierQuiSeSouvient([]), journal,
+                       _plan(sessions=6), PAIRES_TEST)
+    c._reprendre(1)                                    # pas 1 déjà perdu
+    journal.reserver("EURUSD_otc", "call", 3.31, 900)  # le pas 2, puis crash
+    horloge.t += 900 + 121
+    c.chercher_un_signal = lambda: None
+    c.tour()
+    assert c.etat.session.pas_joues == 2, "le pas 2 perdu est compté"
+    assert c.etat.session.mise_courante() == pytest.approx(6.90, abs=0.005)
+    assert c.etat.dernier_trade[0] == "EURUSD_otc"
+    journal.close()
+
+
+def test_la_session_suspendue_survit_a_un_redemarrage(course, tmp_path):
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+
+    conn = _base(tmp_path)
+    c = course(["unknown"], plan=_plan(sessions=10))
+    c.tour()
+    assert c.etat.session_suspendue is not None
+    sauver_etat(conn, "susp", c.etat, 20_000)
+    repris, _ = charger_etat(conn, "susp", c.etat.plan)
+    assert repris.session_suspendue == c.etat.session_suspendue
+    conn.close()

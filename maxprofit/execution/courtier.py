@@ -306,7 +306,8 @@ class CourtierDemo:
         """
         self._exiger_connecte()
         deals = self._client.api.GetClosedDeals() or []
-        return [d for d in deals if isinstance(d, dict)]
+        return ramener_en_utc([d for d in deals if isinstance(d, dict)],
+                              self._decalage_horaire_sec())
 
     def paires_au_plafond(self) -> list[str]:
         """Les actifs OUVERTS qui paient le maximum, tous confondus.
@@ -667,6 +668,27 @@ class CourtierDemo:
         if ecoule >= self.plafonds.duree_max_sec:
             raise BotError(
                 f"Durée maximale atteinte : {ecoule / 3600:.1f} h.")
+
+
+def ramener_en_utc(deals: list[dict], decalage_sec: int) -> list[dict]:
+    """Les horodatages du broker, ramenés en UTC vrai.
+
+    ⚠ L'HORLOGE DU BROKER AVANCE DE DEUX HEURES. `/rapatrier` annonçait
+    « 00:37 UTC » un ordre ouvert à 22:37 UTC ; surtout, la réservation
+    (datée en UTC vrai) ne pouvait jamais retrouver son ordre (daté à l'heure
+    du broker) : deux heures d'écart pour trois minutes de tolérance. Même
+    arrondi à l'heure que la collecte.
+    """
+    sortie = []
+    for deal in deals:
+        copie = dict(deal)
+        for champ in ("openTimestamp", "closeTimestamp"):
+            valeur = _flottant(deal, champ)
+            if valeur is not None:
+                copie[champ] = valeur - decalage_sec
+        copie["decalage_broker_sec"] = decalage_sec
+        sortie.append(copie)
+    return sortie
 
 
 def execution_depuis_deal(deal: dict) -> Execution | None:
