@@ -292,6 +292,19 @@ def points_d_acces(demo: bool) -> tuple[str, ...]:
 
 _VERROU_ETAT = threading.Lock()
 
+#: Sessions ouvertes dans ce processus, tous clients confondus. L'indicateur
+#: `websocket_is_connected` de la bibliothèque est UNIQUE alors que collecteur
+#: et courtier ont chacun leur client : la fin de session de l'un le remettait
+#: à faux sous les pieds de l'autre.
+_sessions_ouvertes = 0
+
+
+def _compter_session(global_value, delta: int) -> None:
+    global _sessions_ouvertes
+    with _VERROU_ETAT:
+        _sessions_ouvertes = max(0, _sessions_ouvertes + delta)
+        global_value.websocket_is_connected = _sessions_ouvertes > 0
+
 
 def _client_ws(client):
     """Le `WebsocketClient` d'un client de la bibliothèque, ou None (double)."""
@@ -382,7 +395,7 @@ async def boucle_de_connexion(ws_client, ouvrir, global_value,
                     ws_client.url = url
                     ws_client._maxprofit_erreur = None
                     ws_client._maxprofit_ouvert = ouvert = True
-                    global_value.websocket_is_connected = True
+                    _compter_session(global_value, +1)
                     await _tenir_la_session(ws_client, ws, send_ping, abandon)
             except Exception as erreur:              # noqa: BLE001
                 if not abandon.is_set():
@@ -394,7 +407,7 @@ async def boucle_de_connexion(ws_client, ouvrir, global_value,
             finally:
                 if ouvert:
                     ws_client._maxprofit_ouvert = False
-                    global_value.websocket_is_connected = False
+                    _compter_session(global_value, -1)
         if not abandon.is_set():
             await asyncio.sleep(PAUSE_ENTRE_TENTATIVES_SEC)
 
@@ -1368,7 +1381,7 @@ class PocketOptionSource:
             return etat
         etat["authentifie"] = self.authentifie()
         try:
-            etat["connecte"] = bool(self._client.check_connect())
+            etat["connecte"] = bool(etat_du_socket(self._client, self._globals)[0])
         except Exception as erreur:                      # noqa: BLE001
             etat["connecte"] = f"illisible : {erreur}"
         try:
@@ -1611,7 +1624,7 @@ class PocketOptionSource:
             # précédente, pas l'état courant, et le laisser ferait échouer
             # toutes les vérifications suivantes.
             self._globals.check_websocket_if_error = False
-            if self._client.check_connect():
+            if etat_du_socket(self._client, self._globals)[0]:
                 paires = self._paires_brutes(self.delai_payouts_sec)
                 log.info("Rétabli (%d actifs au catalogue).", len(paires))
                 self._vus.clear()
@@ -1669,5 +1682,5 @@ class PocketOptionSource:
             raison = self._globals.websocket_error_reason
             self._globals.check_websocket_if_error = False
             raise SourceIndisponible(f"Erreur WebSocket : {raison}")
-        if not self._client.check_connect():
+        if not etat_du_socket(self._client, self._globals)[0]:
             raise SourceIndisponible("Socket fermé par le broker")

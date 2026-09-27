@@ -1569,7 +1569,6 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     from maxprofit.plan import Echelle, Risque, solde_projete
     from maxprofit.store.db import open_read_only, open_read_write
     from maxprofit.store.market import MarketReader
-    from maxprofit.strategies.zone_h1 import ZoneH1
 
     plan = PlanCapital.depuis_risque(
         capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
@@ -1611,6 +1610,20 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     journal = JournalExecution(ecriture, campagne=campagne)
     courtier = CourtierDemo(ssid, plafonds)
     courtier.connecter()
+    try:
+        return _assembler(courtier, lecteur, ecriture, journal, plan, paires,
+                          campagne, mode_univers, paires_collectees, alerter)
+    except BaseException:
+        # Connecté mais jamais rendu : personne d'autre ne fermerait ce client,
+        # qui reconnecterait à vie à côté du suivant.
+        courtier.fermer()
+        raise
+
+
+def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
+               mode_univers, paires_collectees, alerter):
+    from maxprofit.strategies.zone_h1 import ZoneH1
+
     course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
                             ZoneH1(), mode_univers=mode_univers,
                             paires_collectees=paires_collectees,

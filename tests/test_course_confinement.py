@@ -245,3 +245,64 @@ def test_une_date_se_lit_en_UTC(monkeypatch):
     monkeypatch.setenv("PLAN_DEBUT", "2026-09-22")
     attendu = int(datetime(2026, 9, 22, tzinfo=timezone.utc).timestamp())
     assert date_de_depart() == attendu
+
+
+# --------------------------------------------------------------------------- #
+# Une course qui tombe rend sa connexion
+# --------------------------------------------------------------------------- #
+
+def test_une_course_qui_TOMBE_rend_sa_connexion_au_broker():
+    """Chaque echec ouvrait une session de plus : la course jetee gardait son
+    client, et la suivante en ouvrait un autre sur le meme jeton. Cinq echecs,
+    cinq sessions simultanees depuis la meme IP."""
+    class _Courtier:
+        fermetures = 0
+
+        def fermer(self):
+            _Courtier.fermetures += 1
+
+    def fabriquer(_alerter=None):
+        course = CourseFactice(lever=TypeError("'str' - 'str'"))
+        course.courtier = _Courtier()
+        return course
+
+    s = SuperviseurCourse(fabriquer, pause_sec=0.01)
+    s.demarrer()
+    assert _attendre(lambda: s.echecs_consecutifs >= 1)
+    s.arreter()
+    assert _attendre(lambda: _Courtier.fermetures >= 1)
+    assert _Courtier.fermetures == s.echecs_consecutifs
+
+
+def test_une_course_connectee_mais_jamais_ASSEMBLEE_rend_sa_connexion(
+        monkeypatch):
+    from maxprofit.execution import courtier as mod_courtier
+    from maxprofit.live import plan_demo
+
+    fermes = []
+
+    class _Courtier:
+        def __init__(self, ssid, plafonds):
+            pass
+
+        def connecter(self):
+            pass
+
+        def fermer(self):
+            fermes.append(self)
+
+    def assembler(*a, **k):
+        raise TypeError("unsupported operand type(s) for -: 'str' and 'str'")
+
+    monkeypatch.setattr(mod_courtier, "CourtierDemo", _Courtier)
+    monkeypatch.setattr(plan_demo, "_assembler", assembler)
+    monkeypatch.setattr("maxprofit.store.db.open_read_only", lambda p: None)
+    monkeypatch.setattr("maxprofit.store.db.open_read_write", lambda p: None)
+    monkeypatch.setattr("maxprofit.store.market.MarketReader", lambda c: None)
+    monkeypatch.setattr("maxprofit.execution.journal.JournalExecution",
+                        lambda c, campagne: None)
+    with pytest.raises(TypeError):
+        plan_demo.fabriquer_course(
+            "jeton", campagne="t", capital=250.0, sessions_par_jour=6,
+            jours=30, paires=("EURUSD_otc",))
+    assert len(fermes) == 1

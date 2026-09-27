@@ -197,6 +197,7 @@ class SuperviseurCourse:
                 # TOUT est avalé, y compris ce qui serait fatal ailleurs.
                 # Laisser remonter tuerait le processus qui collecte, et la
                 # collecte vaut plus que la course.
+                self._liberer_le_courtier()
                 self.echecs_consecutifs += 1
                 self.derniere_erreur = (
                     f"{type(erreur).__name__}: {erreur} — {_ou(erreur)}")
@@ -218,6 +219,23 @@ class SuperviseurCourse:
                     return
                 self._arret.wait(attente)
                 attente = min(attente * 2, BACKOFF_MAX_SEC)
+
+    def _liberer_le_courtier(self) -> None:
+        """Rend la connexion d'une course qu'on abandonne.
+
+        ⚠ SANS CELA, CHAQUE ÉCHEC OUVRAIT UNE SESSION DE PLUS CHEZ LE BROKER.
+        La course jetée gardait son client, que la bibliothèque reconnecte à
+        vie, et la suivante en ouvrait un autre sur le même jeton : cinq échecs
+        (le TypeError de 11 h 29), cinq sessions simultanées depuis la même IP.
+        """
+        course, self._course = self._course, None
+        courtier = getattr(course, "courtier", None)
+        if courtier is None:
+            return
+        try:
+            courtier.fermer()
+        except Exception:                        # noqa: BLE001
+            log.debug("Fermeture du courtier en échec", exc_info=True)
 
     def _prevenir(self, message: str) -> None:
         """Alerter ne doit pas pouvoir faire tomber le confinement."""
