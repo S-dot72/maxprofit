@@ -1383,6 +1383,14 @@ class CoursePlanDemo:
             if e.univers_taille == 0:
                 return ("connectée, AUCUN actif au plafond pour l'instant — "
                         "le catalogue des payouts ne rend rien d'éligible")
+            if e.paires_sans_historique:
+                # Le cas normal après une coupure de collecte : la fenêtre ne
+                # contient que les minutes fraîches, trop peu pour une zone.
+                return (f"connectée, {e.univers_taille} actif(s) au plafond, "
+                        f"{e.paires_sans_historique} en attente de bougies "
+                        f"fraîches — il en faut "
+                        f"{2 * self.strategie.p.fenetre_pique + 2} minutes "
+                        f"avant la première évaluation")
             return (f"connectée, {e.univers_taille} actif(s) au plafond mais "
                     f"aucune bougie évaluée — c'est l'HISTORIQUE demandé au "
                     f"broker qui est en cause, pas la base")
