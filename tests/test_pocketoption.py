@@ -1225,16 +1225,14 @@ def test_un_decalage_impossible_reste_refuse():
     with pytest.raises(po.HorlogeIncoherente, match="impossible"):
         src._caler_horloge(horloge.time() + 20 * 3600)
 
-def test_les_points_d_acces_DEMO_sont_essayes_l_un_apres_l_autre():
-    """La bibliotheque n'en connait qu'UN par type de compte, et c'est ce qui a
-    arrete la collecte : « timed out during opening handshake », cinq fois, puis
-    couverture 24 h a 55 %. Le broker publie pourtant deux adresses demo, et
-    l'une repondait en 3,6 s pendant que l'autre expirait.
+def test_une_seule_adresse_demo_CELLE_QUI_AUTHENTIFIE():
+    """try-demo-eu (DEMO_2) ouvre son socket et sert le catalogue public SANS
+    authentifier la session : l'essayer d'office ne fait que consommer le delai
+    de connexion puis accuser le jeton a tort.
     """
     from maxprofit.collect.pocketoption import REPLIS_DEMO, points_d_acces
-    ordre = points_d_acces(demo=True)
-    assert len(ordre) >= 2, "un seul point d'acces = une seule panne possible"
-    assert ordre[:len(REPLIS_DEMO)] == REPLIS_DEMO
+    assert REPLIS_DEMO == ("DEMO",)
+    assert points_d_acces(demo=True) == ("DEMO",)
 
 
 def test_une_region_IMPOSEE_passe_en_premier_sans_exclure_les_replis(

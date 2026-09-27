@@ -110,15 +110,20 @@ class Parametres:
     #:     2 au plus     114           60,5 %   +1,80         +0,1621
     #:     1 au plus      20           55,0 %   +0,26         +0,0560
     #:
-    #: Deux est retenu sur un critère INDÉPENDANT du résultat : il garde 37 %
-    #: des signaux, là où la mesure de référence gardait 36 % pour les zones
-    #: vierges. À un, il n'en reste que 6 % — la règle devient si stricte
-    #: qu'elle ne décrit plus le même phénomène.
+    #: TROIS est retenu, et non deux, parce que le débit fait partie du
+    #: cahier des charges. Le plan demande six sessions par jour de plan et
+    #: dix-huit sessions en douze heures : un filtre qui ne garde que 37 % des
+    #: signaux rend cet objectif inatteignable, quelle que soit sa précision.
     #:
-    #: L'espérance passe de -0,0031 à +0,1621 par dollar misé. Le débit tombe à
-    #: 37 % : environ cinq sessions par jour au lieu de treize. Pour un plan
-    #: gouverné par « trois pas loss on s'arrête », c'est le bon côté de
-    #: l'échange.
+    #:     2 au plus   37 % des signaux   60,5 %   +0,1621 $/$
+    #:     3 au plus   56 % des signaux   58,5 %   +0,1236 $/$
+    #:
+    #: Deux points de précision contre une fois et demie le débit. Les deux
+    #: réglages sont largement au-dessus du seuil de 52,08 % ; seul le second
+    #: permet de tenir la cadence demandée.
+    #:
+    #: À un, il ne reste que 6 % des signaux — la règle devient si stricte
+    #: qu'elle ne décrit plus le même phénomène.
     entrees_max_par_zone: int
     expiry_sec: int
     lookback: int
@@ -155,10 +160,11 @@ PARAMETRES_PRE_INSCRITS = Parametres(
     recul_h1=2,
     expiry_sec=900,
     lookback=300,
-    # DEUX, et non une. Voir le commentaire du champ : « une seule entrée par
-    # zone » se compte ici en OCCASIONS offertes, plus fréquentes que les
-    # signaux, et deux occasions correspondent à la zone vierge mesurée.
-    entrees_max_par_zone=2,
+    # TROIS. Deux donnait la meilleure précision, trois donne le meilleur
+    # COMPROMIS — voir le commentaire du champ. Le plan demande dix-huit
+    # sessions en douze heures : une précision de 58,5 % qui garde 56 % des
+    # signaux sert mieux cet objectif que 60,5 % qui n'en garde que 37 %.
+    entrees_max_par_zone=3,
 )
 
 

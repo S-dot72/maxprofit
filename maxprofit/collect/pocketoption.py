@@ -191,7 +191,25 @@ CROISSANCE_THREADS_SUSPECTE = 3
 #:
 #: Les adresses réelles ne sont pas écrites ici : elles viennent de la
 #: bibliothèque, qui est la source. Les recopier créerait deux vérités.
-REPLIS_DEMO = ("DEMO", "DEMO_2")
+#: ⚠ UNE SEULE ADRESSE DÉMO, ET C'EST UN RETOUR EN ARRIÈRE ASSUMÉ.
+#:
+#: J'avais mis `("DEMO", "DEMO_2")`. C'était faux, et cela a coûté une
+#: après-midi de course à l'arrêt pour un défaut que j'avais introduit.
+#:
+#: `try-demo-eu` (DEMO_2) ouvre son socket et sert le catalogue des actifs —
+#: qui est public — SANS authentifier la session. Mesuré : aucun solde, donc
+#: aucun ordre ne partirait. Un repli qui n'authentifie pas n'est pas un repli :
+#: l'essayer ne fait que consommer le délai de connexion, puis rendre une
+#: erreur qui accuse le jeton.
+#:
+#: Avant mon changement, la connexion au broker fonctionnait. La règle qui la
+#: faisait fonctionner est celle-ci : une seule adresse démo, celle qui
+#: authentifie.
+#:
+#: `POCKET_OPTION_REGION` reste disponible pour en imposer une autre à la main
+#: si le broker en publie une nouvelle un jour — mais aucune n'est essayée
+#: d'office sans avoir prouvé qu'elle authentifie.
+REPLIS_DEMO = ("DEMO",)
 REPLIS_REEL = ("EUROPA", "FRANCE", "FRANCE2", "SERVER2")
 
 
