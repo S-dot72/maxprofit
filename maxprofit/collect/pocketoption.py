@@ -114,6 +114,26 @@ NOM_FICHIER_SESSION = "session.json"
 #: Au-delà, on considère que le socket ne répondra pas.
 DELAI_CONNEXION_SEC = 30
 
+#: Budget de la poignée de main WebSocket (DNS, TCP, TLS, mise à niveau HTTP).
+#: Celui de `websockets` vaut 10 s, et la bibliothèque ne le règle pas : depuis
+#: l'hébergeur, « timed out during opening handshake » tombait donc à 10 s alors
+#: que nous étions prêts à attendre 30. Il reste sous `DELAI_CONNEXION_SEC` pour
+#: que l'erreur remonte avant que l'appelant n'abandonne de lui-même.
+DELAI_POIGNEE_DE_MAIN_SEC = 25.0
+
+#: Pause entre deux tentatives d'un client vivant qui reconnecte. La
+#: bibliothèque en faisait 1 s : une adresse qui refuse vite devenait une
+#: rafale continue vers le broker.
+PAUSE_ENTRE_TENTATIVES_SEC = 5.0
+
+#: Les en-têtes que la bibliothèque envoie, repris à l'identique.
+EN_TETES_WEBSOCKET = {
+    "Origin": "https://pocketoption.com",
+    "Cache-Control": "no-cache",
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+}
+
 #: Délai d'attente du catalogue des actifs, poussé par le serveur APRÈS
 #: l'ouverture du socket. Généreux à dessein : le confondre avec une panne
 #: ferait boucler le collecteur sur son propre démarrage.
@@ -246,6 +266,171 @@ def points_d_acces(demo: bool) -> tuple[str, ...]:
         if nom in connues and nom not in ordre:
             ordre.append(nom)
     return tuple(ordre)
+
+
+# --------------------------------------------------------------------------- #
+# La boucle de connexion de la bibliothèque, remplacée
+# --------------------------------------------------------------------------- #
+#
+# ⚠ CHAQUE TENTATIVE RATÉE LAISSAIT UN THREAD QUI RAPPELAIT LE BROKER À VIE.
+#
+# `WebsocketClient.connect()` boucle `while not websocket_is_connected` sans
+# condition d'arrêt, et `PocketOption` n'a pas de `close()` : nos
+# `client.close()` levaient AttributeError, avalée. Chaque essai raté du
+# collecteur ou du courtier ajoutait donc un thread qui refaisait une poignée
+# de main toutes les ~11 s, pour toujours, depuis la même adresse IP. Dix refus,
+# dix threads : exactement ce qu'un broker traite comme une attaque.
+#
+# Et leurs erreurs allaient dans un drapeau GLOBAL que toute nouvelle tentative
+# lisait : un fantôme qui échouait faisait échouer, à l'instant, l'essai frais
+# du courtier — avec un « timed out » qui n'était pas le sien.
+#
+# La boucle ci-dessous garde le comportement utile (reconnexion d'un client
+# vivant) et y ajoute ce qui manquait : un arrêt, un état PAR client, et le
+# budget de poignée de main.
+
+_VERROU_ETAT = threading.Lock()
+
+
+def _client_ws(client):
+    """Le `WebsocketClient` d'un client de la bibliothèque, ou None (double)."""
+    return getattr(getattr(client, "api", None), "websocket_client", None)
+
+
+def _abandon(ws_client) -> threading.Event:
+    with _VERROU_ETAT:
+        drapeau = getattr(ws_client, "_maxprofit_abandon", None)
+        if drapeau is None:
+            drapeau = ws_client._maxprofit_abandon = threading.Event()
+        return drapeau
+
+
+def preparer_client(client) -> None:
+    """Pose l'état propre au client AVANT que son thread ne démarre, pour
+    qu'aucune lecture ne retombe sur les drapeaux globaux partagés."""
+    ws_client = _client_ws(client)
+    if ws_client is None:
+        return
+    ws_client._maxprofit_ouvert = False
+    ws_client._maxprofit_erreur = None
+    _abandon(ws_client)
+
+
+def abandonner_client(client) -> None:
+    """Arrête pour de bon la boucle de connexion d'un client : plus aucune
+    tentative, socket refermé s'il était ouvert, thread terminé."""
+    ws_client = _client_ws(client)
+    if ws_client is not None:
+        _abandon(ws_client).set()
+
+
+def etat_du_socket(client, globals_) -> tuple[bool, str | None]:
+    """(ouvert, dernière erreur) de CE client.
+
+    Les doubles de test n'ont pas d'état propre : on retombe alors sur les
+    drapeaux globaux, comme la bibliothèque d'origine.
+    """
+    ws_client = _client_ws(client)
+    if ws_client is not None and hasattr(ws_client, "_maxprofit_ouvert"):
+        return ws_client._maxprofit_ouvert, ws_client._maxprofit_erreur
+    erreur = (globals_.websocket_error_reason
+              if getattr(globals_, "check_websocket_if_error", False) else None)
+    return client.check_connect(), erreur
+
+
+async def _fermer_si_abandonne(ws, abandon: threading.Event) -> None:
+    while not abandon.is_set():
+        await asyncio.sleep(0.5)
+    await ws.close()
+
+
+async def _tenir_la_session(ws_client, ws, send_ping,
+                            abandon: threading.Event) -> None:
+    """Dure tant que le socket est ouvert. L'écoute se termine à sa fermeture,
+    quelle qu'en soit la cause ; les tâches annexes sont alors annulées pour ne
+    pas s'accumuler d'une reconnexion à l'autre."""
+    ecoute = asyncio.create_task(ws_client.websocket_listener(ws))
+    annexes = [
+        asyncio.create_task(ws_client.send_message(ws_client.message)),
+        asyncio.create_task(send_ping(ws)),
+        asyncio.create_task(_fermer_si_abandonne(ws, abandon)),
+    ]
+    try:
+        await ecoute
+    finally:
+        for tache in annexes:
+            tache.cancel()
+
+
+async def boucle_de_connexion(ws_client, ouvrir, global_value,
+                              send_ping) -> None:
+    """Connecte, tient la session, reconnecte — jusqu'à l'abandon.
+
+    `ouvrir(url)` rend le gestionnaire de contexte du socket : injecté pour que
+    la boucle se teste sans réseau ni `websockets`.
+    """
+    abandon = _abandon(ws_client)
+    while not abandon.is_set():
+        for url in ws_client.region.get_regions(global_value.DEMO):
+            if abandon.is_set():
+                break
+            ouvert = False
+            try:
+                async with ouvrir(url) as ws:
+                    ws_client.websocket = ws
+                    ws_client.url = url
+                    ws_client._maxprofit_erreur = None
+                    ws_client._maxprofit_ouvert = ouvert = True
+                    global_value.websocket_is_connected = True
+                    await _tenir_la_session(ws_client, ws, send_ping, abandon)
+            except Exception as erreur:              # noqa: BLE001
+                if not abandon.is_set():
+                    ws_client._maxprofit_erreur = (
+                        str(erreur) or type(erreur).__name__)
+                    global_value.logger(
+                        f"Connexion WebSocket ({url}) : "
+                        f"{ws_client._maxprofit_erreur}", "WARNING")
+            finally:
+                if ouvert:
+                    ws_client._maxprofit_ouvert = False
+                    global_value.websocket_is_connected = False
+        if not abandon.is_set():
+            await asyncio.sleep(PAUSE_ENTRE_TENTATIVES_SEC)
+
+
+def installer_connexion_maitrisee() -> None:
+    """Remplace `WebsocketClient.connect` de la bibliothèque. Idempotent."""
+    try:
+        import ssl
+
+        import websockets
+        from pocketoptionapi import global_value
+        from pocketoptionapi.ws import client as module_ws
+    except ImportError:
+        return
+    if getattr(module_ws.WebsocketClient.connect, "_maxprofit", False):
+        return
+
+    # Vérification TLS désactivée comme dans la bibliothèque : on ne change pas
+    # ce comportement en même temps que la boucle.
+    contexte = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    contexte.check_hostname = False
+    contexte.verify_mode = ssl.CERT_NONE
+
+    def ouvrir(url):
+        return websockets.connect(
+            url, ssl=contexte, open_timeout=DELAI_POIGNEE_DE_MAIN_SEC,
+            additional_headers=EN_TETES_WEBSOCKET)
+
+    async def connect(self):
+        await boucle_de_connexion(self, ouvrir, global_value,
+                                  module_ws.send_ping)
+        # Termine le thread de la bibliothèque sans trace : sinon il resterait
+        # dans `run_forever()`, ou tomberait dans son attente active.
+        raise SystemExit
+
+    connect._maxprofit = True
+    module_ws.WebsocketClient.connect = connect
 
 
 #: La table des adresses TELLE QU'ELLE ÉTAIT, avant qu'on y touche.
@@ -703,12 +888,14 @@ class PocketOptionSource:
         """
         from pocketoptionapi.stable_api import PocketOption
 
+        installer_connexion_maitrisee()
         adresses = points_d_acces(self.demo)
         echecs: list[str] = []
         for rang, nom in enumerate(adresses):
             self._url_demandee = _forcer_region(self.demo, nom)
             try:
                 self._client = PocketOption(demo=self.demo, ssid=ssid)
+                preparer_client(self._client)
                 self._client.connect()
                 self._verifier_point_d_acces()
                 self._attendre_le_socket()
@@ -749,12 +936,8 @@ class PocketOptionSource:
         train de traiter un échec, et une seconde erreur masquerait la
         première."""
         client, self._client = self._client, None
-        if client is None:
-            return
-        try:
-            client.close()
-        except Exception:                        # noqa: BLE001
-            log.debug("Fermeture du client en échec", exc_info=True)
+        if client is not None:
+            abandonner_client(client)
 
     def _attendre_le_socket(self) -> None:
         """Attend que le socket s'ouvre et que le catalogue arrive.
@@ -767,12 +950,11 @@ class PocketOptionSource:
         """
         limite = time.monotonic() + DELAI_CONNEXION_SEC
         while time.monotonic() < limite:
-            if self._globals.check_websocket_if_error:
+            ouvert, erreur = etat_du_socket(self._client, self._globals)
+            if erreur:
                 raise SourceIndisponible(
-                    f"Erreur WebSocket à la connexion : "
-                    f"{self._globals.websocket_error_reason}"
-                )
-            if self._client.check_connect():
+                    f"Erreur WebSocket à la connexion : {erreur}")
+            if ouvert:
                 log.info("Socket ouvert (démo=%s). Attente du catalogue des "
                          "actifs...", self.demo)
                 self._vus.clear()

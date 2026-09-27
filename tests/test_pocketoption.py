@@ -1293,3 +1293,173 @@ def test_la_liste_des_points_d_acces_survit_aux_forcages():
     avant = points_d_acces(demo=True)
     _forcer_region(demo=True, nom="DEMO_2")
     assert points_d_acces(demo=True) == avant
+
+
+# --------------------------------------------------------------------------- #
+# La boucle de connexion remplacee : arret, etat par client, budget
+# --------------------------------------------------------------------------- #
+
+import asyncio
+import contextlib
+
+
+class _GlobalsBoucle:
+    def __init__(self):
+        self.DEMO = True
+        self.websocket_is_connected = False
+        self.check_websocket_if_error = False
+        self.websocket_error_reason = None
+        self.journal: list[str] = []
+
+    def logger(self, message, niveau):
+        self.journal.append(message)
+
+
+class _SocketFactice:
+    def __init__(self):
+        self.ferme = asyncio.Event()
+
+    async def close(self):
+        self.ferme.set()
+
+
+class _WsClientFactice:
+    def __init__(self):
+        self.region = types.SimpleNamespace(
+            get_regions=lambda demo: ["wss://demo-api-eu.po.market/x"])
+        self.message = None
+        self.pendant_la_session: list[tuple[bool, bool]] = []
+        self.globals_ = None
+
+    async def websocket_listener(self, ws):
+        self.pendant_la_session.append(
+            (self._maxprofit_ouvert, self.globals_.websocket_is_connected))
+        self._maxprofit_abandon.set()
+        await ws.ferme.wait()
+
+    async def send_message(self, message):
+        pass
+
+
+async def _ping_inerte(ws):
+    await asyncio.sleep(3600)
+
+
+def _client_prepare():
+    ws_client = _WsClientFactice()
+    client = types.SimpleNamespace(api=types.SimpleNamespace(
+        websocket_client=ws_client))
+    po.preparer_client(client)
+    return client, ws_client
+
+
+def test_une_tentative_ratee_ne_RAPPELLE_PLUS_le_broker_une_fois_abandonnee(
+        monkeypatch):
+    """La bibliotheque bouclait sans condition d'arret : chaque essai rate
+    laissait un thread refaire une poignee de main toutes les ~11 s, a vie."""
+    monkeypatch.setattr(po, "PAUSE_ENTRE_TENTATIVES_SEC", 0.01)
+    gv = _GlobalsBoucle()
+    client, ws_client = _client_prepare()
+    tentatives = []
+
+    def ouvrir(url):
+        tentatives.append(url)
+        if len(tentatives) == 3:
+            po.abandonner_client(client)
+        raise TimeoutError("timed out during opening handshake")
+
+    asyncio.run(po.boucle_de_connexion(ws_client, ouvrir, gv, _ping_inerte))
+
+    assert len(tentatives) == 3, "l'abandon doit arreter les tentatives"
+    assert po.etat_du_socket(client, gv) == (
+        False, "timed out during opening handshake")
+    assert gv.check_websocket_if_error is False, (
+        "l'erreur d'un client ne doit pas contaminer les autres")
+
+
+def test_l_etat_d_un_client_ne_se_lit_pas_dans_les_drapeaux_GLOBAUX():
+    """Collecteur et courtier partagent `global_value` : le collecteur connecte
+    ne doit pas faire croire au courtier que SON socket est ouvert, ni l'erreur
+    d'un autre client le faire echouer."""
+    gv = _GlobalsBoucle()
+    gv.websocket_is_connected = True
+    gv.check_websocket_if_error = True
+    gv.websocket_error_reason = "timed out during opening handshake"
+    client, _ = _client_prepare()
+    client.check_connect = lambda: pytest.fail("drapeau global consulte")
+    assert po.etat_du_socket(client, gv) == (False, None)
+
+
+def test_abandonner_une_session_OUVERTE_referme_le_socket():
+    gv = _GlobalsBoucle()
+    client, ws_client = _client_prepare()
+    ws_client.globals_ = gv
+    sockets = []
+
+    @contextlib.asynccontextmanager
+    async def ouvrir(url):
+        ws = _SocketFactice()
+        sockets.append(ws)
+        yield ws
+
+    asyncio.run(po.boucle_de_connexion(ws_client, ouvrir, gv, _ping_inerte))
+
+    assert ws_client.pendant_la_session == [(True, True)]
+    assert len(sockets) == 1, "aucune reconnexion apres l'abandon"
+    assert sockets[0].ferme.is_set(), "le socket doit etre referme"
+    assert po.etat_du_socket(client, gv) == (False, None)
+    assert gv.websocket_is_connected is False
+
+
+def test_la_poignee_de_main_a_son_BUDGET_et_le_thread_se_termine(monkeypatch):
+    """`websockets` coupe a 10 s par defaut et la bibliotheque ne le reglait
+    pas, alors que nous attendions 30 s. Et une boucle abandonnee doit
+    terminer son thread, pas rester dans `run_forever()`."""
+    from maxprofit.execution import courtier
+
+    assert po.DELAI_POIGNEE_DE_MAIN_SEC > 10
+    assert po.DELAI_POIGNEE_DE_MAIN_SEC < po.DELAI_CONNEXION_SEC
+    assert po.DELAI_POIGNEE_DE_MAIN_SEC < courtier.DELAI_CONNEXION_SEC
+
+    class _WebsocketClient:
+        async def connect(self):
+            raise AssertionError("la boucle d'origine ne doit plus servir")
+
+    module_client = types.ModuleType("pocketoptionapi.ws.client")
+    module_client.WebsocketClient = _WebsocketClient
+    module_client.send_ping = _ping_inerte
+    paquet_ws = types.ModuleType("pocketoptionapi.ws")
+    paquet_ws.client = module_client
+    paquet = types.ModuleType("pocketoptionapi")
+    paquet.ws = paquet_ws
+    paquet.global_value = _GlobalsBoucle()
+    appels = []
+    faux_websockets = types.ModuleType("websockets")
+
+    def connect(url, **options):
+        appels.append(options)
+        po.abandonner_client(client)
+        raise TimeoutError("timed out during opening handshake")
+
+    faux_websockets.connect = connect
+    for nom, module in (("pocketoptionapi", paquet),
+                        ("pocketoptionapi.ws", paquet_ws),
+                        ("pocketoptionapi.ws.client", module_client),
+                        ("websockets", faux_websockets)):
+        monkeypatch.setitem(sys.modules, nom, module)
+
+    po.installer_connexion_maitrisee()
+    remplacee = _WebsocketClient.connect
+    po.installer_connexion_maitrisee()
+    assert _WebsocketClient.connect is remplacee, "installation idempotente"
+
+    ws_client = _WebsocketClient()
+    ws_client.region = types.SimpleNamespace(get_regions=lambda demo: ["wss://x"])
+    client = types.SimpleNamespace(api=types.SimpleNamespace(
+        websocket_client=ws_client))
+    po.preparer_client(client)
+
+    with pytest.raises(SystemExit):
+        asyncio.run(ws_client.connect())
+    assert appels[0]["open_timeout"] == po.DELAI_POIGNEE_DE_MAIN_SEC
+    assert appels[0]["additional_headers"] == po.EN_TETES_WEBSOCKET
