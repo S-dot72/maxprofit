@@ -23,9 +23,9 @@ def test_une_zone_DEJA_JOUEE_ne_donne_plus_de_signal():
     from maxprofit.strategies.zone_h1 import PARAMETRES_PRE_INSCRITS
 
     p = PARAMETRES_PRE_INSCRITS
-    assert p.entrees_max_par_zone == 2, (
-        "le defaut pre-inscrit compte les OCCASIONS, pas les signaux : deux "
-        "occasions correspondent a la zone vierge mesuree")
+    assert p.entrees_max_par_zone == 3, (
+        "trois : le debit fait partie du cahier des charges (18 sessions en "
+        "12 h)")
     # Une limite de zero n'a pas de sens : aucune zone ne serait jouable.
     with pytest.raises(BotError, match="entrees_max_par_zone"):
         replace(p, entrees_max_par_zone=0)
