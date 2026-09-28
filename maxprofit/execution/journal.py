@@ -389,6 +389,16 @@ class JournalExecution:
         # plus en plus cher à mesure que la campagne avance.
         return self._lire("AND accepte = 1 AND resultat IS NULL")
 
+    def inconnus(self) -> list[Execution]:
+        """Les ordres acceptés dont l'issue a été notée INCONNUE.
+
+        Leur mise est comptée perdue. Le broker peut pourtant connaître leur
+        issue : un ordre placé par une autre instance, que `check_win` ne
+        connaissait pas, a ainsi été noté « unknown » alors qu'il avait gagné.
+        """
+        return self._lire("AND accepte = 1 AND resultat IS NOT NULL "
+                          "AND resultat NOT IN ('win', 'loose', 'draw')")
+
     def profits_du_plan(self) -> float:
         """Ce que les ordres de la campagne ont rapporté, en une ligne.
 

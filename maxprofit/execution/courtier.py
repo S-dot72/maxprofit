@@ -27,6 +27,7 @@ socket ne s'ouvre sur un compte non démontré démo.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -650,6 +651,16 @@ class CourtierDemo:
         elif execution.resultat == "draw" and execution.profit is None:
             execution.profit = 0.0
         return execution
+
+    def issue_dans_l_historique(self, execution: Execution) -> Execution | None:
+        """L'ordre complété d'après l'historique du broker, sans attendre ;
+        `None` si le broker n'en a rien diffusé."""
+        self._exiger_connecte()
+        deal = self._chercher_dans_l_historique(execution.order_id, 0.0)
+        if deal is None:
+            return None
+        resolu = self._completer_depuis(copy.copy(execution), deal)
+        return resolu if resolu.resultat in ("win", "loose", "draw") else None
 
     def _chercher_dans_l_historique(self, order_id,
                                     attente_sec: float = ATTENTE_HISTORIQUE_SEC):

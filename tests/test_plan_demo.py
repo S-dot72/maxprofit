@@ -2282,3 +2282,77 @@ def test_une_issue_INCONNUE_interrompt_la_session_au_lieu_de_rejouer(course):
     c._un_ordre_reste_a_confirmer()
     assert c.etat.session is None
     assert c.etat.session_suspendue is not None, "/reprendre possible"
+
+
+class _CourtierQuiRelit(CourtierFactice):
+    """Un broker dont l'historique connaît l'issue d'un ordre noté inconnu."""
+
+    def __init__(self, issues):
+        super().__init__([])
+        self.issues = issues
+
+    def issue_dans_l_historique(self, e):
+        if e.order_id not in self.issues:
+            return None
+        e.resultat = self.issues[e.order_id]
+        e.profit = round(e.mise * 0.92, 2) if e.resultat == "win" else -e.mise
+        return e
+
+
+def test_un_ordre_note_INCONNU_est_relu_chez_le_broker_et_clot_la_session(
+        course):
+    """Production, 2026-09-28 : l'ordre de l'ancienne instance, noté
+    « unknown », avait GAGNÉ — 2,98 $ d'écart avec le broker, et une session
+    qui attendait encore son pas 1."""
+    from maxprofit.plan import Session
+
+    c = course([])
+    c.etat.session = Session(echelle=c._echelle())
+    c.etat.solde_ouverture_session = c.etat.solde
+    ordre = _ordre_en_vol("ancien")
+    ordre.mise = c.etat.session.mise_courante()
+    ordre.resultat, ordre.profit = "unknown", None
+    c.journal.ecrire(ordre)
+    c.rafraichir_le_solde()
+    avant = c.etat.solde                  # la mise y est comptée perdue
+    c.courtier = _CourtierQuiRelit({"ancien": "win"})
+    assert c._un_ordre_reste_a_confirmer() is False
+    assert c.journal.inconnus() == []
+    assert c.journal.toutes()[0].resultat == "win"
+    assert c.etat.session is None
+    assert c.etat.journee.sessions_gagnees == 1
+    assert c.etat.solde == pytest.approx(avant + ordre.mise * 1.92, abs=0.01)
+
+
+def test_une_session_SUSPENDUE_faute_d_issue_reprend_quand_l_issue_arrive(
+        course):
+    from maxprofit.plan import Session
+
+    c = course([])
+    session = Session(echelle=c._echelle())
+    session.enregistrer(False)                        # pas 1 perdu
+    c.etat.session = session
+    c.etat.solde_ouverture_session = c.etat.solde
+    mise2 = session.mise_courante()
+    session.engager_sans_resoudre(mise2)
+    c._interrompre_la_session("dénouement inconnu (unknown)")
+    assert c.etat.session is None and c.etat.session_suspendue is not None
+    ordre = _ordre_en_vol("pas2")
+    ordre.mise = mise2
+    ordre.resultat, ordre.profit = "unknown", None
+    c.journal.ecrire(ordre)
+    c.courtier = _CourtierQuiRelit({"pas2": "loose"})
+    c._un_ordre_reste_a_confirmer()
+    assert c.etat.session_suspendue is None
+    assert c.etat.session is not None, "le pas 3 reste à jouer"
+    assert c.etat.session.pas_joues == 2
+
+
+def test_un_inconnu_que_le_broker_ignore_reste_inconnu(course):
+    c = course([])
+    ordre = _ordre_en_vol("perdu")
+    ordre.resultat, ordre.profit = "unknown", None
+    c.journal.ecrire(ordre)
+    c.courtier = _CourtierQuiRelit({})
+    c._un_ordre_reste_a_confirmer()
+    assert len(c.journal.inconnus()) == 1, "rien n'est deviné"
