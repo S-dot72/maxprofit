@@ -292,6 +292,12 @@ class Journee:
     plan: PlanCapital
     solde: float
     sessions_jouees: int = 0
+    #: Parmi les sessions jouées, combien ont été GAGNÉES.
+    #:
+    #: Sans lui, `/etat` affichait « sessions 1/6 » pour une journée dont
+    #: l'unique session était perdue — et l'on croyait en avoir réussi une.
+    #: Les perdues s'en déduisent : jouées moins gagnées.
+    sessions_gagnees: int = 0
     sessions_perdues_daffilee: int = 0
     solde_ouverture: float = field(init=False)
     arret: Arret | None = None
@@ -351,6 +357,8 @@ class Journee:
         """
         self.solde += montant
         self.sessions_jouees += 1
+        if gagnee:
+            self.sessions_gagnees += 1
         self.sessions_perdues_daffilee = (
             0 if gagnee else self.sessions_perdues_daffilee + 1)
         self.arret = self.peut_ouvrir_une_session()

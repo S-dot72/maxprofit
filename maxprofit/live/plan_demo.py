@@ -1114,7 +1114,8 @@ class CoursePlanDemo:
             f"{montant:+.2f} $  →  solde <b>{self.etat.solde:.2f} $</b>\n"
             f"jour {self.etat.jour}/{self.etat.plan.jours}, session "
             f"{self.etat.journee.sessions_jouees}/"
-            f"{self.etat.plan.sessions_par_jour} de la journée "
+            f"{self.etat.plan.sessions_par_jour} de la journée — "
+            f"{_bilan_sessions(self.etat.journee)} "
             f"({self.etat.journee.resultat_pct:+.2f} %)")
 
     # --- la boucle ---------------------------------------------------------
@@ -1426,6 +1427,9 @@ class CoursePlanDemo:
                       * (1 + (self.etat.plan.objectif_journalier_pct or 0) / 100)
                       - self.etat.solde)
             self.etat.journee.sessions_jouees = 0
+            # Remis avec les jouées : sinon « jouées moins gagnées »
+            # deviendrait négatif, et /etat afficherait des pertes en moins.
+            self.etat.journee.sessions_gagnees = 0
             self.etat.journee.sessions_perdues_daffilee = 0
             self.etat.journee.arret = None
             log.info(
@@ -1590,7 +1594,8 @@ class CoursePlanDemo:
                     f"broker qui est en cause, pas la base")
         age = int(time.time()) - e.derniere_evaluation_ts
         base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
-                f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour}  "
+                f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour} "
+                f"({_bilan_sessions(j)})  "
                 f"journée {j.resultat_pct:+.2f} %  "
                 f"réancrages {len(e.reancrages)}")
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
@@ -1680,6 +1685,15 @@ class CoursePlanDemo:
         return " | après clôture : " + ", ".join(morceaux)
 
 
+def _bilan_sessions(journee) -> str:
+    """« 0 gagnée, 1 perdue » : ce que le seul compte des sessions jouées
+    laissait deviner de travers."""
+    g = min(journee.sessions_gagnees, journee.sessions_jouees)
+    p = journee.sessions_jouees - g
+    return (f"{g} gagnée{'s' if g > 1 else ''}, "
+            f"{p} perdue{'s' if p > 1 else ''}")
+
+
 def nouveau_jour(etat: Etat) -> None:
     """Passe à la journée suivante : nouvelle `Journee`, mêmes soldes."""
     etat.jour += 1
@@ -1752,6 +1766,7 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      "_refus": etat.refus_daffilee,
                      "_refus_ts": etat.dernier_refus_ts,
                      "_quarantaines": etat.quarantaines_subies,
+                     "_gagnees_jour": etat.journee.sessions_gagnees,
                      "_session_suspendue": etat.session_suspendue}),
          etat.demarre_ts),
     )
@@ -1811,6 +1826,10 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     etat.quarantaines_subies = {
         str(k): int(v) for k, v in (sauve.get("_quarantaines") or {}).items()}
     etat.session_suspendue = sauve.get("_session_suspendue") or None
+    # Absent d'un état écrit avant ce compteur : zéro, ce qui est juste pour
+    # la journée en cours de v2 (une session jouée, perdue).
+    etat.journee.sessions_gagnees = min(
+        int(sauve.get("_gagnees_jour") or 0), etat.journee.sessions_jouees)
     etat.demarre_ts = int(ligne[15] or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:

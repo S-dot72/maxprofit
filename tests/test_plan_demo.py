@@ -2033,3 +2033,38 @@ def test_la_session_suspendue_survit_a_un_redemarrage(course, tmp_path):
     repris, _ = charger_etat(conn, "susp", c.etat.plan)
     assert repris.session_suspendue == c.etat.session_suspendue
     conn.close()
+
+
+def test_etat_distingue_les_sessions_GAGNEES_des_PERDUES(course):
+    """« sessions 1/6 » pour une journee dont l'unique session etait perdue :
+    on croyait en avoir reussi une."""
+    c = course(["loose", "loose", "loose", "win"], plan=_plan(sessions=6))
+    for _ in range(3):
+        c.tour()
+    assert c.etat.journee.sessions_jouees == 1
+    assert c.etat.journee.sessions_gagnees == 0
+    c.etat.bougies_evaluees = 10
+    resume = c.resume()
+    assert "0 gagnée, 1 perdue" in resume, resume
+    c.tour()
+    assert c.etat.journee.sessions_gagnees == 1
+    c.etat.bougies_evaluees = 10
+    assert "1 gagnée, 1 perdue" in c.resume()
+
+
+def test_les_sessions_gagnees_SURVIVENT_a_un_redemarrage(tmp_path):
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=6)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice(["win"]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.journee.sessions_jouees = 3
+    c.etat.journee.sessions_gagnees = 2
+    sauver_etat(conn, "t", c.etat, 0)
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.journee.sessions_gagnees == 2
+    journal.close()
+    conn.close()
