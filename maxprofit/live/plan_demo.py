@@ -403,8 +403,36 @@ class Etat:
     trade_en_cours: tuple[str, str, float, int] | None = None
     derniere_evaluation_ts: int = 0
 
+    def cible_du_jour(self, jour: int | None = None) -> float | None:
+        """Le solde que le planning prévoit à la fin du jour `jour`.
+
+        ⚠ C'EST LE SOLDE QUI ACCOMPLIT UN JOUR, PAS LE NOMBRE DE SESSIONS.
+        Le jour 1 finit à 250 × 1,035 = 258,75 $ ; le jour 2 à 258,75 × 1,035.
+        La cible ne dépend que du numéro du jour : elle ne glisse pas quand
+        le solde baisse, et six sessions jouées à 240 $ ne la rapprochent pas.
+        """
+        objectif = self.plan.objectif_journalier_pct
+        if objectif is None:
+            return None
+        jour = self.jour if jour is None else jour
+        jour = min(max(jour, 0), self.plan.jours)
+        return self.plan.capital_initial * (1 + objectif / 100) ** jour
+
+    def jour_du_solde(self) -> int:
+        """Le premier jour du plan dont la cible n'est pas encore atteinte."""
+        jour = 1
+        while jour < self.plan.jours and \
+                self.solde >= (self.cible_du_jour(jour) or float("inf")) - 1e-9:
+            jour += 1
+        return jour
+
+    def caler_la_cible(self) -> None:
+        if self.journee is not None:
+            self.journee.cible = self.cible_du_jour()
+
     def ouvrir_la_journee(self) -> None:
         self.journee = Journee(plan=self.plan, solde=self.solde)
+        self.caler_la_cible()
 
 
 class CoursePlanDemo:
@@ -884,6 +912,7 @@ class CoursePlanDemo:
             (self.etat.jour, nouveau, self.etat.solde))
         self.etat.jour = max(1, nouveau)
         self.etat.sessions_perdues_daffilee = 0
+        self.etat.caler_la_cible()
         self._prevenir(
             "⚠️ <b>Réancrage</b> — deux sessions perdues d'affilée.\n"
             f"Jour {self.etat.reancrages[-1][0]} → jour {nouveau}, "
@@ -1114,7 +1143,18 @@ class CoursePlanDemo:
             f"{montant:+.2f} $  →  solde <b>{self.etat.solde:.2f} $</b>\n"
             f"jour {self.etat.jour}/{self.etat.plan.jours}, sessions "
             f"{_sessions_du_jour(self.etat.journee, self.etat.plan.sessions_par_jour)} "
-            f"({self.etat.journee.resultat_pct:+.2f} %)")
+            f"({self.etat.journee.resultat_pct:+.2f} %)"
+            f"{self._ligne_cible()}")
+
+    def _ligne_cible(self) -> str:
+        """« cible du jour X $, il manque Y $ » — vide sans cible."""
+        j = self.etat.journee
+        if j is None or j.cible is None:
+            return ""
+        if j.manque <= 0:
+            return f"\ncible du jour {j.cible:.2f} $ ✅ atteinte"
+        return (f"\ncible du jour {j.cible:.2f} $ — il manque "
+                f"<b>{j.manque:.2f} $</b>")
 
     # --- la boucle ---------------------------------------------------------
 
@@ -1360,12 +1400,13 @@ class CoursePlanDemo:
         self._cloturer_session()
 
     def passer_le_jour_si_besoin(self, jour_utc_courant: int = 0) -> bool:
-        """Avance d'une journée de plan quand celle en cours est TERMINÉE.
+        """Avance d'une journée de plan quand sa CIBLE DE SOLDE est atteinte.
 
-        ⚠ UN JOUR DU PLAN NE DURE PAS VINGT-QUATRE HEURES. Il dure
-        `sessions_par_jour` sessions — six — et l'on en enchaîne trois par
-        journée calendaire pour finir les trente jours en dix. C'est toute la
-        raison du test compressé.
+        ⚠ UN JOUR DU PLAN NE DURE PAS VINGT-QUATRE HEURES. Il dure jusqu'à ce
+        que le solde atteigne la cible du planning — six sessions gagnées sur
+        le chemin nominal — et l'on en enchaîne trois par journée calendaire
+        pour finir les trente jours en dix. Toute autre fin de journée (garde
+        de perte) rouvre le même jour.
 
         Le passage était branché sur minuit UTC. Un jour du plan durait donc
         une journée entière quoi qu'il arrive : dix-huit sessions comptées dans
@@ -1399,55 +1440,101 @@ class CoursePlanDemo:
             # Une session en cours finit d'abord. La couper laisserait des
             # mises engagées dans une journée qui n'existe plus.
             return False
-        if self.etat.jour >= self.etat.plan.jours:
-            return False                 # le plan est fini, on ne boucle pas
         arret = self.etat.journee.peut_ouvrir_une_session()
         if arret is None:
             return False                 # la journée a encore des sessions
 
-        # ⚠ SIX SESSIONS SONT LE CHEMIN NOMINAL, PAS LA CONDITION.
+        # ⚠ UN JOUR DU PLAN S'ACCOMPLIT PAR SON SOLDE, JAMAIS AUTREMENT.
         #
-        # Un jour du plan est fini quand sa CIBLE est atteinte : +3,50 %, soit
-        # ce que six sessions gagnées rapportent. Si certaines sont perdues, six
-        # sessions n'y suffisent pas — et clore le jour là-dessus le laisserait
-        # en retard pour toujours, chaque jour suivant visant une cible calculée
-        # sur un solde qui n'a jamais atteint la précédente.
+        # Le jour N est fini quand le solde atteint la cible du planning pour
+        # ce jour : 258,75 $ pour le jour 1, et ainsi de suite. Six sessions
+        # sont le chemin NOMINAL — six gagnées y mènent — pas la condition.
         #
-        # Épuiser les six sessions ne clôt donc PAS le jour : on rouvre le
-        # compteur en gardant la même ancre, et l'on continue à viser la même
-        # cible. C'est le « combien il manque pour compléter le jour ».
+        # Les deux gardes de PERTE faisaient avancer le jour. Deux sessions
+        # perdues d'affilée au jour 1 déclenchaient le réancrage (jour 1),
+        # puis `SESSIONS_PERDUES` appelait `nouveau_jour` : « Jour 2/30 »
+        # annoncé à 238 $ quand le jour 1 en demandait 258,75. Une mauvaise
+        # journée PROMOUVAIT le plan.
         #
-        # Les deux gardes de PERTE, elles, clôturent pour de bon. Elles existent
-        # précisément pour arrêter d'insister sur une mauvaise journée : les
-        # contourner en rouvrant le compteur les réduirait à de la décoration.
-        if arret is Arret.SESSIONS_EPUISEES:
-            manque = (self.etat.journee.solde_ouverture
-                      * (1 + (self.etat.plan.objectif_journalier_pct or 0) / 100)
-                      - self.etat.solde)
-            self.etat.journee.sessions_jouees = 0
-            # Remis avec les jouées : sinon « jouées moins gagnées »
-            # deviendrait négatif, et /etat afficherait des pertes en moins.
-            self.etat.journee.sessions_gagnees = 0
-            self.etat.journee.sessions_perdues_daffilee = 0
-            self.etat.journee.arret = None
+        # Toute autre fin de journée que la cible atteinte — deux sessions
+        # perdues, perte maximale, ou sessions épuisées d'un plan sans cible —
+        # rouvre donc le MÊME jour : les gardes de perte repartent du solde
+        # réel, la cible ne bouge pas, et les mises restent dimensionnées sur
+        # le solde réel. On ne court pas après le plan en misant plus : on
+        # joue plus de sessions. Les sessions gagnées du jour restent
+        # comptées : elles ont été gagnées pour CE jour.
+        if arret is not Arret.OBJECTIF_ATTEINT:
+            j = self.etat.journee
+            cible, manque = j.cible, j.manque
+            j.sessions_perdues_daffilee = 0
+            j.solde_ouverture = self.etat.solde
+            j.arret = None
+            if arret is Arret.SESSIONS_EPUISEES:
+                j.sessions_jouees = 0
+                # Remis avec les jouées : sinon « jouées moins gagnées »
+                # deviendrait négatif, et /etat afficherait des pertes en moins.
+                j.sessions_gagnees = 0
             log.info(
-                "Jour %d : %d sessions jouées sans atteindre la cible, il "
-                "manque %.2f $. On continue le MÊME jour plutôt que de le "
-                "clore en retard.",
-                self.etat.jour, self.etat.plan.sessions_par_jour, manque)
+                "Jour %d : %s sans atteindre la cible (%s), solde %.2f $. On "
+                "continue le MÊME jour.", self.etat.jour, arret,
+                "—" if cible is None else f"{cible:.2f} $, il manque "
+                f"{manque:.2f} $", self.etat.solde)
+            if cible is not None:
+                self._prevenir(
+                    f"📅 <b>Jour {self.etat.jour}/{self.etat.plan.jours} pas "
+                    f"encore accompli</b> — {arret}\n"
+                    f"solde <b>{self.etat.solde:.2f} $</b>, cible "
+                    f"{cible:.2f} $ : il manque <b>{manque:.2f} $</b>\n"
+                    f"On reste au jour {self.etat.jour} et l'on continue, "
+                    f"mises calculées sur le solde réel.")
             return True
 
+        if self.etat.jour >= self.etat.plan.jours:
+            return False                 # le plan est fini, on ne boucle pas
         ancien = self.etat.jour
-        nouveau_jour(self.etat)
+        # Un solde peut couvrir plus d'un jour d'un coup (réancrage vers un
+        # jour déjà dépassé) : on avance jusqu'au premier jour NON atteint.
+        while True:
+            nouveau_jour(self.etat)
+            if self.etat.jour >= self.etat.plan.jours or \
+                    self.etat.journee.peut_ouvrir_une_session() \
+                    is not Arret.OBJECTIF_ATTEINT:
+                break
         log.info("Journée de plan %d -> %d (%s). Solde %.2f $.",
                  ancien, self.etat.jour, arret, self.etat.solde)
-        cible = self.etat.solde * (
-            1 + (self.etat.plan.objectif_journalier_pct or 0) / 100)
+        cible = self.etat.journee.cible
         self._prevenir(
-            f"📅 <b>Jour {ancien}/{self.etat.plan.jours} terminé</b> — {arret}\n"
+            f"📅 <b>Jour {ancien}/{self.etat.plan.jours} accompli</b> — "
+            f"{arret}\n"
             f"solde <b>{self.etat.solde:.2f} $</b>\n"
-            f"jour {self.etat.jour} : cible <b>{cible:.2f} $</b> en "
-            f"{self.etat.plan.sessions_par_jour} sessions")
+            f"jour {self.etat.jour} : cible <b>{cible:.2f} $</b>, "
+            f"{self.etat.plan.sessions_par_jour} sessions gagnées y mènent")
+        return True
+
+    def realigner_le_jour(self) -> bool:
+        """Au démarrage : ramène le jour au solde RÉEL s'il l'a dépassé.
+
+        L'ancien passage faisait avancer le jour sur une journée de pertes :
+        un état sauvé peut donc porter « jour 2 » à 240 $ alors que la cible
+        du jour 1 (258,75 $) n'a jamais été atteinte. Le jour d'un plan est
+        celui dont la cible n'est pas encore atteinte : on s'y réancre.
+        """
+        e = self.etat
+        precedente = e.cible_du_jour(e.jour - 1)
+        if precedente is None or e.jour <= 1 or e.session is not None \
+                or e.solde >= precedente - 1e-9:
+            return False
+        ancien, e.jour = e.jour, e.jour_du_solde()
+        e.reancrages.append((ancien, e.jour, e.solde))
+        e.ouvrir_la_journee()
+        log.warning("Jour %d annoncé à %.2f $ sous la cible du jour %d "
+                    "(%.2f $) : réaligné au jour %d.", ancien, e.solde,
+                    ancien - 1, precedente, e.jour)
+        self._prevenir(
+            f"⚠️ <b>Jour réaligné</b> : jour {ancien} → jour {e.jour}.\n"
+            f"Le solde ({e.solde:.2f} $) n'a jamais atteint la cible du jour "
+            f"{ancien - 1} ({precedente:.2f} $). Cible du jour {e.jour} : "
+            f"<b>{e.journee.cible:.2f} $</b>.")
         return True
 
     def _purger_la_quarantaine(self) -> None:
@@ -1594,7 +1681,9 @@ class CoursePlanDemo:
         base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
                 f"sessions {_sessions_du_jour(j, e.plan.sessions_par_jour)}  "
                 f"journée {j.resultat_pct:+.2f} %  "
-                f"réancrages {len(e.reancrages)}")
+                + (f"cible {j.cible:.2f} $ (manque {j.manque:.2f} $)  "
+                   if j.cible is not None else "")
+                + f"réancrages {len(e.reancrages)}")
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
         depuis = (int(time.time()) - e.demarre_ts) // 60 if e.demarre_ts else 0
@@ -1796,6 +1885,7 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     etat.journee = Journee(plan=plan, solde=float(ligne[2]))
     etat.journee.solde = float(ligne[1])
     etat.journee.sessions_jouees = int(ligne[3])
+    etat.caler_la_cible()
     etat.sessions_perdues_daffilee = int(ligne[4])
     etat.reancrages = [tuple(x) for x in json.loads(ligne[6])]
     etat.derniere_bougie = {k: int(v) for k, v
@@ -2072,6 +2162,9 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
 
     course._sauver = sauver
     _resoudre_les_ordres_en_vol(course, courtier, journal)
+    course.rafraichir_le_solde()
+    if course.realigner_le_jour():
+        sauver()
 
     tour_nu = course.tour
 

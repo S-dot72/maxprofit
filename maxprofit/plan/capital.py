@@ -301,6 +301,13 @@ class Journee:
     sessions_perdues_daffilee: int = 0
     solde_ouverture: float = field(init=False)
     arret: Arret | None = None
+    #: Le SOLDE à atteindre pour que le jour du plan soit accompli, quand il
+    #: est connu. Posé par la course : c'est le solde prévu par le planning à
+    #: la fin de ce jour, pas un pourcentage du solde d'ouverture. Sans lui,
+    #: une journée rouverte à 240 $ après des pertes aurait visé 240 × 1,035
+    #: = 248,40 $ et se serait déclarée accomplie sous la cible du jour 1
+    #: (258,75 $).
+    cible: float | None = None
 
     def __post_init__(self) -> None:
         self.solde_ouverture = self.solde
@@ -314,6 +321,13 @@ class Journee:
     @property
     def resultat_pct(self) -> float:
         return 100 * self.resultat / self.solde_ouverture
+
+    @property
+    def manque(self) -> float | None:
+        """Ce qu'il manque au solde pour accomplir le jour ; 0 s'il y est."""
+        if self.cible is None:
+            return None
+        return max(0.0, self.cible - self.solde)
 
     def peut_ouvrir_une_session(self) -> Arret | None:
         """`None` si l'on peut continuer, sinon la raison de s'arrêter.
@@ -332,9 +346,14 @@ class Journee:
         # veut dire que le jour du plan est ACCOMPLI, le second qu'il a épuisé
         # son chemin nominal sans y arriver. C'est sur cette différence que le
         # passage au jour suivant se décide.
-        objectif = self.plan.objectif_journalier_pct
-        if objectif is not None and self.resultat_pct >= objectif - TOLERANCE:
-            return Arret.OBJECTIF_ATTEINT
+        if self.cible is not None:
+            if self.solde >= self.cible - TOLERANCE:
+                return Arret.OBJECTIF_ATTEINT
+        else:
+            objectif = self.plan.objectif_journalier_pct
+            if objectif is not None and \
+                    self.resultat_pct >= objectif - TOLERANCE:
+                return Arret.OBJECTIF_ATTEINT
         # Les pertes passent avant le décompte : une journée arrêtée pour perte
         # ne doit pas se raconter qu'elle a simplement fini ses sessions.
         if self.sessions_perdues_daffilee >= self.plan.sessions_perdues_max:
