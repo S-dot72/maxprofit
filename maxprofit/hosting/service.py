@@ -331,7 +331,10 @@ async def _servir(args) -> int:
                 paires_collectees=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
                 mode_univers=os.environ.get(
                     "PLAN_UNIVERS", "epinglees").strip() or "epinglees",
-                alerter=alerter),
+                alerter=alerter,
+                # `course` est le superviseur en cours de construction :
+                # la fabrique n'est appelée qu'une fois qu'il existe.
+                etape=lambda texte: course.noter_etape(texte)),
             alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
             # Le départ est une DATE, pas un geste. Faire dépendre le
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.

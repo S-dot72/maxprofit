@@ -132,6 +132,13 @@ class SuperviseurCourse:
         self.derniere_erreur: str | None = None
         self.abandonnee = False
         self._dernier_resume = "thread lancé, connexion au broker en cours"
+        #: L'étape du démarrage en cours, et depuis quand (monotone).
+        #:
+        #: « connexion au broker en cours » couvrait tout, de l'ouverture de
+        #: la base au rattrapage des ordres : impossible de dire ce qui
+        #: traînait. La fabrique la nomme au fil de l'eau.
+        self._etape: tuple[str, float] | None = None
+        self._demarrage_ts: float | None = None
         #: La course elle-même, pour l'interroger PENDANT qu'elle travaille.
         #:
         #: Le résumé en cache ne se rafraîchissait qu'au retour de `tour()`,
@@ -194,10 +201,13 @@ class SuperviseurCourse:
         while not self._arret.is_set() and not self.abandonnee:
             try:
                 self.demarrages += 1
+                self._demarrage_ts = time.monotonic()
+                self._etape = None
                 # L'alerteur est transmis a la course : c'est elle qui sait
                 # quand une session se clot ou qu'un reancrage se declenche.
                 course = self._fabriquer(self._alerter)
                 self._course = course
+                self._etape = None
                 self.echecs_consecutifs = 0
                 attente = BACKOFF_SEC
                 while not self._arret.is_set():
@@ -237,6 +247,19 @@ class SuperviseurCourse:
                     return
                 self._arret.wait(attente)
                 attente = min(attente * 2, BACKOFF_MAX_SEC)
+
+    def noter_etape(self, etape: str) -> None:
+        """Rappelée par la fabrique à chaque étape du démarrage."""
+        self._etape = (etape, time.monotonic())
+
+    def _resume_du_demarrage(self) -> str:
+        if self._etape is None:
+            return self._dernier_resume
+        etape, depuis = self._etape
+        maintenant = time.monotonic()
+        total = maintenant - (self._demarrage_ts or depuis)
+        return (f"démarrage — {etape} depuis {maintenant - depuis:.0f} s "
+                f"(démarrage lancé il y a {total:.0f} s)")
 
     def _liberer_le_courtier(self) -> None:
         """Rend la connexion d'une course qu'on abandonne.
@@ -287,7 +310,7 @@ class SuperviseurCourse:
                 return f"🟢 {self._course.resume()}"
             except Exception:                    # noqa: BLE001
                 log.debug("Résumé de course illisible", exc_info=True)
-        return f"🟢 {self._dernier_resume}"
+        return f"🟢 {self._resume_du_demarrage()}"
 
 
 def course_activee() -> bool:

@@ -256,8 +256,14 @@ def open_read_write(
     path: Path | str,
     *,
     migrations: tuple[Migration, ...] = MIGRATIONS,
+    reparer: bool = True,
 ) -> sqlite3.Connection:
     """Ouvre la base en écriture et applique les migrations manquantes.
+
+    `reparer=False` saute le contrôle du schéma PostgreSQL : pour une
+    connexion SECONDAIRE du même processus (la course, `/rapatrier`), le
+    collecteur l'a déjà fait au démarrage, et le refaire ne coûte que des
+    requêtes — voire l'attente d'un verrou pendant qu'il écrit.
 
     Le fichier est créé s'il n'existe pas — c'est le cas normal du tout premier
     démarrage. En revanche le RÉPERTOIRE doit exister : `core.config.db_path()`
@@ -291,7 +297,7 @@ def open_read_write(
 
     _configure(conn)
     version = apply_migrations(conn, migrations)
-    if postgres.est_postgres(conn):
+    if reparer and postgres.est_postgres(conn):
         # Le numéro de version ne garantit rien après un réimport de dump.
         from maxprofit.store.reparation import reparer_le_schema
         reparer_le_schema(conn)
