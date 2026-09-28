@@ -1967,7 +1967,8 @@ def rapatrier(course, argument: str, ouvrir=None) -> str:
 
     if course is None:
         return "La course n'est pas connectée au broker : rien à comparer."
-    conn = ouvrir() if ouvrir else open_read_write(Path("ecriture"))
+    conn = ouvrir() if ouvrir else open_read_write(Path("ecriture"),
+                                                  reparer=False)
     try:
         journal = JournalExecution(conn, course.journal.campagne)
         absents = ordres_absents(course.courtier, journal,
@@ -2052,7 +2053,8 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      paires: tuple[str, ...], chemin_lecture="lecture",
                      chemin_ecriture="ecriture",
                      mode_univers: str = UNIVERS_EPINGLEES, alerter=None,
-                     paires_collectees: tuple[str, ...] | None = None):
+                     paires_collectees: tuple[str, ...] | None = None,
+                     etape=None):
     """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
 
     ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
@@ -2107,18 +2109,31 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     log.info("Plafond de mise : %.2f $ (3e pas au capital visé de %.2f $)",
              plafond, vise)
 
+    # ⚠ CHAQUE ÉTAPE DU DÉMARRAGE EST NOMMÉE ET CHRONOMÉTRÉE. `/etat`
+    # affichait « connexion au broker en cours » du lancement du thread
+    # jusqu'au premier tour, base et rattrapage compris : on ne savait pas
+    # ce qui prenait du temps, ni même si c'était le broker.
+    chrono = _Chrono(etape)
+    chrono("ouverture de la base")
     lecteur = MarketReader(open_read_only(Path(chemin_lecture)))
-    ecriture = open_read_write(Path(chemin_ecriture))
+    # Sans réparation du schéma : le collecteur, qui partage ce processus,
+    # l'a faite à son démarrage. La refaire ici pouvait ATTENDRE le verrou
+    # d'une table sur laquelle il écrit.
+    ecriture = open_read_write(Path(chemin_ecriture), reparer=False)
     journal = JournalExecution(ecriture, campagne=campagne)
     courtier = CourtierDemo(ssid, plafonds)
-    courtier.connecter()
+    chrono("connexion au broker")
+    courtier.connecter(etape=chrono)
     # Une connexion réussie efface la dette d'attente du collecteur, qui lit
     # le même compteur : sinon il se tairait encore une demi-heure.
     from maxprofit.store import etat_broker
     etat_broker.noter_succes(ecriture)
     try:
-        return _assembler(courtier, lecteur, ecriture, journal, plan, paires,
-                          campagne, mode_univers, paires_collectees, alerter)
+        course = _assembler(courtier, lecteur, ecriture, journal, plan,
+                            paires, campagne, mode_univers, paires_collectees,
+                            alerter, chrono)
+        chrono.fin()
+        return course
     except BaseException:
         # Connecté mais jamais rendu : personne d'autre ne fermerait ce client,
         # qui reconnecterait à vie à côté du suivant.
@@ -2126,8 +2141,37 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
         raise
 
 
+class _Chrono:
+    """Nomme l'étape en cours du démarrage, et mesure chacune."""
+
+    def __init__(self, rapporter=None):
+        self._rapporter = rapporter
+        self._debut = self._t = time.monotonic()
+        self._etape: str | None = None
+        self.durees: list[tuple[str, float]] = []
+
+    def __call__(self, etape: str) -> None:
+        maintenant = time.monotonic()
+        if self._etape is not None:
+            self.durees.append((self._etape, maintenant - self._t))
+        self._etape, self._t = etape, maintenant
+        log.info("Démarrage de la course : %s", etape)
+        if self._rapporter is not None:
+            try:
+                self._rapporter(etape)
+            except Exception:                    # noqa: BLE001
+                log.debug("Étape non rapportée", exc_info=True)
+
+    def fin(self) -> None:
+        self("prête")
+        detail = ", ".join(f"{nom} {duree:.1f} s" for nom, duree in self.durees)
+        log.info("Course prête en %.1f s (%s)",
+                 time.monotonic() - self._debut, detail)
+
+
 def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
-               mode_univers, paires_collectees, alerter):
+               mode_univers, paires_collectees, alerter, chrono=None):
+    chrono = chrono or _Chrono()
     from maxprofit.strategies.zone_h1 import ZoneH1
 
     course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
@@ -2161,7 +2205,9 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
         sauver_etat(ecriture, campagne, course.etat, jour_utc())
 
     course._sauver = sauver
+    chrono("rattrapage des ordres en vol")
     _resoudre_les_ordres_en_vol(course, courtier, journal)
+    chrono("lecture du solde")
     course.rafraichir_le_solde()
     if course.realigner_le_jour():
         sauver()

@@ -99,7 +99,11 @@ class CourtierDemo:
     def __exit__(self, *_: object) -> None:
         self.fermer()
 
-    def connecter(self) -> None:
+    def connecter(self, etape=None) -> None:
+        """`etape(texte)`, facultatif, reçoit l'avancement : quelle adresse,
+        socket ou authentification. C'est ce que `/etat` affiche pendant la
+        connexion."""
+        etape = etape or (lambda texte: None)
         from pocketoptionapi import global_value
         from pocketoptionapi.stable_api import PocketOption
 
@@ -132,11 +136,15 @@ class CourtierDemo:
             url = _forcer_region(demo=True, nom=nom)
             premiere_url = premiere_url or url
             try:
+                etape(f"broker {nom} ({rang + 1}/{len(adresses)}) : "
+                      f"ouverture du socket")
                 # `demo=True` en dur : ce n'est pas un paramètre de la classe.
                 self._client = PocketOption(demo=True, ssid=self.ssid)
                 preparer_client(self._client)
                 self._client.connect()
                 self._attendre_le_socket()
+                etape(f"broker {nom} ({rang + 1}/{len(adresses)}) : "
+                      f"authentification")
                 # ⚠ L'AUTHENTIFICATION EST DANS LA BOUCLE, ET C'EST TOUT
                 # L'ENJEU.
                 #

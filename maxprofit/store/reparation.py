@@ -197,7 +197,33 @@ def _lire_la_base(conn):
 def reparer_le_schema(conn) -> list[str]:
     """Aligne une base PostgreSQL sur le schéma attendu. Rend ce qui a été
     fait, échecs compris. Ne lève pas : une réparation ratée ne doit pas
-    empêcher d'ouvrir une base qui marchait peut-être par ailleurs."""
+    empêcher d'ouvrir une base qui marchait peut-être par ailleurs.
+
+    ⚠ JAMAIS D'ATTENTE SANS BORNE SUR UN VERROU. Un `ALTER TABLE` demande un
+    verrou exclusif ; tant que le collecteur écrit sur la table, il ATTEND —
+    sans limite par défaut, et tout ce qui ouvre la base attend avec lui (la
+    course restait « connexion au broker en cours »). Au-delà de
+    `ATTENTE_VERROU`, la réparation échoue, le dit, et la base s'ouvre
+    quand même : la prochaine ouverture réessaiera.
+    """
+    try:
+        conn.execute(f"SET lock_timeout = '{ATTENTE_VERROU}'")
+    except Exception as erreur:                          # noqa: BLE001
+        log.debug("lock_timeout non posé : %s", erreur)
+    try:
+        return _reparer(conn)
+    finally:
+        try:
+            conn.execute("RESET lock_timeout")
+        except Exception as erreur:                      # noqa: BLE001
+            log.debug("lock_timeout non rétabli : %s", erreur)
+
+
+#: Attente maximale d'un verrou pendant la réparation (syntaxe PostgreSQL).
+ATTENTE_VERROU = "5s"
+
+
+def _reparer(conn) -> list[str]:
     try:
         plan = planifier(*_lire_la_base(conn))
     except Exception as erreur:                          # noqa: BLE001

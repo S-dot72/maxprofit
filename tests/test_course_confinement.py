@@ -285,7 +285,7 @@ def test_une_course_connectee_mais_jamais_ASSEMBLEE_rend_sa_connexion(
         def __init__(self, ssid, plafonds):
             pass
 
-        def connecter(self):
+        def connecter(self, etape=None):
             pass
 
         def fermer(self):
@@ -297,7 +297,8 @@ def test_une_course_connectee_mais_jamais_ASSEMBLEE_rend_sa_connexion(
     monkeypatch.setattr(mod_courtier, "CourtierDemo", _Courtier)
     monkeypatch.setattr(plan_demo, "_assembler", assembler)
     monkeypatch.setattr("maxprofit.store.db.open_read_only", lambda p: None)
-    monkeypatch.setattr("maxprofit.store.db.open_read_write", lambda p: None)
+    monkeypatch.setattr("maxprofit.store.db.open_read_write",
+                        lambda p, **k: None)
     monkeypatch.setattr("maxprofit.store.market.MarketReader", lambda c: None)
     monkeypatch.setattr("maxprofit.execution.journal.JournalExecution",
                         lambda c, campagne: None)
@@ -329,3 +330,81 @@ def test_la_course_se_REVEILLE_des_que_des_bougies_arrivent():
         "le réveil doit relancer un passage sans attendre la pause")
     assert passages[1] - passages[0] < 2.0
     s.arreter()
+
+
+def test_etat_NOMME_l_etape_du_demarrage_en_cours():
+    """« connexion au broker en cours » couvrait base, broker et rattrapage :
+    on ne savait pas ce qui traînait."""
+    from maxprofit.hosting.course import SuperviseurCourse
+
+    entree = threading.Event()
+    sortie = threading.Event()
+    s = None
+
+    def fabriquer(alerter):
+        s.noter_etape("broker DEMO (1/1) : authentification")
+        entree.set()
+        sortie.wait(5)
+        return CourseFactice()
+
+    s = SuperviseurCourse(fabriquer, pause_sec=0.01)
+    s.demarrer()
+    assert entree.wait(5)
+    assert "broker DEMO (1/1) : authentification depuis" in s.resume()
+    sortie.set()
+    s.arreter()
+
+
+def test_la_fabrique_rapporte_chaque_etape(monkeypatch):
+    from maxprofit.execution import courtier as mod_courtier
+    from maxprofit.live import plan_demo
+
+    etapes: list[str] = []
+    ouvertures: list[dict] = []
+
+    class _Courtier:
+        def __init__(self, ssid, plafonds):
+            pass
+
+        def connecter(self, etape=None):
+            etape("broker DEMO (1/1) : ouverture du socket")
+
+        def fermer(self):
+            pass
+
+    monkeypatch.setattr(mod_courtier, "CourtierDemo", _Courtier)
+    monkeypatch.setattr(plan_demo, "_assembler",
+                        lambda *a: a[-1]("rattrapage des ordres en vol")
+                        or "course")
+    monkeypatch.setattr("maxprofit.store.db.open_read_only", lambda p: None)
+    monkeypatch.setattr("maxprofit.store.db.open_read_write",
+                        lambda p, **k: ouvertures.append(k))
+    monkeypatch.setattr("maxprofit.store.market.MarketReader", lambda c: None)
+    monkeypatch.setattr("maxprofit.execution.journal.JournalExecution",
+                        lambda c, campagne: None)
+    monkeypatch.setattr("maxprofit.store.etat_broker.noter_succes",
+                        lambda c: None)
+    assert plan_demo.fabriquer_course(
+        "jeton", campagne="t", capital=250.0, sessions_par_jour=6, jours=30,
+        paires=("EURUSD_otc",), etape=etapes.append) == "course"
+    assert etapes == ["ouverture de la base", "connexion au broker",
+                      "broker DEMO (1/1) : ouverture du socket",
+                      "rattrapage des ordres en vol", "prête"]
+    assert ouvertures == [{"reparer": False}], (
+        "le collecteur a déjà réparé le schéma ; la course ne doit pas "
+        "attendre ses verrous")
+
+
+def test_la_reparation_n_attend_JAMAIS_un_verrou_sans_borne(monkeypatch):
+    from maxprofit.store import reparation
+
+    vues: list[str] = []
+
+    class _Conn:
+        def execute(self, sql, *a):
+            vues.append(sql)
+            raise RuntimeError("base factice")
+
+    reparation.reparer_le_schema(_Conn())
+    assert vues[0].startswith("SET lock_timeout")
+    assert vues[-1] == "RESET lock_timeout"
