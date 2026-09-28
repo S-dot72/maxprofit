@@ -2079,3 +2079,118 @@ def test_les_sessions_gagnees_SURVIVENT_a_un_redemarrage(tmp_path):
     assert relu.journee.sessions_gagnees == 2
     journal.close()
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Un jour du plan s'accomplit par son SOLDE
+# --------------------------------------------------------------------------- #
+
+CIBLE_JOUR_1 = CAPITAL * (1 + 6 * _plan().gain_par_session_pct / 100)
+
+
+def test_la_cible_du_jour_est_celle_du_PLANNING():
+    plan = _plan(sessions=6)
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice([]), None, plan,
+                       PAIRES_TEST)
+    assert c.etat.journee.cible == pytest.approx(258.75, abs=0.01)
+    assert c.etat.cible_du_jour(2) == pytest.approx(258.75 * 1.035, abs=0.02)
+
+
+def test_deux_sessions_perdues_au_jour_1_ne_font_PAS_passer_au_jour_2(course):
+    """Production : réancrage au jour 1, puis `SESSIONS_PERDUES` appelait
+    `nouveau_jour` — « Jour 2/30 » à 238 $ quand le jour 1 demandait
+    258,75 $."""
+    c = course(["loose"] * 6, plan=_plan(sessions=6))
+    for _ in range(6):
+        c.tour()
+    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
+    assert c.passer_le_jour_si_besoin() is True
+    assert c.etat.jour == 1, "une mauvaise journée ne promeut pas le plan"
+    assert c.etat.journee.cible == pytest.approx(CIBLE_JOUR_1)
+    assert c.etat.journee.manque == pytest.approx(CIBLE_JOUR_1 - c.etat.solde)
+    assert c.peut_ouvrir() is None, "on continue le même jour"
+
+
+def test_apres_une_mauvaise_journee_la_cible_ne_GLISSE_pas(course):
+    """Le cas décrit : descendu vers 226-240 $, six sessions gagnées ne
+    suffisent plus. Le jour 1 reste le jour 1 jusqu'à 258,75 $ — la cible ne
+    glisse pas vers « solde de réouverture × 1,035 »."""
+    c = course(["loose"] * 6 + ["win"] * 40, plan=_plan(sessions=6))
+    for _ in range(6):
+        c.tour()
+    assert c.passer_le_jour_si_besoin() is True       # SESSIONS_PERDUES
+    assert c.etat.jour == 1
+    # L'ancienne règle visait +3,50 % du solde d'OUVERTURE de la journée
+    # rouverte : elle se serait déclarée accomplie bien sous 258,75 $.
+    glissante = c.etat.solde * 1.035
+    assert glissante < CIBLE_JOUR_1
+    vue_sous_la_cible = False
+    while c.etat.solde < CIBLE_JOUR_1:
+        assert c.tour() is True
+        c.passer_le_jour_si_besoin()
+        if glissante <= c.etat.solde < CIBLE_JOUR_1:
+            vue_sous_la_cible = True
+            assert c.etat.jour == 1
+    assert vue_sous_la_cible
+    c.passer_le_jour_si_besoin()
+    assert c.etat.jour == 2, "la cible atteinte, et elle seule, clôt le jour"
+    assert c.etat.journee.cible == pytest.approx(c.etat.cible_du_jour(2))
+
+
+def test_le_DERNIER_jour_n_est_pas_bloque_par_une_garde_de_perte(course):
+    """Au dernier jour, une garde de perte figeait la course : le passage
+    rendait `False` avant même de regarder pourquoi la journée s'arrêtait."""
+    c = course(["loose"] * 3 + ["win"],
+               plan=_plan(sessions=1, jours=1, sessions_perdues_max=1))
+    for _ in range(3):
+        c.tour()
+    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
+    assert c.passer_le_jour_si_besoin() is True
+    assert c.peut_ouvrir() is None
+
+
+def test_les_sessions_gagnees_du_jour_restent_apres_une_garde_de_perte(course):
+    c = course(["win"] + ["loose"] * 6, plan=_plan(sessions=6))
+    for _ in range(7):
+        c.tour()
+    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
+    c.passer_le_jour_si_besoin()
+    assert c.etat.journee.sessions_gagnees == 1
+
+
+def test_un_jour_AVANCE_a_tort_est_realigne_au_demarrage(course):
+    c = course([], plan=_plan(sessions=6))
+    c.etat.jour = 2
+    c.etat.solde = 240.0
+    c.etat.ouvrir_la_journee()
+    assert c.realigner_le_jour() is True
+    assert c.etat.jour == 1
+    assert c.etat.journee.cible == pytest.approx(CIBLE_JOUR_1)
+    assert c.realigner_le_jour() is False, "une seule fois"
+
+
+def test_un_jour_LEGITIME_n_est_pas_realigne(course):
+    c = course([], plan=_plan(sessions=6))
+    c.etat.jour = 2
+    c.etat.solde = CIBLE_JOUR_1 + 1
+    c.etat.ouvrir_la_journee()
+    assert c.realigner_le_jour() is False
+    assert c.etat.jour == 2
+
+
+def test_la_cible_survit_a_un_redemarrage(tmp_path):
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=6)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice([]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.jour = 3
+    c.etat.ouvrir_la_journee()
+    sauver_etat(conn, "t", c.etat, 0)
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.journee.cible == pytest.approx(c.etat.cible_du_jour(3))
+    journal.close()
+    conn.close()
