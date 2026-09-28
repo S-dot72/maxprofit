@@ -190,6 +190,8 @@ RECOUVREMENT_CACHE_SEC = 300
 #: Au-delà de l'échéance, délai laissé au broker avant de confronter une
 #: réservation restée sans issue à la liste de ses ordres clôturés.
 MARGE_CONFIRMATION_SEC = 120
+#: Intervalle minimal entre deux relectures des ordres notés « inconnu ».
+RELIRE_INCONNUS_SEC = 60
 
 #: Actifs examinés par passage EN DEMANDANT L'HISTORIQUE AU BROKER. Les
 #: paires que nous collectons ne comptent pas : leur historique est dans
@@ -476,6 +478,7 @@ class CoursePlanDemo:
         self.etat.demarre_ts = int(time.time())
         self._univers: list[str] | None = None
         self._univers_ts = 0
+        self._inconnus_ts = float("-inf")
         self._rotation = 0
         #: Rotation des paires COLLECTÉES, distincte de celle des payantes.
         #: Les deux files n'avancent pas au même rythme — les payantes d'une
@@ -1234,6 +1237,7 @@ class CoursePlanDemo:
         # tournent quelques secondes — ou avant un redémarrage. La course, elle,
         # ne revient ici qu'après avoir connu l'issue de ses propres ordres.
         try:
+            self._reconcilier_les_inconnus()
             en_vol = _resoudre_les_ordres_en_vol(self, self.courtier,
                                                  self.journal)
             reservations = self.journal.reservations()
@@ -1286,13 +1290,73 @@ class CoursePlanDemo:
             f"⚠ {pair} {sens} {mise:.2f} $ : réservé mais introuvable chez le "
             f"broker, considéré comme non parti. /rapatrier pour vérifier.")
 
-    def _rattraper(self, resolu) -> None:
-        """Un ordre en vol retrouvé : au journal, puis à la session."""
+    def _rattraper(self, resolu, quoi: str = "Ordre en vol rattrapé") -> None:
+        """Un ordre retrouvé : au journal (fait par l'appelant), puis à la
+        session qu'il servait — en cours, ou suspendue faute d'issue."""
         self._prevenir(
-            f"🔎 Ordre en vol rattrapé : {resolu.pair} {resolu.sens} "
+            f"🔎 {quoi} : {resolu.pair} {resolu.sens} "
             f"{resolu.mise:.2f} $ → <b>{resolu.resultat}</b> "
             f"{resolu.profit or 0:+.2f} $")
+        if self.etat.session is None and \
+                resolu.resultat in ("win", "loose", "draw"):
+            self._restaurer_la_suspendue(resolu.mise)
         self._appliquer_a_la_session(resolu, resolu.clic_ts_ms)
+
+    def _restaurer_la_suspendue(self, mise: float) -> bool:
+        """Remet en cours la session suspendue sur CE pas sans issue.
+
+        Elle a été suspendue parce que l'issue de son dernier pas manquait ;
+        l'issue connue, elle reprend là où elle était, et l'issue s'y applique
+        comme en direct — gagnée, perdue, ou pas suivant à jouer.
+        """
+        memo = self.etat.session_suspendue
+        if not memo:
+            return False
+        n, engagees = int(memo["pas_joues"]), list(memo["engagees"])
+        if len(engagees) != n + 1 or abs(engagees[-1] - mise) >= 0.005:
+            return False
+        echelle = Echelle(payout_pct=memo["payout_pct"],
+                          gain_vise=memo["gain_vise"], pas_max=memo["pas_max"])
+        session = Session(echelle=echelle)
+        session.pas_joues = n
+        session.engagees = engagees[:n]
+        self.etat.session = session
+        self.etat.solde_ouverture_session = memo["solde_ouverture"]
+        self.etat.session_suspendue = None
+        log.warning("Session suspendue restaurée au pas %d : son issue est "
+                    "connue.", n + 1)
+        return True
+
+    def _reconcilier_les_inconnus(self) -> None:
+        """Relit dans l'historique du broker les ordres notés « inconnu ».
+
+        Leur mise est comptée perdue. Le 2026-09-28, l'ordre placé par
+        l'ancienne instance pendant un déploiement a été noté « unknown » —
+        `check_win` ne connaît que les ordres de son propre client — alors
+        qu'il avait GAGNÉ : 2,98 $ d'écart entre le plan et le broker, et une
+        session qui attendait encore son pas. Au plus une fois par minute.
+        """
+        maintenant = time.monotonic()
+        if maintenant - self._inconnus_ts < RELIRE_INCONNUS_SEC:
+            return
+        self._inconnus_ts = maintenant
+        lire = getattr(self.courtier, "issue_dans_l_historique", None)
+        if lire is None:
+            return
+        for execution in self.journal.inconnus():
+            try:
+                resolu = lire(execution)
+            except Exception as erreur:          # noqa: BLE001
+                log.debug("Historique illisible : %s", erreur)
+                return
+            if resolu is None:
+                continue
+            self.journal.mettre_a_jour(resolu)
+            log.warning("Ordre %s noté inconnu, retrouvé chez le broker : %s "
+                        "(%+.2f $).", resolu.order_id, resolu.resultat,
+                        resolu.profit or 0)
+            self.rafraichir_le_solde()
+            self._rattraper(resolu, "Issue inconnue retrouvée chez le broker")
 
     def _appliquer_a_la_session(self, retrouve, instant_ms: int) -> None:
         """Un pas retrouvé chez le broker compte pour la session qu'il servait.

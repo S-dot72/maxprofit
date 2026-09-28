@@ -242,3 +242,30 @@ def test_un_ordre_d_une_AUTRE_instance_se_denoue_par_l_historique(profit):
     resolu = c.denouer(ex)
     assert resolu.resultat == "win"
     assert resolu.profit == pytest.approx(1.46), "le gain NET, pas le retour"
+
+
+def test_issue_dans_l_historique_sans_attendre():
+    from types import SimpleNamespace
+
+    from maxprofit.execution.courtier import CourtierDemo
+    from maxprofit.execution.journal import Execution
+
+    deal = {"id": 77, "asset": "EURUSD_otc", "amount": 1.55, "command": 0,
+            "openTimestamp": 1000.0, "closeTimestamp": 1900.0,
+            "openPrice": 1.1, "closePrice": 1.2, "profit": 1.43,
+            "percentProfit": 92}
+    c = CourtierDemo(ssid=SSID_VALIDE, plafonds=None)
+    c._client = SimpleNamespace(api=SimpleNamespace(
+        GetClosedDeals=lambda: [deal]))
+    c._globals = SimpleNamespace(closed_orders=[])
+
+    def ordre(order_id):
+        return Execution(pair="EURUSD_otc", sens="call", mise=1.55,
+                         signal_ts_ms=1, prix_attendu=1.1,
+                         payout_flux_pct=92.0, expiration_sec=900,
+                         clic_ts_ms=1, accepte_ts_ms=1, accepte=True,
+                         order_id=order_id, resultat="unknown")
+
+    assert c.issue_dans_l_historique(ordre("inconnu")) is None
+    resolu = c.issue_dans_l_historique(ordre("77"))
+    assert (resolu.resultat, resolu.profit) == ("win", pytest.approx(1.43))
