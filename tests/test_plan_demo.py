@@ -285,22 +285,33 @@ def test_une_session_entamee_a_priorite_sur_une_journee_close(course):
     assert c.etat.session is None
 
 
-def test_la_journee_se_ferme_quand_ses_sessions_sont_epuisees(course):
-    """La session est PERDUE, et c'est ce qui isole la garde qu'on teste.
+def test_une_session_PERDUE_ne_compte_pas_pour_le_jour(course):
+    """Un jour du plan, c'est six sessions GAGNEES.
 
-    Avec une session gagnée, l'objectif du jour est atteint du même coup et
-    c'est OBJECTIF_ATTEINT qui répond — un arrêt qui ne veut pas dire la même
-    chose : le jour est accompli, alors qu'ici il a épuisé son chemin nominal
-    sans y arriver.
+    Une perte n'avance pas le jour : elle creuse un retard. L'ancienne regle
+    comptait les sessions JOUEES — une journee a une session s'arretait donc
+    sur une perte, et l'on aurait lu « 7/6 » apres une perte et six gains.
+    Avec un objectif, la journee s'arrete sur la cible ou sur une garde de
+    perte, jamais sur un nombre de tentatives.
     """
     c = course(["loose", "loose", "loose", "win"], plan=_plan(sessions=1))
     for _ in range(3):
         c.tour()
     assert c.etat.session is None, "trois pas perdus closent la session"
-    assert c.peut_ouvrir() is Arret.SESSIONS_EPUISEES
-    assert c.tour() is False, "aucun ordre ne doit partir"
-    assert len(c.journal.toutes()) == 3
+    assert c.etat.journee.sessions_jouees == 1
+    assert c.etat.journee.sessions_gagnees == 0
+    assert c.peut_ouvrir() is None, (
+        "une session perdue ne termine pas une journee d'une session")
 
+
+def test_sans_objectif_le_plafond_de_sessions_reste(course):
+    """Hors du plan, sans cible, le nombre de sessions est la seule borne."""
+    from dataclasses import replace as _r
+    plan = _r(_plan(sessions=1), objectif_journalier_pct=None)
+    c = course(["loose", "loose", "loose"], plan=plan)
+    for _ in range(3):
+        c.tour()
+    assert c.peut_ouvrir() is Arret.SESSIONS_EPUISEES
 
 def test_une_journee_qui_atteint_sa_CIBLE_le_dit(course):
     """OBJECTIF_ATTEINT et SESSIONS_EPUISEES arrêtent tous deux la journée,
@@ -2045,11 +2056,11 @@ def test_etat_distingue_les_sessions_GAGNEES_des_PERDUES(course):
     assert c.etat.journee.sessions_gagnees == 0
     c.etat.bougies_evaluees = 10
     resume = c.resume()
-    assert "0 gagnée, 1 perdue" in resume, resume
+    assert "sessions 0/6 gagnée, 1 perdue" in resume, resume
     c.tour()
     assert c.etat.journee.sessions_gagnees == 1
     c.etat.bougies_evaluees = 10
-    assert "1 gagnée, 1 perdue" in c.resume()
+    assert "sessions 1/6 gagnée, 1 perdue" in c.resume()
 
 
 def test_les_sessions_gagnees_SURVIVENT_a_un_redemarrage(tmp_path):

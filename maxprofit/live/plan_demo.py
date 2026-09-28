@@ -1112,10 +1112,8 @@ class CoursePlanDemo:
             f"{'🟢' if session.etat is EtatSession.GAGNEE else '🔴'} "
             f"<b>Session {session.etat}</b> en {session.pas_joues} pas\n"
             f"{montant:+.2f} $  →  solde <b>{self.etat.solde:.2f} $</b>\n"
-            f"jour {self.etat.jour}/{self.etat.plan.jours}, session "
-            f"{self.etat.journee.sessions_jouees}/"
-            f"{self.etat.plan.sessions_par_jour} de la journée — "
-            f"{_bilan_sessions(self.etat.journee)} "
+            f"jour {self.etat.jour}/{self.etat.plan.jours}, sessions "
+            f"{_sessions_du_jour(self.etat.journee, self.etat.plan.sessions_par_jour)} "
             f"({self.etat.journee.resultat_pct:+.2f} %)")
 
     # --- la boucle ---------------------------------------------------------
@@ -1573,7 +1571,7 @@ class CoursePlanDemo:
             return (f"ORDRE EN COURS — {paire} {sens.upper()} {mise:.2f} $ "
                     f"(pas {pas}/3), dénouement dans {reste} s | "
                     f"jour {e.jour}/{e.plan.jours} solde {e.solde:.2f} $ "
-                    f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour}")
+                    f"sessions {_sessions_du_jour(j, e.plan.sessions_par_jour)}")
         if e.bougies_evaluees == 0:
             # Deux silences très différents, et il faut les distinguer : une
             # course qui n'analyse rien parce que rien ne paie 92 % attend ;
@@ -1594,8 +1592,7 @@ class CoursePlanDemo:
                     f"broker qui est en cause, pas la base")
         age = int(time.time()) - e.derniere_evaluation_ts
         base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
-                f"sessions {j.sessions_jouees}/{e.plan.sessions_par_jour} "
-                f"({_bilan_sessions(j)})  "
+                f"sessions {_sessions_du_jour(j, e.plan.sessions_par_jour)}  "
                 f"journée {j.resultat_pct:+.2f} %  "
                 f"réancrages {len(e.reancrages)}")
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
@@ -1685,13 +1682,18 @@ class CoursePlanDemo:
         return " | après clôture : " + ", ".join(morceaux)
 
 
-def _bilan_sessions(journee) -> str:
-    """« 0 gagnée, 1 perdue » : ce que le seul compte des sessions jouées
-    laissait deviner de travers."""
+def _sessions_du_jour(journee, cible: int) -> str:
+    """« 2/6 gagnées, 1 perdue » : la progression, puis le retard.
+
+    Le numérateur compte les sessions GAGNÉES, parce qu'un jour du plan est
+    fait de six sessions gagnées. Compter les jouées faisait lire « 1/6 » pour
+    une journée dont l'unique session était perdue, et « 7/6 » après une perte
+    et six gains.
+    """
     g = min(journee.sessions_gagnees, journee.sessions_jouees)
     p = journee.sessions_jouees - g
-    return (f"{g} gagnée{'s' if g > 1 else ''}, "
-            f"{p} perdue{'s' if p > 1 else ''}")
+    perdues = f", {p} perdue{'s' if p > 1 else ''}" if p else ""
+    return f"{g}/{cible} gagnée{'s' if g > 1 else ''}{perdues}"
 
 
 def nouveau_jour(etat: Etat) -> None:

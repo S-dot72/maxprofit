@@ -341,7 +341,22 @@ class Journee:
             return Arret.SESSIONS_PERDUES
         if -self.resultat_pct >= self.plan.perte_journaliere_max_pct - TOLERANCE:
             return Arret.PERTE_MAXIMALE
-        if self.sessions_jouees >= self.plan.sessions_par_jour:
+        # ⚠ AVEC UN OBJECTIF, LE NOMBRE DE SESSIONS NE CLÔT PLUS LA JOURNÉE.
+        #
+        # Un jour du plan, c'est SIX SESSIONS GAGNÉES — ce qui rapporte
+        # l'objectif. Une session perdue n'avance pas le jour : elle creuse un
+        # retard qu'il faut rattraper. Compter les sessions JOUÉES faisait
+        # annoncer « 7/6 » après une perte et six gains, et aurait clos la
+        # journée sur un nombre de tentatives plutôt que sur un résultat.
+        #
+        # La journée s'arrête donc sur l'objectif atteint, ou sur une garde de
+        # perte — qui existent précisément pour qu'une mauvaise journée ne se
+        # prolonge pas indéfiniment.
+        #
+        # Sans objectif (usages hors du plan), l'ancien plafond reste : c'est
+        # alors la seule borne de la journée.
+        if (self.plan.objectif_journalier_pct is None
+                and self.sessions_jouees >= self.plan.sessions_par_jour):
             return Arret.SESSIONS_EPUISEES
         return None
 
