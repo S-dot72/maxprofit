@@ -206,3 +206,39 @@ def test_une_adresse_qui_ne_repond_pas_est_ABANDONNEE(courtier_factice,
     assert len(clients) == 2
     assert all(k.api.websocket_client._maxprofit_abandon.is_set()
                for k in clients), "chaque client rate doit etre arrete"
+
+
+@pytest.mark.parametrize("profit", [1.46, 3.05])
+def test_un_ordre_d_une_AUTRE_instance_se_denoue_par_l_historique(profit):
+    """`check_win` ne connaît que les ordres de son propre client : pour
+    celui de l'ancienne instance, il rend « unknown » sur-le-champ, et un
+    ordre GAGNÉ aurait été compté pour sa mise perdue."""
+    from types import SimpleNamespace
+
+    from maxprofit.execution.journal import Execution
+    from maxprofit.execution.courtier import CourtierDemo
+
+    deal = {"id": "X1", "asset": "EURUSD_otc", "amount": 1.59, "command": 0,
+            "openTimestamp": 1000.0, "closeTimestamp": 1900.0,
+            "openPrice": 1.1, "closePrice": 1.2, "profit": profit,
+            "percentProfit": 92}
+
+    class _Client:
+        api = SimpleNamespace(GetClosedDeals=lambda: [])
+
+        def check_win(self, order_id):
+            return None, "unknown"
+
+        def get_async_order(self, order_id):
+            raise KeyError("deals")
+
+    c = CourtierDemo(ssid=SSID_VALIDE, plafonds=None)
+    c._client = _Client()
+    c._globals = SimpleNamespace(closed_orders=[{"deals": [deal]}])
+    c._attendre_l_echeance = lambda e: None
+    ex = Execution(pair="EURUSD_otc", sens="call", mise=1.59, signal_ts_ms=1,
+                   prix_attendu=1.1, payout_flux_pct=92.0, expiration_sec=900,
+                   clic_ts_ms=1, accepte_ts_ms=1, accepte=True, order_id="X1")
+    resolu = c.denouer(ex)
+    assert resolu.resultat == "win"
+    assert resolu.profit == pytest.approx(1.46), "le gain NET, pas le retour"

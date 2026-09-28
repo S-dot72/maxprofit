@@ -66,6 +66,10 @@ DELAI_PREMIER_TICK_SEC = 20.0
 #: Marge accordée au dénouement, au-delà de l'échéance elle-même.
 MARGE_DENOUEMENT_SEC = 30.0
 
+#: Attente maximale d'une clôture dans l'historique diffusé par le broker,
+#: pour un ordre que `check_win` ne connaît pas.
+ATTENTE_HISTORIQUE_SEC = 20.0
+
 #: Limite de temps imposée à `get_candles`, qui n'en a aucune.
 DELAI_HISTORIQUE_SEC = 15.0
 
@@ -585,6 +589,16 @@ class CourtierDemo:
         profit, statut = self._client.check_win(execution.order_id)
         execution.resultat = statut
         execution.profit = None if profit is None else float(profit)
+        if statut not in ("win", "loose", "draw"):
+            # ⚠ `check_win` NE CONNAÎT QUE LES ORDRES DE SON PROPRE CLIENT.
+            # Un ordre placé par une autre instance — l'ancienne, pendant le
+            # chevauchement d'un déploiement — ou avant un redémarrage lui est
+            # inconnu : il rend « unknown » sur-le-champ, et un ordre GAGNÉ
+            # aurait été compté pour sa mise perdue. Le broker, lui, diffuse
+            # chaque clôture à tous les sockets du compte : on l'y cherche.
+            retrouve = self._chercher_dans_l_historique(execution.order_id)
+            if retrouve is not None:
+                return self._completer_depuis(execution, retrouve)
 
         deal = None
         # ⚠ `check_win` et le détail de l'ordre ne parlent pas de la même
@@ -635,6 +649,63 @@ class CourtierDemo:
             execution.profit = -execution.mise
         elif execution.resultat == "draw" and execution.profit is None:
             execution.profit = 0.0
+        return execution
+
+    def _chercher_dans_l_historique(self, order_id,
+                                    attente_sec: float = ATTENTE_HISTORIQUE_SEC):
+        """La clôture de `order_id` telle que le broker l'a diffusée, ou None.
+
+        Deux sources, toutes deux alimentées par le socket : les clôtures
+        reçues pendant la connexion (« successcloseOrder ») et l'historique
+        envoyé à la connexion (« updateClosedDeals »).
+        """
+        cible = str(order_id)
+        limite = time.monotonic() + attente_sec
+        while True:
+            for deal in self._deals_connus():
+                if str(deal.get("id")) == cible:
+                    return deal
+            if time.monotonic() >= limite:
+                return None
+            time.sleep(0.5)
+
+    def _deals_connus(self) -> list[dict]:
+        g = self._globals
+        deals: list[dict] = []
+        for message in list(getattr(g, "closed_orders", None) or []):
+            if isinstance(message, dict):
+                deals.extend(d for d in message.get("deals") or []
+                             if isinstance(d, dict))
+        try:
+            deals.extend(d for d in (self._client.api.GetClosedDeals() or [])
+                         if isinstance(d, dict))
+        except Exception as erreur:              # noqa: BLE001
+            log.debug("Historique des clôtures illisible : %r", erreur)
+        return deals
+
+    def _completer_depuis(self, execution: Execution, deal: dict) -> Execution:
+        # Horloge BROKER, comme le reste de `denouer` : on ne mélange pas deux
+        # conventions dans la même ligne du journal.
+        lu = execution_depuis_deal(dict(deal))
+        if lu is None:
+            return execution
+        profit = lu.profit
+        pct = lu.payout_broker_pct
+        if lu.resultat == "win" and pct and profit is not None and \
+                abs(profit - execution.mise * (1 + pct / 100)) < 0.02:
+            # Certaines trames portent le RETOUR (mise comprise), pas le gain
+            # net : le solde du plan est la somme des gains nets.
+            profit = round(profit - execution.mise, 2)
+        execution.resultat, execution.profit = lu.resultat, profit
+        execution.prix_sortie = lu.prix_sortie
+        execution.prix_entree = execution.prix_entree or lu.prix_entree
+        execution.payout_broker_pct = (execution.payout_broker_pct
+                                       or lu.payout_broker_pct)
+        execution.expiration_ts_ms = lu.expiration_ts_ms
+        execution.ouverture_ts_ms = execution.ouverture_ts_ms or lu.ouverture_ts_ms
+        execution.brut = {**execution.brut, "denouement": deal}
+        log.info("Ordre %s retrouvé dans l'historique du broker : %s (%+.2f $).",
+                 execution.order_id, execution.resultat, execution.profit or 0)
         return execution
 
     def _attendre_l_echeance(self, execution: Execution) -> None:

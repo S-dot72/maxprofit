@@ -1229,12 +1229,28 @@ class CoursePlanDemo:
         courait. Une réservation sans issue, c'est un ordre PEUT-ÊTRE parti :
         on attend son échéance, puis on le cherche chez le broker.
         """
+        # Un ordre ACCEPTÉ sans issue d'abord : placé par l'instance
+        # précédente — pendant le chevauchement d'un déploiement, les deux
+        # tournent quelques secondes — ou avant un redémarrage. La course, elle,
+        # ne revient ici qu'après avoir connu l'issue de ses propres ordres.
         try:
+            en_vol = _resoudre_les_ordres_en_vol(self, self.courtier,
+                                                 self.journal)
             reservations = self.journal.reservations()
         except Exception as erreur:              # noqa: BLE001
             self.attente_confirmation = f"journal illisible ({erreur})"
             return True
         maintenant = time.time() * 1000
+        if en_vol:
+            ex = en_vol[0]
+            depart = ex.accepte_ts_ms or ex.clic_ts_ms
+            reste = int((depart + ex.expiration_sec * 1000 - maintenant) / 1000)
+            self.attente_confirmation = (
+                f"ordre {ex.pair} {ex.sens} {ex.mise:.2f} $ en vol, "
+                + (f"dénouement dans {reste} s" if reste > 0
+                   else "issue demandée au broker")
+                + " : aucun ordre d'ici là")
+            return True
         delai = (self.strategie.p.expiry_sec + MARGE_CONFIRMATION_SEC) * 1000
         for jeton, instant, pair, sens, mise in reservations:
             if maintenant - instant < delai:
@@ -1270,6 +1286,14 @@ class CoursePlanDemo:
             f"⚠ {pair} {sens} {mise:.2f} $ : réservé mais introuvable chez le "
             f"broker, considéré comme non parti. /rapatrier pour vérifier.")
 
+    def _rattraper(self, resolu) -> None:
+        """Un ordre en vol retrouvé : au journal, puis à la session."""
+        self._prevenir(
+            f"🔎 Ordre en vol rattrapé : {resolu.pair} {resolu.sens} "
+            f"{resolu.mise:.2f} $ → <b>{resolu.resultat}</b> "
+            f"{resolu.profit or 0:+.2f} $")
+        self._appliquer_a_la_session(resolu, resolu.clic_ts_ms)
+
     def _appliquer_a_la_session(self, retrouve, instant_ms: int) -> None:
         """Un pas retrouvé chez le broker compte pour la session qu'il servait.
 
@@ -1284,6 +1308,14 @@ class CoursePlanDemo:
             return
         self.etat.dernier_trade = (retrouve.pair, instant_ms // 1000)
         if retrouve.resultat not in ("win", "loose", "draw"):
+            # La mise est partie et l'issue reste inconnue : même traitement
+            # qu'en direct. Laisser la session attendre ce pas le ferait
+            # rejouer.
+            session.engager_sans_resoudre(retrouve.mise)
+            self._interrompre_la_session(
+                f"dénouement inconnu ({retrouve.resultat}) — /rapatrier puis "
+                f"/reprendre une fois le résultat connu")
+            self._sauvegarder()
             return
         etat = session.enregistrer(retrouve.resultat == "win")
         log.warning("Pas %d rattrapé depuis le broker : %s.",
@@ -2022,30 +2054,50 @@ def demander_reprise(course, argument: str) -> str:
             "la course, et vous recevrez la confirmation ici.")
 
 
-def _resoudre_les_ordres_en_vol(course, courtier, journal) -> None:
-    """Rattrape les ordres partis juste avant un arrêt.
+def _resoudre_les_ordres_en_vol(course, courtier, journal,
+                                maintenant_ms: int | None = None) -> list:
+    """Rattrape les ordres acceptés dont l'issue n'est pas au journal.
 
     Un ordre accepté puis laissé sans réponse s'est dénoué CHEZ LE BROKER
     pendant qu'on était mort. Le compte réel a bougé ; le plan l'ignore. Sans
     cette reprise, les deux divergent définitivement — et c'est exactement ce
     qui s'est produit : cinq ordres gagnants chez le broker, un solde de plan
     figé à 250 $.
+
+    ⚠ NE BLOQUE PLUS SUR UN ORDRE QUI VIT ENCORE. Au déploiement du
+    2026-09-28, l'ancienne instance a placé un ordre trois secondes avant
+    que la nouvelle ne démarre ; celle-ci a attendu ses 900 s DANS son
+    démarrage, et `/etat` affichait « connexion au broker en cours » pendant
+    un quart d'heure. Un ordre pas encore échu est rendu à l'appelant, qui
+    n'en place aucun autre d'ici là (`_un_ordre_reste_a_confirmer`).
+
+    ⚠ ET L'ISSUE COMPTE POUR LA SESSION. Elle n'allait qu'au journal : la
+    session, sauvée juste avant le dénouement, attendait encore ce pas, et
+    la course l'aurait REJOUÉ.
+
+    Rend les ordres encore en vol : pas échus, ou dont le broker n'a pas
+    encore donné l'issue.
     """
-    en_vol = journal.en_vol()
-    if not en_vol:
-        return
-    log.warning("%d ordre(s) parti(s) sans réponse : on va chercher leur "
-                "sort chez le broker.", len(en_vol))
-    for execution in en_vol:
+    maintenant = time.time() * 1000 if maintenant_ms is None else maintenant_ms
+    en_attente = []
+    for execution in journal.en_vol():
+        depart = execution.accepte_ts_ms or execution.clic_ts_ms
+        if maintenant < depart + execution.expiration_sec * 1000:
+            en_attente.append(execution)
+            continue
         try:
             resolu = courtier.denouer(execution)
         except Exception as erreur:              # noqa: BLE001
             log.error("Sort de l'ordre %s introuvable : %s. Il reste marqué "
                       "en vol plutôt que deviné.", execution.order_id, erreur)
+            en_attente.append(execution)
             continue
         journal.mettre_a_jour(resolu)
         log.info("Ordre %s retrouvé : %s (%.2f $).", resolu.order_id,
                  resolu.resultat, resolu.profit or 0.0)
+        if course is not None:
+            course._rattraper(resolu)
+    return en_attente
 
 
 def fabriquer_course(ssid: str, *, campagne: str, capital: float,
@@ -2206,6 +2258,8 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
 
     course._sauver = sauver
     chrono("rattrapage des ordres en vol")
+    # Seulement les ordres ÉCHUS : un ordre qui vit encore est attendu par
+    # `tour()`, avec son compte à rebours dans /etat, pas ici.
     _resoudre_les_ordres_en_vol(course, courtier, journal)
     chrono("lecture du solde")
     course.rafraichir_le_solde()

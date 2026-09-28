@@ -384,8 +384,10 @@ class JournalExecution:
         redéploiement s'est dénoué chez le broker pendant qu'on était mort.
         Sans cette relecture, il resterait hors des comptes pour toujours.
         """
-        return [e for e in self.toutes()
-                if e.accepte and e.resultat is None]
+        # Filtré en SQL : la course l'interroge à CHAQUE passage, et relire
+        # tout le journal (réponses brutes du broker comprises) coûterait de
+        # plus en plus cher à mesure que la campagne avance.
+        return self._lire("AND accepte = 1 AND resultat IS NULL")
 
     def profits_du_plan(self) -> float:
         """Ce que les ordres de la campagne ont rapporté, en une ligne.
@@ -409,16 +411,20 @@ class JournalExecution:
         return float(ligne[0])
 
     def toutes(self) -> list[Execution]:
+        return self._lire()
+
+    def _lire(self, condition: str = "") -> list[Execution]:
         # `prix_attendu > 0` écarte les réservations jamais complétées : ce ne
         # sont pas des ordres, seulement la trace d'un envoi tenté.
         lignes = self.conn.execute(
-            """SELECT pair, sens, mise, signal_ts_ms, prix_attendu,
+            f"""SELECT pair, sens, mise, signal_ts_ms, prix_attendu,
                       payout_flux_pct, expiration_sec, clic_ts_ms,
                       accepte_ts_ms, accepte, refus, order_id, prix_entree,
                       prix_sortie, payout_broker_pct, expiration_ts_ms,
                       resultat, profit, brut, ouverture_ts_ms,
                       decalage_broker_ms
                FROM executions WHERE campagne = ? AND prix_attendu > 0
+               {condition}
                ORDER BY id""",
             (self.campagne,)).fetchall()
         return [

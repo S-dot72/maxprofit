@@ -2194,3 +2194,91 @@ def test_la_cible_survit_a_un_redemarrage(tmp_path):
     assert relu.journee.cible == pytest.approx(c.etat.cible_du_jour(3))
     journal.close()
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Un ordre en vol laissé par une autre instance
+# --------------------------------------------------------------------------- #
+
+def test_un_ordre_en_vol_ENCORE_VIVANT_ne_bloque_pas_le_demarrage(tmp_path):
+    """Production, 2026-09-28 : l'ancienne instance place un ordre trois
+    secondes avant l'arrêt ; la nouvelle attendait ses 900 s DANS son
+    démarrage, affichée « connexion au broker en cours »."""
+    import time as _t
+
+    from maxprofit.live.plan_demo import _resoudre_les_ordres_en_vol
+
+    journal = JournalExecution(tmp_path / "e.db", campagne="vivant")
+    ordre = _ordre_en_vol()
+    ordre.clic_ts_ms = ordre.accepte_ts_ms = int(_t.time() * 1000) - 3000
+    journal.ecrire(ordre)
+
+    class CourtierPresse(CourtierFactice):
+        def denouer(self, e):
+            raise AssertionError("on n'attend pas un ordre vivant ici")
+
+    en_attente = _resoudre_les_ordres_en_vol(None, CourtierPresse([]), journal)
+    assert [e.order_id for e in en_attente] == ["abc"]
+    journal.close()
+
+
+def test_aucun_ordre_ne_part_tant_qu_un_ordre_d_une_AUTRE_instance_vit(course):
+    """Pendant le chevauchement d'un déploiement, l'ancienne instance peut
+    placer un ordre APRÈS que la nouvelle a démarré."""
+    import time as _t
+
+    c = course(["win"])
+    ordre = _ordre_en_vol("autre")
+    ordre.clic_ts_ms = ordre.accepte_ts_ms = int(_t.time() * 1000) - 60_000
+    c.journal.ecrire(ordre)
+    assert c.tour() is False
+    assert len(c.journal.toutes()) == 1, "aucun second ordre en parallèle"
+    assert "EURUSD_otc call 1.59 $ en vol, dénouement dans" in \
+        c.attente_confirmation
+    assert "EN ATTENTE" in c.resume()
+
+
+def test_l_issue_d_un_ordre_en_vol_compte_pour_la_SESSION(course):
+    """Elle n'allait qu'au journal : la session, sauvée juste avant le
+    dénouement, attendait encore ce pas — et la course l'aurait rejoué."""
+    from maxprofit.plan import Session
+
+    c = course([])
+    c.etat.session = Session(echelle=c._echelle())
+    c.etat.solde_ouverture_session = c.etat.solde
+    ordre = _ordre_en_vol("pas1")
+    ordre.mise = c.etat.session.mise_courante()
+    ordre._issue = "win"
+    c.journal.ecrire(ordre)
+
+    class CourtierQuiSait(CourtierFactice):
+        def denouer(self, e):
+            e.resultat, e.profit = "win", round(e.mise * 0.92, 2)
+            return e
+
+    c.courtier = CourtierQuiSait([])
+    assert c._un_ordre_reste_a_confirmer() is False
+    assert c.etat.session is None, "le pas gagné clôt la session"
+    assert c.etat.journee.sessions_gagnees == 1
+    assert c.journal.en_vol() == []
+
+
+def test_une_issue_INCONNUE_interrompt_la_session_au_lieu_de_rejouer(course):
+    from maxprofit.plan import Session
+
+    c = course([])
+    c.etat.session = Session(echelle=c._echelle())
+    c.etat.solde_ouverture_session = c.etat.solde
+    ordre = _ordre_en_vol("mystere")
+    ordre.mise = c.etat.session.mise_courante()
+    c.journal.ecrire(ordre)
+
+    class CourtierPerdu(CourtierFactice):
+        def denouer(self, e):
+            e.resultat, e.profit = "unknown", None
+            return e
+
+    c.courtier = CourtierPerdu([])
+    c._un_ordre_reste_a_confirmer()
+    assert c.etat.session is None
+    assert c.etat.session_suspendue is not None, "/reprendre possible"
