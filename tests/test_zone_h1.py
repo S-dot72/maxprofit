@@ -69,3 +69,30 @@ def test_la_condition_decrit_la_zone_RETENUE_pas_celles_ecartees():
     """
     from maxprofit.core.types import Evaluation
     assert "conditions" in Evaluation.__dataclass_fields__
+
+
+def test_une_fenetre_TRONQUEE_ne_donne_jamais_de_signal():
+    """Les quatre premiers ordres de la campagne v2, tous perdus.
+
+    Apres une coupure de collecte, la fenetre de cinq heures etait a moitie
+    vide — 134, 221, 222 et 277 bougies au lieu de 300 — et la strategie
+    tranchait quand meme : le seuil d'historique ne demandait que 26 bougies.
+    Sur 134 bougies, la « premiere heure close » de la tendance H1 n'est qu'un
+    fragment d'heure ; les quatre signaux lisaient une baisse, le marche montait
+    dans les quatre cas.
+
+    Le backtest, lui, ne trade jamais sur une fenetre incomplete : le rejeu part
+    toujours de la bougie `lookback`. Le direct sortait donc du cadre valide.
+    """
+    from maxprofit.core.market_view import SequenceMarketView
+    from maxprofit.strategies.zone_h1 import ZoneH1
+
+    s = ZoneH1()
+    base = 1789999980
+    for n in (26, 134, 277, s.p.lookback - 1):
+        fenetre = tuple(_bougie(base + k * 60, 1.0, 1.001, 0.999, 1.0)
+                        for k in range(n))
+        ev = s.evaluer(SequenceMarketView("X_otc", fenetre))
+        assert ev.signal is None, f"{n} bougies ne doivent pas suffire"
+        cond = {c.nom: c.validee for c in ev.conditions}
+        assert cond["historique_suffisant"] is False, n

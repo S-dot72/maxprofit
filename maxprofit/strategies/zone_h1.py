@@ -278,7 +278,31 @@ class ZoneH1(Strategy):
         derniere = bougies[-1] if bougies else None
         ts_ms = view.now_ms
 
-        assez = len(bougies) >= 2 * self.p.fenetre_pique + 2
+        # ⚠ LA FENÊTRE COMPLÈTE, ET PAS 26 BOUGIES.
+        #
+        # Ce seuil valait `2 * fenetre_pique + 2`, soit 26 bougies : assez pour
+        # reconnaître UNE pique, pas pour faire ce que la stratégie fait
+        # réellement — surveiller des zones sur `memoire` bougies et juger une
+        # tendance sur des heures CLOSES.
+        #
+        # En backtest cela ne se voyait jamais : le rejeu part toujours de la
+        # bougie `lookback`, donc chaque fenêtre en a 301. En direct, après une
+        # coupure de collecte, la fenêtre de cinq heures est à moitié vide — et
+        # la stratégie tranchait quand même. Vérifié sur les quatre premiers
+        # ordres de la campagne v2, tous perdus : 134, 221, 222 et 277 bougies
+        # au lieu de 301. Sur 134 bougies, la « première heure close » de la
+        # tendance H1 n'est qu'un fragment d'heure : les quatre signaux
+        # lisaient une baisse, le marché montait dans les quatre cas.
+        #
+        # Le direct tradait donc hors du cadre que le backtest a validé. Exiger
+        # la fenêtre entière ne change AUCUN résultat de backtest — toutes ses
+        # fenêtres sont complètes — et empêche le direct d'en sortir.
+        #
+        # `lookback` et non `lookback + 1` : `view.candles(n)` rend AU PLUS n
+        # bougies. Avec `+ 1` la condition ne pouvait jamais être remplie et la
+        # stratégie n'aurait plus émis un seul signal — c'est le test du rejeu
+        # qui l'a vu, pas moi.
+        assez = len(bougies) >= self.p.lookback
         hausse = self._tendance_h1_haussiere(bougies) if assez else None
 
         touche_nom = None
