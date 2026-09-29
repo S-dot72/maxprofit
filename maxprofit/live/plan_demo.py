@@ -75,7 +75,6 @@ from maxprofit.plan import (
     Journee,
     PlanCapital,
     Session,
-    jour_le_plus_proche,
 )
 from maxprofit.store.db import valider
 from maxprofit.store.market import MarketReader
@@ -427,6 +426,23 @@ class Etat:
                 self.solde >= (self.cible_du_jour(jour) or float("inf")) - 1e-9:
             jour += 1
         return jour
+
+    def position_du_solde(self) -> tuple[int, int]:
+        """(jour, sessions gagnées) du planning qui correspondent au solde.
+
+        Le jour est le premier dont la cible n'est pas atteinte ; le nombre
+        de sessions, le plus proche du chemin de ce jour. La feuille fait
+        monter un jour par pas égaux : de 258,75 $ à 267,81 $ au jour 2, soit
+        1,51 $ par session. Un solde de 261,81 $ est donc le jour 2 après deux
+        sessions gagnées — il en manque quatre.
+        """
+        jour = self.jour_du_solde()
+        debut, cible = self.cible_du_jour(jour - 1), self.cible_du_jour(jour)
+        if debut is None or cible is None or cible <= debut:
+            return jour, 0
+        par_session = (cible - debut) / self.plan.sessions_par_jour
+        faites = round((self.solde - debut) / par_session)
+        return jour, max(0, min(self.plan.sessions_par_jour - 1, faites))
 
     def caler_la_cible(self) -> None:
         if self.journee is not None:
@@ -900,28 +916,43 @@ class CoursePlanDemo:
         gain = self.etat.plan.gain_par_session_pct / 100 * self.etat.solde
         return Echelle(payout_pct=92, gain_vise=gain)
 
-    def _reancrer(self) -> None:
-        """Deux sessions perdues d'affilée : on repart du jour le plus proche.
+    def _recaler_sur_le_plan(self, motif: str) -> bool:
+        """Replace le plan au (jour, sessions) que le solde RÉEL représente.
 
-        On ne rattrape pas, on se réancre. Sans cela, un compte tombé au
-        niveau du jour 7 continue de viser les gains du jour 12 : les mises
-        restent calibrées sur un capital qu'on n'a plus.
+        ⚠ APRÈS CHAQUE SESSION PERDUE, ET NON APRÈS DEUX. Le 2026-09-29, une
+        session perdue en trois pas a fait tomber le solde de 274,78 $ à
+        261,81 $ — sous la cible du jour 2 (267,81 $) — et le plan annonçait
+        encore « jour 3, 4/6 gagnées ». Le jour et le compte de sessions
+        disaient où l'on AURAIT dû être, pas où l'on est ; « il manque 15,37 $
+        pour le jour 3 » cachait qu'il manquait 6 $ pour finir le jour 2.
+
+        On ne rattrape pas en misant plus : les mises restent calculées sur
+        le solde réel. On repart du point du planning qu'on a vraiment atteint.
         """
-        nouveau = jour_le_plus_proche(self.etat.plan, self.etat.solde)
-        log.warning(
-            "Deux sessions perdues d'affilée. Réancrage : jour %d -> jour %d "
-            "(solde %.2f $).", self.etat.jour, nouveau, self.etat.solde)
-        self.etat.reancrages.append(
-            (self.etat.jour, nouveau, self.etat.solde))
-        self.etat.jour = max(1, nouveau)
-        self.etat.sessions_perdues_daffilee = 0
-        self.etat.caler_la_cible()
+        e = self.etat
+        jour, faites = e.position_du_solde()
+        ancien = (e.jour, e.journee.sessions_gagnees)
+        e.reancrages.append((e.jour, jour, e.solde))
+        e.jour = jour
+        e.ouvrir_la_journee()
+        e.journee.sessions_jouees = e.journee.sessions_gagnees = faites
+        e.sessions_perdues_daffilee = 0
+        par_session = e.plan.gain_par_session_pct / 100 * e.solde
+        restantes = (int(-(-e.journee.manque // par_session))
+                     if e.journee.manque and par_session > 0 else 0)
+        n = e.plan.sessions_par_jour
+        log.warning("Recalage (%s) : jour %d (%d/%d) -> jour %d (%d/%d), "
+                    "solde %.2f $.", motif, ancien[0], ancien[1], n, jour,
+                    faites, n, e.solde)
         self._prevenir(
-            "⚠️ <b>Réancrage</b> — deux sessions perdues d'affilée.\n"
-            f"Jour {self.etat.reancrages[-1][0]} → jour {nouveau}, "
-            f"solde {self.etat.solde:.2f} $.\n"
-            "On ne court pas après le plan : les mises repartent du niveau "
-            "qu'on a vraiment.")
+            f"↩️ <b>Recalage sur le plan</b> — {motif}\n"
+            f"jour {ancien[0]} ({ancien[1]}/{n}) → <b>jour {jour} "
+            f"({faites}/{n} gagnées)</b> : c'est ce que vaut le solde de "
+            f"{e.solde:.2f} $.\n"
+            f"Cible du jour {jour} : {e.journee.cible:.2f} $ — il manque "
+            f"<b>{e.journee.manque:.2f} $</b>, soit environ {restantes} "
+            f"session(s) gagnée(s).")
+        return True
 
     def jouer_un_pas(self, signal) -> None:
         """Place l'ordre du pas courant et enregistre son dénouement.
@@ -1133,8 +1164,8 @@ class CoursePlanDemo:
                 "%s", session.message_protection(
                     self.etat.solde + session.engage,
                     self.etat.plan.pas_avant_liquidation()))
-            if self.etat.sessions_perdues_daffilee >= 2:
-                self._reancrer()
+            if self.etat.journee.cible is not None:
+                self._recaler_sur_le_plan("session perdue")
         elif session.etat is EtatSession.GAGNEE:
             self.etat.sessions_perdues_daffilee = 0
         self.etat.session = None
@@ -1608,30 +1639,21 @@ class CoursePlanDemo:
         return True
 
     def realigner_le_jour(self) -> bool:
-        """Au démarrage : ramène le jour au solde RÉEL s'il l'a dépassé.
+        """Au démarrage : ramène le plan au solde RÉEL s'il l'a dépassé.
 
-        L'ancien passage faisait avancer le jour sur une journée de pertes :
-        un état sauvé peut donc porter « jour 2 » à 240 $ alors que la cible
-        du jour 1 (258,75 $) n'a jamais été atteinte. Le jour d'un plan est
-        celui dont la cible n'est pas encore atteinte : on s'y réancre.
+        Un état sauvé peut porter un jour dont le solde n'a jamais atteint la
+        cible précédente — l'ancien passage faisait avancer le jour sur une
+        journée de pertes, et le recalage n'avait lieu qu'après deux sessions
+        perdues. On le replace au (jour, sessions) que le solde représente.
         """
         e = self.etat
         precedente = e.cible_du_jour(e.jour - 1)
         if precedente is None or e.jour <= 1 or e.session is not None \
                 or e.solde >= precedente - 1e-9:
             return False
-        ancien, e.jour = e.jour, e.jour_du_solde()
-        e.reancrages.append((ancien, e.jour, e.solde))
-        e.ouvrir_la_journee()
-        log.warning("Jour %d annoncé à %.2f $ sous la cible du jour %d "
-                    "(%.2f $) : réaligné au jour %d.", ancien, e.solde,
-                    ancien - 1, precedente, e.jour)
-        self._prevenir(
-            f"⚠️ <b>Jour réaligné</b> : jour {ancien} → jour {e.jour}.\n"
-            f"Le solde ({e.solde:.2f} $) n'a jamais atteint la cible du jour "
-            f"{ancien - 1} ({precedente:.2f} $). Cible du jour {e.jour} : "
-            f"<b>{e.journee.cible:.2f} $</b>.")
-        return True
+        return self._recaler_sur_le_plan(
+            f"le solde n'a pas atteint la cible du jour {e.jour - 1} "
+            f"({precedente:.2f} $)")
 
     def _purger_la_quarantaine(self) -> None:
         """Lève les peines arrivées à terme. Appelée à chaque passage."""
