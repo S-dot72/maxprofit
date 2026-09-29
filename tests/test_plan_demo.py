@@ -298,7 +298,6 @@ def test_une_session_PERDUE_ne_compte_pas_pour_le_jour(course):
     for _ in range(3):
         c.tour()
     assert c.etat.session is None, "trois pas perdus closent la session"
-    assert c.etat.journee.sessions_jouees == 1
     assert c.etat.journee.sessions_gagnees == 0
     assert c.peut_ouvrir() is None, (
         "une session perdue ne termine pas une journee d'une session")
@@ -321,29 +320,43 @@ def test_une_journee_qui_atteint_sa_CIBLE_le_dit(course):
     assert c.peut_ouvrir() is Arret.OBJECTIF_ATTEINT
 
 
-def test_deux_sessions_perdues_daffilee_declenchent_le_reancrage(course):
-    """La règle qui protège le capital : on ne court pas après le plan."""
-    c = course(["loose"] * 6, plan=_plan(sessions=10))
-    c.etat.jour = 12
-    for _ in range(6):
+def test_CHAQUE_session_perdue_recale_le_plan_sur_le_solde(course):
+    """Production, 2026-09-29 : une session perdue en trois pas fait tomber
+    le solde sous la cible du jour 2, et le plan annonçait encore « jour 3,
+    4/6 gagnées ». Le recalage n'avait lieu qu'après DEUX sessions perdues."""
+    messages = []
+    c = course(["loose"] * 3, plan=_plan(sessions=6))
+    c._alerter = messages.append
+    c.etat.jour = 3
+    c.etat.ouvrir_la_journee()
+    c.etat.journee.sessions_jouees = c.etat.journee.sessions_gagnees = 4
+    for _ in range(3):
         c.tour()
     assert len(c.etat.reancrages) == 1
-    depuis, vers, solde = c.etat.reancrages[0]
-    assert depuis == 12
-    assert vers < 12, "le réancrage doit RECULER, le solde ayant baissé"
-    assert c.etat.jour == max(1, vers)
+    depuis, vers, _ = c.etat.reancrages[0]
+    assert (depuis, vers) == (3, 1), "le solde (238 $) est celui du jour 1"
+    assert c.etat.jour == 1
+    assert c.etat.journee.sessions_gagnees == 0
+    assert c.etat.journee.cible == pytest.approx(CIBLE_JOUR_1)
+    assert any("Recalage sur le plan" in m for m in messages)
 
 
-def test_une_session_gagnee_remet_le_compteur_a_zero(course):
-    c = course(["loose", "loose", "loose",     # session 1 perdue
-                "win",                          # session 2 gagnée
-                "loose", "loose", "loose"],     # session 3 perdue
-               plan=_plan(sessions=10))
-    for _ in range(7):
-        c.tour()
-    assert c.etat.sessions_perdues_daffilee == 1
-    assert c.etat.reancrages == [], (
-        "deux pertes séparées par un gain ne sont pas deux pertes d'affilée")
+def test_la_position_du_solde_est_celle_du_PLANNING():
+    """Le cas du 2026-09-29 : 261,81 $ est le jour 2 après deux sessions
+    gagnées (258,75 $ + 2 × 1,51 $), à 6 $ de la cible du jour 2 — et non le
+    jour 3 à 15,37 $ de la sienne."""
+    from maxprofit.live.plan_demo import Etat
+
+    plan = _plan(sessions=6)
+    for solde, attendu in [(261.81, (2, 2)), (274.78, (3, 4)),
+                           (240.0, (1, 0)), (250.0, (1, 0)),
+                           (258.74, (1, 5)), (258.76, (2, 0))]:
+        e = Etat(plan=plan, solde=solde)
+        assert e.position_du_solde() == attendu, solde
+    e = Etat(plan=plan, solde=261.81, jour=2)
+    e.ouvrir_la_journee()
+    assert e.journee.cible == pytest.approx(267.81, abs=0.01)
+    assert e.journee.manque == pytest.approx(6.0, abs=0.01)
 
 
 # --------------------------------------------------------------------------- #
@@ -1156,13 +1169,13 @@ def test_chaque_ordre_est_annonce_avec_de_quoi_le_retrouver(course):
         assert f"{mise:.2f} $" in message
 
 
-def test_un_reancrage_est_annonce(course):
+def test_un_recalage_est_annonce(course):
     messages = []
-    c = course(["loose"] * 6, plan=_plan(sessions=10))
+    c = course(["loose"] * 3, plan=_plan(sessions=10))
     c._alerter = messages.append
-    for _ in range(6):
+    for _ in range(3):
         c.tour()
-    assert any("Réancrage" in m for m in messages)
+    assert any("Recalage sur le plan" in m for m in messages)
 
 
 def test_une_alerte_qui_leve_ne_casse_pas_la_course(course):
@@ -1289,7 +1302,7 @@ def test_une_perte_n_est_pas_comptee_DEUX_FOIS(course):
         c.tour()
     engage = sum(e.mise for e in c.journal.toutes())
     assert c.etat.solde == pytest.approx(CAPITAL - engage)
-    assert c.etat.journee.resultat == pytest.approx(-engage)
+    assert c.etat.journee.solde == pytest.approx(CAPITAL - engage)
     assert c.peut_ouvrir() is None, (
         "4,72 % de perte ne doit pas déclencher une garde réglée à 5 %")
     assert c.tour() is True, "une nouvelle session doit pouvoir s'ouvrir"
@@ -2052,15 +2065,16 @@ def test_etat_distingue_les_sessions_GAGNEES_des_PERDUES(course):
     c = course(["loose", "loose", "loose", "win"], plan=_plan(sessions=6))
     for _ in range(3):
         c.tour()
-    assert c.etat.journee.sessions_jouees == 1
     assert c.etat.journee.sessions_gagnees == 0
     c.etat.bougies_evaluees = 10
     resume = c.resume()
-    assert "sessions 0/6 gagnée, 1 perdue" in resume, resume
+    # La perte est absorbée par le recalage : le compte dit où le SOLDE
+    # place le plan, et il n'y a rien de gagné à 238 $.
+    assert "sessions 0/6 gagnée" in resume, resume
     c.tour()
     assert c.etat.journee.sessions_gagnees == 1
     c.etat.bougies_evaluees = 10
-    assert "sessions 1/6 gagnée, 1 perdue" in c.resume()
+    assert "sessions 1/6 gagnée" in c.resume()
 
 
 def test_les_sessions_gagnees_SURVIVENT_a_un_redemarrage(tmp_path):
@@ -2103,8 +2117,7 @@ def test_deux_sessions_perdues_au_jour_1_ne_font_PAS_passer_au_jour_2(course):
     c = course(["loose"] * 6, plan=_plan(sessions=6))
     for _ in range(6):
         c.tour()
-    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
-    assert c.passer_le_jour_si_besoin() is True
+    c.passer_le_jour_si_besoin()
     assert c.etat.jour == 1, "une mauvaise journée ne promeut pas le plan"
     assert c.etat.journee.cible == pytest.approx(CIBLE_JOUR_1)
     assert c.etat.journee.manque == pytest.approx(CIBLE_JOUR_1 - c.etat.solde)
@@ -2118,7 +2131,7 @@ def test_apres_une_mauvaise_journee_la_cible_ne_GLISSE_pas(course):
     c = course(["loose"] * 6 + ["win"] * 40, plan=_plan(sessions=6))
     for _ in range(6):
         c.tour()
-    assert c.passer_le_jour_si_besoin() is True       # SESSIONS_PERDUES
+    c.passer_le_jour_si_besoin()
     assert c.etat.jour == 1
     # L'ancienne règle visait +3,50 % du solde d'OUVERTURE de la journée
     # rouverte : elle se serait déclarée accomplie bien sous 258,75 $.
@@ -2137,25 +2150,15 @@ def test_apres_une_mauvaise_journee_la_cible_ne_GLISSE_pas(course):
     assert c.etat.journee.cible == pytest.approx(c.etat.cible_du_jour(2))
 
 
-def test_le_DERNIER_jour_n_est_pas_bloque_par_une_garde_de_perte(course):
+def test_le_DERNIER_jour_n_est_pas_bloque_par_une_session_perdue(course):
     """Au dernier jour, une garde de perte figeait la course : le passage
     rendait `False` avant même de regarder pourquoi la journée s'arrêtait."""
     c = course(["loose"] * 3 + ["win"],
                plan=_plan(sessions=1, jours=1, sessions_perdues_max=1))
     for _ in range(3):
         c.tour()
-    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
-    assert c.passer_le_jour_si_besoin() is True
-    assert c.peut_ouvrir() is None
-
-
-def test_les_sessions_gagnees_du_jour_restent_apres_une_garde_de_perte(course):
-    c = course(["win"] + ["loose"] * 6, plan=_plan(sessions=6))
-    for _ in range(7):
-        c.tour()
-    assert c.peut_ouvrir() is Arret.SESSIONS_PERDUES
     c.passer_le_jour_si_besoin()
-    assert c.etat.journee.sessions_gagnees == 1
+    assert c.peut_ouvrir() is None
 
 
 def test_un_jour_AVANCE_a_tort_est_realigne_au_demarrage(course):
