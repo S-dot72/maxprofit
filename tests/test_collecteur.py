@@ -991,5 +991,7 @@ def test_BTCUSD_n_est_plus_collectee_par_defaut():
 
     assert "BTCUSD_otc" not in PAIRES_EN_PLUS_PAR_DEFAUT
     assert "AUDNZD_otc" in PAIRES_EN_PLUS_PAR_DEFAUT
-    assert len(PAIRES_EN_PLUS_PAR_DEFAUT) + 4 <= 10, (
-        "le socket a tenu dix abonnements, pas davantage")
+    # Relevée de 10 à 12 le 2026-09-29, à la demande de l'utilisateur. Dix
+    # était le plus haut observé ; douze reste à vérifier sur la couverture.
+    assert len(PAIRES_EN_PLUS_PAR_DEFAUT) + 4 <= 12, (
+        "au-delà de douze abonnements, rien n'a été décidé ni observé")

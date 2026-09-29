@@ -929,6 +929,16 @@ PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
     # garde de calibration de la course l'écarte d'elle-même si son amplitude
     # sort de la plage.
     "EURGBP_otc",
+    # Palier 10 -> 12, demandé le 2026-09-29. Deux majeures CALMES, pour la
+    # même raison qu'EURGBP_otc : le débit suit le rapport tolérance/amplitude,
+    # et la majeure la plus calme (EURUSD_otc) donne un signal toutes les 35
+    # bougies. Pas de devise arrimée (AEDCNY_otc : zéro signal sur 416
+    # bougies), pas de crypto (BTCUSD_otc : aucune échéance de 900 s). La garde
+    # de calibration de la course écarte d'elle-même une paire hors d'échelle.
+    #
+    # ⚠ Le socket en a tenu dix ; douze n'a jamais été observé. Couverture et
+    # « Paires souscrites » dans /etat disent s'il tient.
+    "USDCAD_otc", "USDCHF_otc",
 )
 
 
