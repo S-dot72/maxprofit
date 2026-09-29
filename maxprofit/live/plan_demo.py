@@ -61,6 +61,8 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
+from maxprofit.apprentissage.contexte import contexte as contexte_du_signal
+from maxprofit.apprentissage.lecons import Apprentissage, autopsie
 from maxprofit.core.errors import BotError
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.payout import PLAFOND_PCT, au_plafond
@@ -354,7 +356,7 @@ class Etat:
     #: et la relecture ne puissent pas diverger.
     COMPTEURS = ("bougies_evaluees", "bougies_perimees", "signaux_bruts",
                  "signaux_trouves", "pas_sautes_independance",
-                 "sessions_interrompues")
+                 "sessions_interrompues", "signaux_ecartes_lecons")
 
     #: Quand la course a démarré. Affiché, parce que « rien ne bouge » et
     #: « ça tourne depuis trois minutes » se ressemblent trait pour trait à
@@ -403,6 +405,12 @@ class Etat:
     #: pendant presque tout le temps où il se passe quelque chose.
     trade_en_cours: tuple[str, str, float, int] | None = None
     derniere_evaluation_ts: int = 0
+    #: Ce que l'apprentissage a tiré de l'historique : leçons actives et
+    #: statistiques de contexte. Persisté, pour qu'un redéploiement ne relance
+    #: pas un rejeu de plusieurs minutes.
+    apprentissage: Apprentissage | None = None
+    #: Signaux écartés par une leçon active.
+    signaux_ecartes_lecons: int = 0
 
     def cible_du_jour(self, jour: int | None = None) -> float | None:
         """Le solde que le planning prévoit à la fin du jour `jour`.
@@ -453,6 +461,43 @@ class Etat:
         self.caler_la_cible()
 
 
+def dans_la_plage_de_calibration(tolerance_pct: float, bougies) -> bool:
+    """La tolérance de la stratégie est-elle à l'échelle de cet actif ?
+
+    Une condition de SÉCURITÉ, pas un filtre de stratégie : elle refuse de
+    jouer là où le réglage ne veut plus rien dire, au lieu de produire des
+    signaux qu'on prendrait pour des signaux. Sans journal : le rejeu de
+    l'apprentissage l'appelle à chaque bougie.
+
+    Voir `RAPPORT_TOLERANCE_MIN` / `MAX` pour les chiffres et leur origine.
+    """
+    recentes = bougies[-FENETRE_AMPLITUDE:]
+    if len(recentes) < 10:
+        return True             # trop peu pour juger : on ne tranche pas
+    amplitudes = sorted(
+        100.0 * (b.high - b.low) / b.close
+        for b in recentes if b.close)
+    if not amplitudes:
+        return True
+    mediane = amplitudes[len(amplitudes) // 2]
+    if mediane <= 0:
+        # Un actif dont la bougie médiane n'a AUCUNE amplitude n'est pas un
+        # actif calme, c'est un actif dont on ne reçoit pas le prix.
+        return False
+    return RAPPORT_TOLERANCE_MIN <= tolerance_pct / mediane \
+        <= RAPPORT_TOLERANCE_MAX
+
+
+def mode_apprentissage() -> str:
+    """`APPRENTISSAGE` : actif (défaut), observation ou inactif."""
+    import os
+    mode = os.environ.get("APPRENTISSAGE", "actif").strip().lower() or "actif"
+    if mode not in ("actif", "observation", "inactif"):
+        log.warning("APPRENTISSAGE=%r inconnu : « actif » retenu.", mode)
+        return "actif"
+    return mode
+
+
 class CoursePlanDemo:
     """Fait tourner le plan sur les signaux de `ZoneH1`, en démo."""
 
@@ -495,6 +540,13 @@ class CoursePlanDemo:
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._inconnus_ts = float("-inf")
+        #: « actif » : les leçons écartent ; « observation » : elles ne font
+        #: que compter ce qu'elles auraient écarté ; « inactif » : rien.
+        self.mode_apprentissage = mode_apprentissage()
+        #: Contexte du signal en main, et (paire, sens, contexte, issue) de
+        #: chaque pas de la session : c'est ce que l'autopsie examine.
+        self._contexte_du_signal: dict = {}
+        self._pas_de_la_session: list[tuple[str, str, dict, str]] = []
         self._rotation = 0
         #: Rotation des paires COLLECTÉES, distincte de celle des payantes.
         #: Les deux files n'avancent pas au même rythme — les payantes d'une
@@ -824,6 +876,11 @@ class CoursePlanDemo:
             # exactement ce que le filtre existe pour empêcher.
             if not self._payout_au_maximum(paire):
                 continue
+            ctx = contexte_du_signal(
+                bougies, signal.direction is Direction.CALL, signal.features)
+            if self._ecarte_par_une_lecon(paire, signal, ctx):
+                continue
+            self._contexte_du_signal = ctx
             self.etat.signaux_trouves += 1
             self.etat.paires_sans_historique = sans_historique
             self.etat.paires_hors_calibration = hors_calibration
@@ -832,6 +889,26 @@ class CoursePlanDemo:
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
         return None
+
+    def _ecarte_par_une_lecon(self, paire: str, signal, ctx) -> bool:
+        """Vrai si une leçon ACTIVE écarte ce signal.
+
+        En mode « observation », la leçon est comptée mais n'écarte rien :
+        c'est ainsi qu'on voit ce qu'elle coûterait avant de la laisser
+        décider.
+        """
+        apprentissage = self.etat.apprentissage
+        if apprentissage is None or self.mode_apprentissage == "inactif":
+            return False
+        regle = apprentissage.ecarte(ctx)
+        if regle is None:
+            return False
+        self.etat.signaux_ecartes_lecons += 1
+        actif = self.mode_apprentissage == "actif"
+        log.info("%s %s %s par une leçon : %s", paire,
+                 signal.direction.name, "ÉCARTÉ" if actif else "(observation)",
+                 regle.tranche.libelle())
+        return actif
 
     def _payout_au_maximum(self, paire: str) -> bool:
         """N'entrer QUE lorsque le broker paie son maximum.
@@ -916,6 +993,21 @@ class CoursePlanDemo:
         gain = self.etat.plan.gain_par_session_pct / 100 * self.etat.solde
         return Echelle(payout_pct=92, gain_vise=gain)
 
+    def _faire_l_autopsie(self, session) -> None:
+        """Ce que la session perdue dit, et ce qu'elle ne dit pas."""
+        perdus = [(p, s, c) for p, s, c, r in self._pas_de_la_session
+                  if r != "win"]
+        # Après un redémarrage en pleine session, les premiers pas sont
+        # perdus pour la mémoire : on les signale sans contexte plutôt que
+        # de les taire.
+        manquants = max(0, session.pas_joues - len(perdus))
+        perdus = [("?", "?", {})] * manquants + perdus
+        self._pas_de_la_session = []
+        try:
+            self._prevenir(autopsie(perdus, self.etat.apprentissage))
+        except Exception:                        # noqa: BLE001
+            log.exception("Autopsie impossible")
+
     def _recaler_sur_le_plan(self, motif: str) -> bool:
         """Replace le plan au (jour, sessions) que le solde RÉEL représente.
 
@@ -981,6 +1073,7 @@ class CoursePlanDemo:
         if self.etat.session is None:
             self.etat.session = Session(echelle=self._echelle())
             self.etat.solde_ouverture_session = self.etat.solde
+            self._pas_de_la_session = []
         session = self.etat.session
         mise = session.mise_courante()
 
@@ -1038,6 +1131,11 @@ class CoursePlanDemo:
         # dénouement — cinq ordres exécutés chez le broker, zéro dans nos
         # livres, et un solde de plan resté à 250 $ pendant que le compte
         # réel bougeait.
+        # Le contexte vit AVEC l'ordre : noté au moment de la décision, il
+        # ne pourra jamais être recalculé après coup sur du code modifié.
+        ctx = dict(self._contexte_du_signal)
+        execution.brut = {**(execution.brut or {}),
+                          "contexte": {**ctx, "pas": session.pas_joues + 1}}
         journalise = self._journaliser(jeton, execution)
         # ⚠ DATÉ DE L'ENTRÉE, PAS DU DÉNOUEMENT.
         #
@@ -1058,6 +1156,8 @@ class CoursePlanDemo:
         self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
         execution = self.courtier.denouer(execution)
+        self._pas_de_la_session.append(
+            (signal.pair, sens, ctx, execution.resultat or "unknown"))
         if not journalise:
             # Second essai, avec le dénouement : l'ordre entre au journal
             # complet, et le solde du plan en tient compte.
@@ -1159,6 +1259,7 @@ class CoursePlanDemo:
         self.etat.journee.arret = self.etat.journee.peut_ouvrir_une_session()
         self.etat.solde_ouverture_session = None
         if session.etat is EtatSession.PERDUE:
+            self._faire_l_autopsie(session)
             self.etat.sessions_perdues_daffilee += 1
             log.warning(
                 "%s", session.message_protection(
@@ -1179,6 +1280,16 @@ class CoursePlanDemo:
             f"{_sessions_du_jour(self.etat.journee, self.etat.plan.sessions_par_jour)} "
             f"({self.etat.journee.resultat_pct:+.2f} %)"
             f"{self._ligne_cible()}")
+
+    def _ligne_apprentissage(self) -> str:
+        a = self.etat.apprentissage
+        if self.mode_apprentissage == "inactif":
+            return "  apprentissage inactif"
+        if a is None:
+            return "  apprentissage : premier rejeu en attente"
+        mode = "" if self.mode_apprentissage == "actif" else " (observation)"
+        return (f"  leçons {len(a.regles)}{mode}, "
+                f"{self.etat.signaux_ecartes_lecons} signal(aux) écarté(s)")
 
     def _ligne_cible(self) -> str:
         """« cible du jour X $, il manque Y $ » — vide sans cible."""
@@ -1726,37 +1837,13 @@ class CoursePlanDemo:
         self._sauvegarder()
 
     def _dans_sa_plage_de_calibration(self, paire, bougies) -> bool:
-        """La tolérance de la stratégie est-elle à l'échelle de cet actif ?
-
-        Une condition de SÉCURITÉ, pas un filtre de stratégie : elle refuse de
-        jouer là où le réglage ne veut plus rien dire, au lieu de produire des
-        signaux qu'on prendrait pour des signaux.
-
-        Voir `RAPPORT_TOLERANCE_MIN` / `MAX` pour les chiffres et leur origine.
-        """
-        recentes = bougies[-FENETRE_AMPLITUDE:]
-        if len(recentes) < 10:
-            return True             # trop peu pour juger : on ne tranche pas
-        amplitudes = sorted(
-            100.0 * (b.high - b.low) / b.close
-            for b in recentes if b.close)
-        if not amplitudes:
+        if dans_la_plage_de_calibration(self.strategie.p.tolerance_pct,
+                                        bougies):
             return True
-        mediane = amplitudes[len(amplitudes) // 2]
-        if mediane <= 0:
-            # Un actif dont la bougie médiane n'a AUCUNE amplitude n'est pas un
-            # actif calme, c'est un actif dont on ne reçoit pas le prix.
-            log.debug("%s écartée : amplitude médiane nulle.", paire)
-            return False
-        rapport = self.strategie.p.tolerance_pct / mediane
-        if RAPPORT_TOLERANCE_MIN <= rapport <= RAPPORT_TOLERANCE_MAX:
-            return True
-        log.info(
-            "%s écartée : tolérance/amplitude = %.2f, hors de la plage "
-            "[%.2f, %.2f] où la stratégie a été calibrée (bougie médiane "
-            "%.4f %%). Elle y produirait des signaux qui n'en sont pas.",
-            paire, rapport, RAPPORT_TOLERANCE_MIN, RAPPORT_TOLERANCE_MAX,
-            mediane)
+        log.info("%s écartée : tolérance hors de la plage [%.2f, %.2f] "
+                 "d'amplitude où la stratégie a été calibrée. Elle y "
+                 "produirait des signaux qui n'en sont pas.",
+                 paire, RAPPORT_TOLERANCE_MIN, RAPPORT_TOLERANCE_MAX)
         return False
 
     def _payouts_lisibles(self) -> str:
@@ -1801,7 +1888,8 @@ class CoursePlanDemo:
                 f"journée {j.resultat_pct:+.2f} %  "
                 + (f"cible {j.cible:.2f} $ (manque {j.manque:.2f} $)  "
                    if j.cible is not None else "")
-                + f"réancrages {len(e.reancrages)}")
+                + f"réancrages {len(e.reancrages)}"
+                + self._ligne_apprentissage())
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
         depuis = (int(time.time()) - e.demarre_ts) // 60 if e.demarre_ts else 0
@@ -1976,7 +2064,9 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      "_refus_ts": etat.dernier_refus_ts,
                      "_quarantaines": etat.quarantaines_subies,
                      "_gagnees_jour": etat.journee.sessions_gagnees,
-                     "_session_suspendue": etat.session_suspendue}),
+                     "_session_suspendue": etat.session_suspendue,
+                     "_apprentissage": (etat.apprentissage.to_dict()
+                                        if etat.apprentissage else None)}),
          etat.demarre_ts),
     )
     valider(conn)
@@ -2036,6 +2126,13 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     etat.quarantaines_subies = {
         str(k): int(v) for k, v in (sauve.get("_quarantaines") or {}).items()}
     etat.session_suspendue = sauve.get("_session_suspendue") or None
+    if sauve.get("_apprentissage"):
+        try:
+            etat.apprentissage = Apprentissage.from_dict(sauve["_apprentissage"])
+        except Exception as erreur:              # noqa: BLE001
+            # Un format ancien ne doit pas empêcher la reprise : le prochain
+            # rejeu le remplacera.
+            log.warning("Apprentissage sauvé illisible : %s", erreur)
     # Absent d'un état écrit avant ce compteur : zéro, ce qui est juste pour
     # la journée en cours de v2 (une session jouée, perdue).
     etat.journee.sessions_gagnees = min(
@@ -2050,6 +2147,24 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         session.engagees = [float(x) for x in engagees]
         etat.session = session
     return etat, int(ligne[5])
+
+
+def lecons(course) -> str:
+    """`/lecons` : ce que l'apprentissage a tiré de l'historique."""
+    if course is None:
+        return "Course indisponible."
+    if course.mode_apprentissage == "inactif":
+        return "🧠 Apprentissage inactif (APPRENTISSAGE=inactif)."
+    a = course.etat.apprentissage
+    if a is None:
+        return ("🧠 Premier apprentissage en attente : la stratégie est "
+                "rejouée sur l'historique quelques minutes après le "
+                "démarrage.")
+    mode = ("" if course.mode_apprentissage == "actif" else
+            "\n\n👁 Mode OBSERVATION : les leçons comptent ce qu'elles "
+            "écarteraient, sans rien écarter.")
+    return (a.resume() + f"\n\nSignaux écartés en direct : "
+            f"{course.etat.signaux_ecartes_lecons}" + mode)
 
 
 def ordres_absents(courtier, journal, depuis_ms: int) -> list:
@@ -2269,7 +2384,10 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     try:
         course = _assembler(courtier, lecteur, ecriture, journal, plan,
                             paires, campagne, mode_univers, paires_collectees,
-                            alerter, chrono)
+                            alerter, chrono,
+                            # Le fil d'apprentissage a SA connexion : une
+                            # connexion ne se partage pas entre deux fils.
+                            lambda: open_read_only(Path(chemin_lecture)))
         chrono.fin()
         return course
     except BaseException:
@@ -2308,7 +2426,8 @@ class _Chrono:
 
 
 def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
-               mode_univers, paires_collectees, alerter, chrono=None):
+               mode_univers, paires_collectees, alerter, chrono=None,
+               ouvrir_la_base=None):
     chrono = chrono or _Chrono()
     from maxprofit.strategies.zone_h1 import ZoneH1
 
@@ -2354,6 +2473,8 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
 
     tour_nu = course.tour
 
+    etat_sauve = {"apprentissage": course.etat.apprentissage}
+
     def tour_persistant() -> bool:
         # L'état est sauvé après CHAQUE pas. Le processus peut mourir à
         # n'importe quel moment — l'hébergeur redéploie, met en veille — et un
@@ -2364,9 +2485,19 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
         if course.passer_le_jour_si_besoin(aujourdhui):
             sauver_etat(ecriture, campagne, course.etat, aujourdhui)
         joue = tour_nu()
-        if joue:
+        # Le fil d'apprentissage pose son résultat sur l'état sans pouvoir
+        # l'écrire (la connexion est à ce fil-ci) : on le sauve dès qu'il
+        # change, sinon un redéploiement relancerait un rejeu de plusieurs
+        # minutes.
+        appris = course.etat.apprentissage is not etat_sauve["apprentissage"]
+        if joue or appris:
             sauver_etat(ecriture, campagne, course.etat, aujourdhui)
+            etat_sauve["apprentissage"] = course.etat.apprentissage
         return joue
 
     course.tour = tour_persistant
+    if course.mode_apprentissage != "inactif" and ouvrir_la_base is not None:
+        from maxprofit.live.apprenti import Apprenti
+        Apprenti.demarrer(course, ouvrir_la_base,
+                          paires_collectees or paires)
     return course

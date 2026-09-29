@@ -2359,3 +2359,80 @@ def test_un_inconnu_que_le_broker_ignore_reste_inconnu(course):
     c.courtier = _CourtierQuiRelit({})
     c._un_ordre_reste_a_confirmer()
     assert len(c.journal.inconnus()) == 1, "rien n'est deviné"
+
+
+# --------------------------------------------------------------------------- #
+# L'apprentissage dans la course
+# --------------------------------------------------------------------------- #
+
+def _apprentissage_elan():
+    from maxprofit.apprentissage.lecons import Apprentissage, Regle, Tranche
+    return Apprentissage(
+        regles=(Regle(Tranche("elan_15m", None, -1.5), 200, 0.40, 60, 0.38),),
+        n=1500, taux=0.57, debut_sec=T0_MS // 1000, fin_sec=T0_MS // 1000,
+        n_validation=450, taux_validation_avant=0.56,
+        taux_validation_apres=0.59, part_ecartee=0.12)
+
+
+def test_une_session_perdue_recoit_son_AUTOPSIE(course):
+    messages = []
+    c = course(["loose"] * 3)
+    c._alerter = messages.append
+    for _ in range(3):
+        c.tour()
+    autopsies = [m for m in messages if "Autopsie" in m]
+    assert len(autopsies) == 1
+    assert "session perdue en 3 pas" in autopsies[0]
+
+
+def test_le_contexte_du_signal_est_journalise_avec_l_ordre(course):
+    c = course(["win"])
+    c.tour()
+    brut = c.journal.toutes()[0].brut
+    assert brut["contexte"]["pas"] == 1
+
+
+def test_une_lecon_ACTIVE_ecarte_le_signal_et_le_compte(course):
+    c = course([])
+    c.etat.apprentissage = _apprentissage_elan()
+    signal = Signal(pair="EURUSD_otc", direction=Direction.CALL,
+                    decided_at_ms=T0_MS, expiry_sec=900, reason="t")
+    c.mode_apprentissage = "actif"
+    assert c._ecarte_par_une_lecon("EURUSD_otc", signal,
+                                   {"elan_15m": -2.0}) is True
+    assert c._ecarte_par_une_lecon("EURUSD_otc", signal,
+                                   {"elan_15m": 0.5}) is False
+    c.mode_apprentissage = "observation"
+    assert c._ecarte_par_une_lecon("EURUSD_otc", signal,
+                                   {"elan_15m": -2.0}) is False
+    assert c.etat.signaux_ecartes_lecons == 2, "compté même en observation"
+
+
+def test_l_apprentissage_survit_a_un_redemarrage(tmp_path):
+    from maxprofit.live.plan_demo import charger_etat, sauver_etat
+    from maxprofit.store.db import open_read_write
+
+    conn = open_read_write(tmp_path / "plan.db")
+    plan = _plan(sessions=6)
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    c = CoursePlanDemo(LecteurFactice(), CourtierFactice([]), journal,
+                       plan, PAIRES_TEST)
+    c.etat.apprentissage = _apprentissage_elan()
+    c.etat.signaux_ecartes_lecons = 4
+    sauver_etat(conn, "t", c.etat, 0)
+    relu, _ = charger_etat(conn, "t", plan)
+    assert relu.apprentissage.to_dict() == c.etat.apprentissage.to_dict()
+    assert relu.signaux_ecartes_lecons == 4
+    journal.close()
+    conn.close()
+
+
+def test_lecons_dit_ce_qui_a_ete_appris(course):
+    from maxprofit.live.plan_demo import lecons
+
+    c = course([])
+    assert "en attente" in lecons(c)
+    c.etat.apprentissage = _apprentissage_elan()
+    texte = lecons(c)
+    assert "Leçons ACTIVES (1)" in texte and "élan" in texte
+    assert lecons(None) == "Course indisponible."
