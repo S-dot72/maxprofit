@@ -167,6 +167,7 @@ COMMANDES = [
     ("refuser", "Refuser une demande d'accès (admin)"),
     ("rapatrier", "Importer du broker les ordres absents du journal (admin)"),
     ("reprendre", "Remettre en route la session interrompue (admin)"),
+    ("lecons", "Ce que le bot a appris de l'historique"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -254,6 +255,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         #: `argument -> réponse`, posé par le service quand la course existe.
         self._rapatrier: Callable[[str], Awaitable[str]] | None = None
         self._reprendre: Callable[[str], Awaitable[str]] | None = None
+        self._lecons: Callable[[], Awaitable[str]] | None = None
         self._offset = 0
         self.actif = True
         #: Empreinte -> instant du dernier envoi, pour ne pas répéter la même
@@ -427,6 +429,11 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(
                     chat, await self._reprendre(
                         texte[len("/reprendre"):].strip()), CLAVIER)
+        elif texte.startswith("/lecons") or texte.startswith("/leçons"):
+            if self._lecons is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._lecons(), CLAVIER)
         elif texte.startswith("/etat") or texte.startswith("📊"):
             await self.client.envoyer(chat, await self._etat(), CLAVIER)
         elif texte.startswith("/paires") or texte.startswith("📈"):

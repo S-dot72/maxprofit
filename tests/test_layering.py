@@ -68,7 +68,14 @@ ALLOWED: dict[str, set[str]] = {
     # `backtest` n'a PAS ces droits, et c'est volontaire : lui donner `plan`
     # lui ferait mesurer la stratégie *plus* la mise, sans moyen de séparer
     # les deux. Le backtest juge un signal ; `live` l'exécute.
-    "live": {"core", "store", "strategies", "indicators", "plan", "execution"},
+    "live": {"core", "store", "strategies", "indicators", "plan", "execution",
+             "apprentissage"},
+    # L'apprentissage : un CALCUL PUR, des bougies et des issues aux leçons.
+    # Pas `store` : c'est `live` qui lit la base et lui passe les bougies. Pas
+    # `plan` ni `execution` : une leçon juge un CONTEXTE de signal, jamais une
+    # mise — sinon une leçon dirait « ce contexte perd » quand c'est la
+    # martingale qui a coûté. Il propose ; `live` décide de l'appliquer.
+    "apprentissage": {"core", "strategies"},
     # Le protocole de recherche. Il LIT les données et JUGE des hypothèses ;
     # il n'en produit aucune et ne place aucun ordre.
     #

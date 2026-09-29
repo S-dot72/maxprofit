@@ -374,7 +374,7 @@ def test_la_fabrique_rapporte_chaque_etape(monkeypatch):
 
     monkeypatch.setattr(mod_courtier, "CourtierDemo", _Courtier)
     monkeypatch.setattr(plan_demo, "_assembler",
-                        lambda *a: a[-1]("rattrapage des ordres en vol")
+                        lambda *a: a[-2]("rattrapage des ordres en vol")
                         or "course")
     monkeypatch.setattr("maxprofit.store.db.open_read_only", lambda p: None)
     monkeypatch.setattr("maxprofit.store.db.open_read_write",
