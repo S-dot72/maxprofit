@@ -84,7 +84,9 @@ class Apprenti:
 
     def _prochaine_attente(self) -> float:
         actuel = self.course.etat.apprentissage
-        if actuel is None or not actuel.n:
+        # Un apprentissage d'avant la comparaison des échéances est refait
+        # tout de suite : /echeances resterait sinon muet jusqu'à un jour.
+        if actuel is None or not actuel.n or not actuel.echeances:
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
                    actuel.cree_ts + PERIODE_SEC - time.time())

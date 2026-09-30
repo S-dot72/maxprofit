@@ -939,6 +939,15 @@ PAIRES_EN_PLUS_PAR_DEFAUT: tuple[str, ...] = (
     # ⚠ Le socket en a tenu dix ; douze n'a jamais été observé. Couverture et
     # « Paires souscrites » dans /etat disent s'il tient.
     "USDCAD_otc", "USDCHF_otc",
+    # Palier 12 -> 14, demandé le 2026-09-30, sur les premiers résultats par
+    # paire : les croisés du yen (CHFJPY 7/10, USDJPY 4/6) et AUDUSD (6/6)
+    # tiennent. EURJPY_otc est le croisé du yen le plus liquide ; NZDUSD_otc
+    # la jumelle d'AUDUSD. Aucun de ces chiffres ne prouve encore rien : ils
+    # orientent le choix, ils ne le valident pas.
+    #
+    # ⚠ Douze abonnements venaient d'être déployés, pas encore observés dans
+    # la durée ; quatorze ne l'a jamais été. La couverture dira s'il tient.
+    "EURJPY_otc", "NZDUSD_otc",
 )
 
 

@@ -2471,3 +2471,28 @@ def test_le_bilan_dit_si_la_baisse_depasse_le_HASARD():
     assert "baisse DÉPASSE" in mauvais
     assert "USDCAD : 6/30 (20%) ⚠" in mauvais, "6/30 le prouve"
     assert "Aucun ordre" in texte_du_bilan([], maintenant)
+
+
+def test_un_ordre_reel_est_rejuge_a_d_autres_echeances():
+    """Même entrée, seule la sortie change : c'est ce qui rend le parallèle
+    5 / 10 / 15 min juste. Et la reconstitution est d'abord vérifiée contre
+    le résultat RÉEL du broker."""
+    from maxprofit.core.types import Candle
+    from maxprofit.live.plan_demo import issue_reconstituee, texte_des_echeances
+
+    t = 1_790_000_040                       # clic, à la seconde
+    ordre = _ordre_du_journal("EURUSD_otc", "loose", t)
+    ordre.sens, ordre.prix_entree = "call", 1.1000
+    # Le prix monte jusqu'à t+10 min, puis retombe sous l'entrée à 15 min.
+    def cloture(minute):
+        return 1.1010 if minute <= 10 else 1.0990
+    bougies = [Candle(pair="EURUSD_otc", tf_sec=60, ts_sec=t + 60 * (m - 1),
+                      open=1.1, high=1.102, low=1.098, close=cloture(m),
+                      tick_count=5, complete=True) for m in range(1, 17)]
+    assert issue_reconstituee(ordre, bougies, 300) is True
+    assert issue_reconstituee(ordre, bougies, 600) is True
+    assert issue_reconstituee(ordre, bougies, 900) is False
+    texte = texte_des_echeances([ordre], lambda p, a, b: bougies, None)
+    assert " 5 min : <b>100%</b>" in texte and "15 min : <b>0%</b>" in texte
+    assert "d'accord avec le broker sur 1/1" in texte
+    assert "premier apprentissage en attente" in texte
