@@ -191,6 +191,9 @@ RECOUVREMENT_CACHE_SEC = 300
 #: Au-delà de l'échéance, délai laissé au broker avant de confronter une
 #: réservation restée sans issue à la liste de ses ordres clôturés.
 MARGE_CONFIRMATION_SEC = 120
+#: Le seuil de rentabilité d'un ordre à 92 % : 1 / 1,92.
+SEUIL_RENTABILITE = 1 / 1.92
+
 #: Intervalle minimal entre deux relectures des ordres réels par paire.
 RELIRE_REELS_SEC = 600
 
@@ -417,6 +420,8 @@ class Etat:
     signaux_ecartes_lecons: int = 0
     #: Signaux écartés parce que l'heure en cours allait fortement contre.
     signaux_contre_heure: int = 0
+    #: Paires écartées au dernier passage : taux estimé sous le seuil.
+    paires_perdantes: list[str] = field(default_factory=list)
 
     def cible_du_jour(self, jour: int | None = None) -> float | None:
         """Le solde que le planning prévoit à la fin du jour `jour`.
@@ -580,6 +585,9 @@ class CoursePlanDemo:
         #: que compter ce qu'elles auraient écarté ; « inactif » : rien.
         self.mode_apprentissage = mode_apprentissage()
         self.seuil_contre_heure = seuil_contre_heure()
+        import os
+        self.ecarter_les_perdantes = (
+            os.environ.get("PAIRES_PERDANTES", "1").strip() != "0")
         #: Contexte du signal en main, et (paire, sens, contexte, issue) de
         #: chaque pas de la session : c'est ce que l'autopsie examine.
         self._contexte_du_signal: dict = {}
@@ -853,10 +861,14 @@ class CoursePlanDemo:
         sans_historique = 0
         hors_calibration = 0
         retenus: list[tuple] = []
+        ecartees = []
         for paire in gratuites + payantes:
             payante = paire not in self.paires
             if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
                 break
+            if self._paire_perdante(paire):
+                ecartees.append(paire)
+                continue
             try:
                 bougies = self._bougies_de(paire)
             except BotError as erreur:
@@ -924,6 +936,7 @@ class CoursePlanDemo:
             retenus.append((signal, ctx, derniere.ts_sec + 60))
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
+        self.etat.paires_perdantes = sorted(ecartees)
         if not retenus:
             return None
         # ⚠ LA MEILLEURE PAIRE D'ABORD, pas la première trouvée.
@@ -945,6 +958,24 @@ class CoursePlanDemo:
         self._contexte_du_signal = ctx
         self._fin_bougie_du_signal = fin
         return signal
+
+    def _paire_perdante(self, paire: str) -> bool:
+        """Vrai si la meilleure estimation du taux de la paire est PERDANTE.
+
+        Demandé par l'utilisateur, 2026-09-30 : « on perd sur les paires
+        qu'on a l'habitude de perdre » — EURGBP_otc, 2 gains sur 7, jouée
+        quand même parce que la priorité ne tranchait qu'entre signaux
+        simultanés, et qu'elle signalait seule.
+
+        L'estimation est celle de la priorité — rejeu et ordres réels,
+        tempérés vers le taux d'ensemble à hauteur de 20 signaux : deux
+        pertes de suite ne suffisent pas à écarter une paire, un historique
+        qui la dit sous le seuil de rentabilité, si. Elle revient d'elle-même
+        si le rejeu du lendemain la remonte. `PAIRES_PERDANTES=0` désactive.
+        """
+        if not self.ecarter_les_perdantes:
+            return False
+        return self.priorite(paire) < SEUIL_RENTABILITE
 
     def priorite(self, paire: str) -> float:
         """Rejeu + ordres réels de la paire (voir `Apprentissage.priorite`).
@@ -1416,7 +1447,11 @@ class CoursePlanDemo:
         contre = ("" if self.seuil_contre_heure is None else
                   f"  contre l'heure en cours : "
                   f"{self.etat.signaux_contre_heure} écarté(s)")
-        return self._ligne_lecons() + contre
+        perdantes = ("" if not self.etat.paires_perdantes else
+                     "  paires écartées (taux sous le seuil) : " + ", ".join(
+                         p.replace("_otc", "")
+                         for p in self.etat.paires_perdantes))
+        return self._ligne_lecons() + contre + perdantes
 
     def _ligne_lecons(self) -> str:
         a = self.etat.apprentissage
