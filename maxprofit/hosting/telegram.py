@@ -219,6 +219,7 @@ COMMANDES = [
     ("rapatrier", "Importer du broker les ordres absents du journal (admin)"),
     ("reprendre", "Remettre en route la session interrompue (admin)"),
     ("lecons", "Ce que le bot a appris de l'historique"),
+    ("simulation", "Martingale 3 / 2 pas / sans, et chaque stratégie, simulées"),
     ("bilan", "Taux de réussite réel des ordres, par période et par paire"),
     ("classement", "Les N meilleures paires à coller dans PAIRES_FIXES"),
     ("echeances", "Taux de réussite à 5, 10 et 15 min comparés"),
@@ -311,6 +312,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._reprendre: Callable[[str], Awaitable[str]] | None = None
         self._lecons: Callable[[], Awaitable[str]] | None = None
         self._bilan: Callable[[], Awaitable[str]] | None = None
+        self._simulation: Callable[[], Awaitable[str]] | None = None
         self._classement: Callable[[str], Awaitable[str]] | None = None
         self._echeances: Callable[[], Awaitable[str]] | None = None
         self._offset = 0
@@ -499,6 +501,12 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(
                     chat, await self._classement(
                         texte[len("/classement"):].strip()), CLAVIER)
+        elif texte.startswith("/simulation"):
+            if self._simulation is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._simulation(),
+                                          CLAVIER)
         elif texte.startswith("/bilan"):
             if self._bilan is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)

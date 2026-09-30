@@ -257,6 +257,11 @@ class Apprentissage:
         default_factory=dict)
     #: {paire: (signaux, gagnés)} sur les signaux rejoués.
     par_paire: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    #: {stratégie: {"signaux": n, "resultats": [...]}} : le plan simulé (voir
+    #: `live.simulation`). Posé par la course, qui seule connaît le plan.
+    simulations: Mapping[str, Mapping] = field(default_factory=dict)
+    #: Jours d'historique rejoués.
+    jours: int = 0
 
     # --- ce que la course demande ------------------------------------------
 
@@ -419,6 +424,7 @@ class Apprentissage:
             "part": self.part_ecartee, "cree": self.cree_ts, "note": self.note,
             "echeances": {str(k): list(v) for k, v in self.echeances.items()},
             "par_paire": {k: list(v) for k, v in self.par_paire.items()},
+            "simulations": dict(self.simulations), "jours": self.jours,
         }
 
     @classmethod
@@ -439,7 +445,9 @@ class Apprentissage:
             echeances={int(k): tuple(int(x) for x in v)
                        for k, v in (d.get("echeances") or {}).items()},
             par_paire={str(k): (int(v[0]), int(v[1]))
-                       for k, v in (d.get("par_paire") or {}).items()})
+                       for k, v in (d.get("par_paire") or {}).items()},
+            simulations=dict(d.get("simulations") or {}),
+            jours=int(d.get("jours") or 0))
 
 
 def _statistiques(exemples: Sequence[Exemple]) -> tuple[StatTranche, ...]:

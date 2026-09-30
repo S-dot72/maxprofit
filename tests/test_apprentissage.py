@@ -200,7 +200,7 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     messages = []
     course = SimpleNamespace(
         strategie=Strategie(), etat=SimpleNamespace(apprentissage=None),
-        _prevenir=messages.append)
+        _prevenir=messages.append, seuil_contre_heure=3.3)
     course.strategie.p = SimpleNamespace(lookback=25, expiry_sec=120,
                                          tolerance_pct=0.02)
     monkeypatch.setattr(
@@ -212,6 +212,10 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     assert course.etat.apprentissage is not None
     assert course.etat.apprentissage.n > 0
     assert messages and "Apprentissage" in messages[-1]
+    simulations = course.etat.apprentissage.simulations
+    assert "ZoneH1 (15 min), comme en direct" in simulations
+    assert "RebondMediane (1 min)" in simulations
+    assert "SixConditions (1 min)" in simulations
     conn.close()
 
 

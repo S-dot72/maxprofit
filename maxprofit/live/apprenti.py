@@ -88,7 +88,8 @@ class Apprenti:
         # tout de suite : /echeances resterait sinon muet jusqu'à un jour.
         # Et d'avant le taux par paire : /lecons le montrerait vide.
         if actuel is None or not actuel.n or not actuel.echeances \
-                or not actuel.par_paire or not _mesure_tout(actuel):
+                or not actuel.par_paire or not actuel.simulations \
+                or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
                    actuel.cree_ts + PERIODE_SEC - time.time())
@@ -113,6 +114,8 @@ class Apprenti:
         fin = int(time.time())
         debut = fin - jours * 86400
         debut_calcul = time.monotonic()
+        autres = _autres_strategies()
+        par_autre: dict[str, list] = {nom: [] for nom, _ in autres}
         conn = self._ouvrir()
         try:
             lecteur = MarketReader(conn)
@@ -125,6 +128,17 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=lambda: time.sleep(0.002))
+                # Les autres stratégies, sur les MÊMES bougies déjà en
+                # mémoire : c'est ce qui rend la comparaison juste.
+                for nom, autre in autres:
+                    par_autre[nom] += exemples_historiques(
+                        {paire: bougies}, autre,
+                        echeance_sec=autre.p.expiry_sec,
+                        echeances=(autre.p.expiry_sec,),
+                        # La simulation n'en a pas besoin, et une stratégie à
+                        # 1 min peut rendre des milliers de signaux.
+                        avec_contexte=False,
+                        respirer=lambda: time.sleep(0.002))
         finally:
             try:
                 conn.close()
@@ -132,11 +146,48 @@ class Apprenti:
                 pass
         ancien = course.etat.apprentissage
         nouveau = apprendre(exemples)
+        nouveau.jours = jours
+        nouveau.simulations = _simulations(
+            exemples, strategie.p.expiry_sec, course.seuil_contre_heure,
+            {nom: (par_autre[nom], autre.p.expiry_sec)
+             for nom, autre in autres})
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
                  time.monotonic() - debut_calcul, len(nouveau.regles))
         course._prevenir(_annonce(ancien, nouveau))
+
+
+def _autres_strategies():
+    """(nom, stratégie) de chaque stratégie du dépôt autre que celle jouée."""
+    from maxprofit.strategies.rebond_mediane import RebondMediane
+    from maxprofit.strategies.six_conditions import (
+        PARAMETRES_DEPART, SixConditions)
+    return (("RebondMediane (1 min)", RebondMediane()),
+            ("SixConditions (1 min)", SixConditions(PARAMETRES_DEPART)))
+
+
+def _simulations(exemples, echeance_sec, seuil_contre_heure, autres) -> dict:
+    """Le plan simulé : la stratégie jouée (telle qu'en direct, puis sans la
+    règle de l'heure en cours), et chacune des autres."""
+    from maxprofit.live.simulation import comparer
+
+    def bloc(liste, echeance, garder=lambda e: True):
+        return {"signaux": sum(1 for e in liste if garder(e)),
+                "resultats": [r.to_dict()
+                              for r in comparer(liste, echeance, garder)]}
+
+    sortie = {}
+    if seuil_contre_heure is not None:
+        sortie["ZoneH1 (15 min), comme en direct"] = bloc(
+            exemples, echeance_sec,
+            lambda e: e.contexte.get("mouvement_heure", 0.0)
+            >= -seuil_contre_heure)
+    sortie["ZoneH1 (15 min), sans la règle de l'heure"] = bloc(
+        exemples, echeance_sec)
+    for nom, (liste, echeance) in autres.items():
+        sortie[nom] = bloc(liste, echeance)
+    return sortie
 
 
 def _mesure_tout(apprentissage) -> bool:
