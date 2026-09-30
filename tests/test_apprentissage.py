@@ -262,3 +262,26 @@ def test_le_contexte_VOIT_la_chute_de_l_heure_en_cours():
     ctx = contexte(serie, True)
     assert ctx["tendance_h1"] > 0, "les heures closes montaient"
     assert ctx["mouvement_heure"] < 0 and ctx["elan_30m"] < 0
+
+
+def test_lecons_montre_le_taux_AVEC_et_CONTRE_le_mouvement_de_l_heure():
+    """La question posée, captures à l'appui : la stratégie prend position
+    contre le mouvement de l'heure en cours. Le rejeu doit y répondre en
+    chiffres, dans un sens comme dans l'autre."""
+    alea = random.Random(11)
+    exemples = []
+    for i in range(900):
+        m = alea.uniform(-4, 4)
+        exemples.append(Exemple(T0 + 60 * i, "X", {"mouvement_heure": m},
+                                alea.random() < (0.35 if m < -1.5 else 0.62)))
+    texte = apprendre(exemples).resume()
+    assert "Avec ou contre le mouvement" in texte
+    assert "le plus contre" in texte and "le plus avec" in texte
+    ligne_contre = next(l for l in texte.splitlines() if "le plus contre" in l)
+    assert "⚠" in ligne_contre, ligne_contre
+
+
+def test_l_autopsie_donne_les_mouvements_bruts_de_chaque_pas():
+    ctx = {"mouvement_heure": -3.2, "elan_30m": -2.1, "tendance_h1": 1.5}
+    texte = autopsie([("USDCAD_otc", "put", ctx)], None)
+    assert "heure en cours -3.2" in texte and "3 h closes +1.5" in texte

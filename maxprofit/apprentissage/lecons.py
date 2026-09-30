@@ -46,6 +46,11 @@ COUVERTURE_MAX = 0.35
 N_MIN_EXEMPLES = 150
 #: Effectif minimal d'une tranche citée dans une autopsie.
 N_MIN_AUTOPSIE = 30
+#: Les mouvements affichés par `/lecons`, du plus court au plus long : c'est
+#: la question posée par l'opérateur, captures à l'appui — la stratégie
+#: prend-elle position contre le mouvement de l'heure en cours ?
+TENDANCES: tuple[str, ...] = ("mouvement_heure", "elan_30m", "tendance_h1")
+
 #: Échéances comparées sur les mêmes signaux (secondes).
 ECHEANCES_COMPAREES: tuple[int, ...] = (300, 600, 900)
 
@@ -176,6 +181,15 @@ def taux_detectable(n_etalonnage: int) -> float | None:
     return None
 
 
+def _tiers(t: Tranche) -> str:
+    c = t.caracteristique
+    if t.bas is None:
+        return f"le plus contre (< {_nombre(t.haut, c)})"
+    if t.haut is None:
+        return f"le plus avec (≥ {_nombre(t.bas, c)})"
+    return f"entre les deux ({_nombre(t.bas, c)} à {_nombre(t.haut, c)})"
+
+
 def _taux(exemples: Sequence[Exemple]) -> float | None:
     return (sum(e.gagne for e in exemples) / len(exemples)
             if exemples else None)
@@ -291,12 +305,38 @@ class Apprentissage:
                     f"{detectable:.0%} du temps peut être établi. Un contexte "
                     f"à 45 % — perdant, mais moins franchement — passe "
                     f"inaperçu jusqu'à ce que l'historique grossisse.")
+        tableau = self.tableau()
+        if tableau:
+            lignes.append("\n<b>Avec ou contre le mouvement</b> (négatif = "
+                          "contre le trade ; ⚠ = perdant prouvé à 95 %)")
+            lignes.append(tableau)
         if self.candidates:
             lignes.append(f"\nÀ surveiller, non confirmées "
                           f"({len(self.candidates)}) :")
             lignes += [f"• {r.tranche.libelle()} — {r.taux:.0%} sur {r.n}, "
                        f"puis {r.taux_validation:.0%} sur {r.n_validation}"
                        for r in self.candidates[:3]]
+        return "\n".join(lignes)
+
+    def tableau(self, caracteristiques: Sequence[str] = TENDANCES) -> str:
+        """Le taux de réussite par tiers de chaque caractéristique.
+
+        Répond à « trader CONTRE le mouvement de l'heure en cours perd-il
+        plus ? » avec les signaux rejoués, au lieu d'une règle posée sur deux
+        captures d'écran — dans un sens comme dans l'autre.
+        """
+        lignes = []
+        for c in caracteristiques:
+            tiers = [st for st in self.statistiques
+                     if st.tranche.caracteristique == c]
+            if not tiers:
+                continue
+            lignes.append(f"<b>{LIBELLES.get(c, c)}</b>")
+            for st in tiers:
+                bas, haut = wilson(round(st.taux * st.n), st.n, 1.96)
+                marque = " ⚠" if haut < SEUIL else ""
+                lignes.append(f"  {_tiers(st.tranche)} : {st.taux:.0%} sur "
+                              f"{st.n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
         return "\n".join(lignes)
 
     def texte_echeances(self) -> str:
@@ -459,7 +499,15 @@ def autopsie(pas: Sequence[tuple[str, str, Mapping[str, float]]],
         detail = ("; ".join(f"{s.tranche.libelle()} ({s.taux:.0%} sur "
                             f"{s.n})" for s in mauvais)
                   or "aucun contexte connu pour perdre")
-        lignes.append(f"Pas {i} {paire} {sens.upper()} : {detail}")
+        # Les mouvements BRUTS, que l'opérateur compare à son graphique :
+        # négatif = contre le trade.
+        valeurs = ", ".join(
+            f"{nom} {ctx[c]:+.1f}" for c, nom in (
+                ("mouvement_heure", "heure en cours"), ("elan_30m", "30 min"),
+                ("tendance_h1", "3 h closes")) if c in ctx)
+        lignes.append(f"Pas {i} {paire} {sens.upper()} : {detail}"
+                      + (f"\n   mouvements (amplitudes, − = contre) : "
+                         f"{valeurs}" if valeurs else ""))
 
     p = (apprentissage.taux if apprentissage and apprentissage.taux
          else TAUX_DE_REFERENCE)
