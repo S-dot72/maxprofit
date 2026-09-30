@@ -285,3 +285,16 @@ def test_l_autopsie_donne_les_mouvements_bruts_de_chaque_pas():
     ctx = {"mouvement_heure": -3.2, "elan_30m": -2.1, "tendance_h1": 1.5}
     texte = autopsie([("USDCAD_otc", "put", ctx)], None)
     assert "heure en cours -3.2" in texte and "3 h closes +1.5" in texte
+
+
+def test_aucun_texte_de_l_apprentissage_ne_casse_le_HTML_de_Telegram():
+    """Un « < » nu fait rejeter le message entier : /lecons ne répondait
+    plus rien."""
+    import re
+
+    a = apprendre(_exemples(1500))
+    for texte in (a.resume(), autopsie([("X", "call", {"elan_15m": -2.6,
+                                                       "mouvement_heure": -3})],
+                                       a)):
+        sans_balises = re.sub(r"</?(b|i|code)>", "", texte)
+        assert "<" not in sans_balises and ">" not in sans_balises, texte

@@ -2220,7 +2220,7 @@ def texte_du_bilan(executions, maintenant_sec: int,
                           f"ce que le hasard explique (|z| = {abs(z):.1f})")
         else:
             lignes.append(f"→ écart compatible avec le hasard sur {n1} + "
-                          f"{n2} ordres (|z| = {abs(z):.1f} < 2)")
+                          f"{n2} ordres (|z| = {abs(z):.1f}, sous 2)")
     par_pas: dict[int, list] = {}
     for e in ordres:
         pas = (e.brut or {}).get("contexte", {}).get("pas")

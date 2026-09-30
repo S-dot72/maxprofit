@@ -608,3 +608,34 @@ def test_reprendre_est_reserve_aux_administrateurs(tmp_path):
     _traiter(bot, _message("/reprendre 2", chat=INTRUS))
     _traiter(bot, _message("/reprendre 2"))
     assert appels == ["2"]
+
+
+def test_un_HTML_refuse_est_renvoye_en_texte_brut_et_un_long_texte_decoupe():
+    """`/lecons` ne répondait plus : un « < » nu faisait rejeter tout le
+    message par Telegram, sans rien afficher."""
+    import asyncio
+
+    from maxprofit.hosting.telegram import ClientTelegram, LONGUEUR_MAX
+
+    envois = []
+
+    class Client(ClientTelegram):
+        def __init__(self):
+            pass
+
+        async def _appeler(self, methode, **params):
+            envois.append(params)
+            if params.get("parse_mode") and "(< " in params["text"]:
+                raise RuntimeError("Telegram a refusé sendMessage : Bad "
+                                   "Request: can't parse entities")
+            return {}
+
+    asyncio.run(Client().envoyer("1", "<b>titre</b> (< -1.2) &amp; x"))
+    assert envois[-1].get("parse_mode") is None
+    assert envois[-1]["text"] == "titre (< -1.2) & x"
+    envois.clear()
+    long = "\n".join(f"ligne {i} " + "x" * 90 for i in range(200))
+    asyncio.run(Client().envoyer("1", long))
+    assert len(envois) > 1 and all(len(e["text"]) <= LONGUEUR_MAX
+                                   for e in envois)
+    assert "\n".join(e["text"] for e in envois) == long

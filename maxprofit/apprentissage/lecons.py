@@ -107,8 +107,10 @@ class Tranche:
     def libelle(self) -> str:
         c = self.caracteristique
         nom = LIBELLES.get(c, c)
+        # « sous » et non « < » : les messages partent en HTML, où un « < »
+        # nu fait rejeter le message entier par Telegram.
         if self.bas is None:
-            return f"{nom} < {_nombre(self.haut, c)}"
+            return f"{nom} sous {_nombre(self.haut, c)}"
         if self.haut is None:
             return f"{nom} ≥ {_nombre(self.bas, c)}"
         if c == "heure_utc":
@@ -184,7 +186,7 @@ def taux_detectable(n_etalonnage: int) -> float | None:
 def _tiers(t: Tranche) -> str:
     c = t.caracteristique
     if t.bas is None:
-        return f"le plus contre (< {_nombre(t.haut, c)})"
+        return f"le plus contre (sous {_nombre(t.haut, c)})"
     if t.haut is None:
         return f"le plus avec (≥ {_nombre(t.bas, c)})"
     return f"entre les deux ({_nombre(t.bas, c)} à {_nombre(t.haut, c)})"
