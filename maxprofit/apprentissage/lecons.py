@@ -351,27 +351,31 @@ class Apprentissage:
                               f"{st.n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
         return "\n".join(lignes)
 
-    def priorite(self, paire: str) -> float:
-        """Le taux de réussite de la paire sur le rejeu, TEMPÉRÉ.
+    def priorite(self, paire: str,
+                 reels: tuple[int, int] = (0, 0)) -> float:
+        """Le taux de réussite de la paire, rejeu ET ordres réels, TEMPÉRÉ.
 
-        Tempéré vers le taux d'ensemble à hauteur de `POIDS_PRIORITE`
-        signaux : trois gains sur trois ne doivent pas passer devant 65 %
-        sur cent. C'est l'ordre dans lequel la course choisit entre des
-        signaux simultanés.
+        Les ordres réels (`reels` = ordres, gagnés) sont ceux que le broker a
+        vraiment payés ; le rejeu en compte dix fois plus. Les deux
+        s'additionnent, puis sont tempérés vers le taux d'ensemble à hauteur
+        de `POIDS_PRIORITE` signaux : six gains sur six ne doivent pas passer
+        devant 65 % sur cent. C'est l'ordre dans lequel la course choisit
+        entre des signaux simultanés.
         """
-        if not self.taux:
-            return 0.5
+        base = self.taux or TAUX_DE_REFERENCE
         n, g = self.par_paire.get(paire, (0, 0))
-        return (g + POIDS_PRIORITE * self.taux) / (n + POIDS_PRIORITE)
+        n, g = n + reels[0], g + reels[1]
+        return (g + POIDS_PRIORITE * base) / (n + POIDS_PRIORITE)
 
     def texte_par_paire(self) -> str:
         """Le taux de chaque paire sur le rejeu — dix fois plus de signaux
         que les ordres réels, qui n'en comptent qu'une dizaine par paire."""
         if not self.par_paire:
             return ""
-        lignes = ["<b>Par paire</b> (rejeu, de la meilleure à la moins bonne "
-                  "— l'ordre de priorité de la course ; ⚠ = perdante prouvée "
-                  "à 95 %)"]
+        lignes = ["<b>Par paire</b> (rejeu, de la meilleure à la moins bonne ; "
+                  "la course y ajoute les ordres réels de /bilan pour choisir "
+                  "entre des signaux simultanés ; ⚠ = perdante prouvée à "
+                  "95 %)"]
         # Dans l'ordre de priorité de la course.
         for paire, (n, g) in sorted(self.par_paire.items(),
                                     key=lambda kv: -self.priorite(kv[0])):
