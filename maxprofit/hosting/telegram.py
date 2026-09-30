@@ -80,6 +80,37 @@ ATTENTE_LONGUE_SEC = 50
 BACKOFF_MAX_SEC = 60
 
 
+#: Telegram refuse un message de plus de 4 096 caractères ; marge gardée.
+LONGUEUR_MAX = 4000
+
+
+def _decouper(texte: str, longueur: int) -> list[str]:
+    """Des morceaux de `longueur` au plus, coupés entre deux lignes."""
+    morceaux, courant = [], ""
+    for ligne in texte.split("\n"):
+        while len(ligne) > longueur:
+            if courant:
+                morceaux.append(courant)
+                courant = ""
+            morceaux.append(ligne[:longueur])
+            ligne = ligne[longueur:]
+        essai = f"{courant}\n{ligne}" if courant else ligne
+        if len(essai) > longueur:
+            morceaux.append(courant)
+            courant = ligne
+        else:
+            courant = essai
+    if courant or not morceaux:
+        morceaux.append(courant)
+    return morceaux
+
+
+def _sans_balises(texte: str) -> str:
+    import html
+    import re
+    return html.unescape(re.sub(r"</?(b|i|u|s|code|pre)>", "", texte))
+
+
 class ClientTelegram:
     """Le strict nécessaire de l'API Bot : envoyer, recevoir, effacer."""
 
@@ -101,13 +132,33 @@ class ClientTelegram:
 
     async def envoyer(self, chat_id: str, texte: str,
                       clavier: list[list[str]] | None = None) -> None:
-        params = {"chat_id": chat_id, "text": texte, "parse_mode": "HTML"}
-        if clavier:
-            params["reply_markup"] = {
-                "keyboard": [[{"text": b} for b in ligne] for ligne in clavier],
-                "resize_keyboard": True,
-            }
-        await self._appeler("sendMessage", **params)
+        """Envoie `texte`, en HTML, découpé si besoin.
+
+        ⚠ UN MESSAGE REFUSÉ NE S'AFFICHE PAS, ET PERSONNE NE LE VOIT. `/lecons`
+        ne répondait plus rien : son tableau écrivait « (< -1.2) », Telegram
+        prenait le « < » pour une balise et rejetait tout le message. Deux
+        filets : au-delà de `LONGUEUR_MAX` le texte est découpé ligne à
+        ligne ; un HTML refusé est renvoyé en texte brut, balises retirées.
+        """
+        for morceau in _decouper(texte, LONGUEUR_MAX):
+            params = {"chat_id": chat_id, "text": morceau,
+                      "parse_mode": "HTML"}
+            if clavier:
+                params["reply_markup"] = {
+                    "keyboard": [[{"text": b} for b in ligne]
+                                 for ligne in clavier],
+                    "resize_keyboard": True,
+                }
+            try:
+                await self._appeler("sendMessage", **params)
+            except RuntimeError as erreur:
+                if "parse" not in str(erreur).lower():
+                    raise
+                log.warning("HTML refusé par Telegram (%s) : renvoi en texte "
+                            "brut.", erreur)
+                params.pop("parse_mode")
+                params["text"] = _sans_balises(morceau)
+                await self._appeler("sendMessage", **params)
 
     async def effacer(self, chat_id: str, message_id: int) -> None:
         """Efface un message. Utilisé sur ceux qui portent un SSID.
