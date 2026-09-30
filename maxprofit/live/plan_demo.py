@@ -527,6 +527,24 @@ def seuil_contre_heure() -> float | None:
     return seuil if seuil > 0 else None
 
 
+#: Pas de la martingale. DEUX depuis le 2026-09-30, choix de l'utilisateur
+#: sur la simulation de 30 jours (ZoneH1 comme en direct) : 3 pas +124 $ pour
+#: un creux de 31 $ et des sessions perdues à −12 $ ; 2 pas +93 $ pour un
+#: creux de 18 $, et plus aucune série de trois pertes ; sans martingale +82 $
+#: pour 10 $ de creux. Il voulait « évidemment moins de séries de 3 pertes ».
+PAS_MAX_PAR_DEFAUT = 2
+
+
+def pas_max_de_la_martingale() -> int:
+    """`PAS_MAX` : 1 (sans martingale), 2 (défaut) ou 3."""
+    import os
+    try:
+        pas = int(os.environ.get("PAS_MAX", PAS_MAX_PAR_DEFAUT))
+    except ValueError:
+        return PAS_MAX_PAR_DEFAUT
+    return pas if 1 <= pas <= 3 else PAS_MAX_PAR_DEFAUT
+
+
 def mode_apprentissage() -> str:
     """`APPRENTISSAGE` : actif (défaut), observation ou inactif."""
     import os
@@ -585,6 +603,7 @@ class CoursePlanDemo:
         #: que compter ce qu'elles auraient écarté ; « inactif » : rien.
         self.mode_apprentissage = mode_apprentissage()
         self.seuil_contre_heure = seuil_contre_heure()
+        self.pas_max = pas_max_de_la_martingale()
         import os
         self.ecarter_les_perdantes = (
             os.environ.get("PAIRES_PERDANTES", "1").strip() != "0")
@@ -1125,7 +1144,7 @@ class CoursePlanDemo:
         un capital qu'on n'a plus.
         """
         gain = self.etat.plan.gain_par_session_pct / 100 * self.etat.solde
-        return Echelle(payout_pct=92, gain_vise=gain)
+        return Echelle(payout_pct=92, gain_vise=gain, pas_max=self.pas_max)
 
     def _faire_l_autopsie(self, session) -> None:
         """Ce que la session perdue dit, et ce qu'elle ne dit pas.
@@ -1357,7 +1376,7 @@ class CoursePlanDemo:
             f"{'✅' if gagne else '❌'} <b>{signal.pair}</b> "
             f"{sens.upper()} {mise:.2f} $\n"
             f"{datetime.now(timezone.utc):%H:%M:%S} UTC · "
-            f"{'pas ' + str(pas) + '/3 (MARTINGALE)' if pas > 1 else 'pas 1 (entrée)'}\n"
+            f"{'pas ' + str(pas) + '/' + str(session.echelle.pas_max) + ' (MARTINGALE)' if pas > 1 else 'pas 1 (entrée)'}\n"
             f"résultat <b>{'WIN' if gagne else 'LOSS'}</b> "
             f"{execution.profit or 0:+.2f} $ · payout "
             f"{execution.payout_broker_pct or 0:.0f} %")
@@ -1725,7 +1744,7 @@ class CoursePlanDemo:
                         "elle avait joués : /reprendre 2")
             ouverture = self.etat.journee.solde_ouverture
             echelle = Echelle(
-                payout_pct=92,
+                payout_pct=92, pas_max=self.pas_max,
                 gain_vise=self.etat.plan.gain_par_session_pct / 100 * ouverture)
             n = pas_joues
         if not 1 <= n < echelle.pas_max:
@@ -1921,6 +1940,24 @@ class CoursePlanDemo:
             f"{self.etat.plan.sessions_par_jour} sessions gagnées y mènent")
         return True
 
+    def clore_une_session_trop_longue(self) -> bool:
+        """Une session restaurée qui a déjà joué tous ses pas est PERDUE.
+
+        Le passage de 3 à 2 pas (2026-09-30) peut trouver une session à son
+        deuxième pas perdu : la finir jouerait un pas 3 à ~7 $, exactement ce
+        que l'utilisateur vient de choisir de ne plus faire.
+        """
+        session = self.etat.session
+        if session is None or session.etat.terminee \
+                or session.pas_joues < self.pas_max:
+            return False
+        log.warning("Session restaurée à %d pas perdus, au-delà des %d du "
+                    "réglage : close comme perdue.", session.pas_joues,
+                    self.pas_max)
+        session.etat = EtatSession.PERDUE
+        self._cloturer_session()
+        return True
+
     def realigner_le_jour(self) -> bool:
         """Au démarrage : ramène le plan au solde RÉEL s'il l'a dépassé.
 
@@ -2032,8 +2069,9 @@ class CoursePlanDemo:
             paire, sens, mise, expire = e.trade_en_cours
             reste = max(0, expire - int(time.time()))
             pas = (e.session.pas_joues + 1) if e.session else 1
+            total = e.session.echelle.pas_max if e.session else self.pas_max
             return (f"ORDRE EN COURS — {paire} {sens.upper()} {mise:.2f} $ "
-                    f"(pas {pas}/3), dénouement dans {reste} s | "
+                    f"(pas {pas}/{total}), dénouement dans {reste} s | "
                     f"jour {e.jour}/{e.plan.jours} solde {e.solde:.2f} $ "
                     f"sessions {_sessions_du_jour(j, e.plan.sessions_par_jour)}")
         if e.bougies_evaluees == 0:
@@ -2314,7 +2352,11 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même
         # échelle, mêmes mises déjà engagées, même profondeur atteinte.
-        session = Session(echelle=Echelle(payout_pct=92, gain_vise=gain))
+        # Au pas maximal du moment, ou au-delà pour une session commencée
+        # sous un réglage plus long : `_assembler` la clôt alors.
+        session = Session(echelle=Echelle(
+            payout_pct=92, gain_vise=gain,
+            pas_max=max(pas_max_de_la_martingale(), pas)))
         session.pas_joues = pas
         session.engagees = [float(x) for x in engagees]
         etat.session = session
@@ -2840,6 +2882,8 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
     chrono("lecture du solde")
     course.rafraichir_le_solde()
     if course.realigner_le_jour():
+        sauver()
+    if course.clore_une_session_trop_longue():
         sauver()
 
     tour_nu = course.tour
