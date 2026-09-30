@@ -2459,13 +2459,15 @@ def test_le_bilan_dit_si_la_baisse_depasse_le_HASARD():
                        for i in range(10)]                    # 50 %
     texte = texte_du_bilan(avant + recents_faibles, maintenant)
     assert "compatible avec le hasard" in texte, texte
-    assert "USDCAD : 5/10 (50%) ⚠" in texte
+    assert "USDCAD : 5/10 (50%)\n" in texte + "\n", "5/10 ne prouve rien"
+    assert ") ⚠" not in texte
     assert "pas 1" in texte
 
     recents_mauvais = [_ordre_du_journal("USDCAD_otc",
                                          "win" if i % 5 == 0 else "loose",
                                          maintenant - 3600 + i)
                        for i in range(30)]                    # 20 %
-    assert "baisse DÉPASSE" in texte_du_bilan(avant + recents_mauvais,
-                                               maintenant)
+    mauvais = texte_du_bilan(avant + recents_mauvais, maintenant)
+    assert "baisse DÉPASSE" in mauvais
+    assert "USDCAD : 6/30 (20%) ⚠" in mauvais, "6/30 le prouve"
     assert "Aucun ordre" in texte_du_bilan([], maintenant)
