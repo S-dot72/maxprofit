@@ -847,6 +847,7 @@ class CoursePlanDemo:
         examinees = 0
         sans_historique = 0
         hors_calibration = 0
+        retenus: list[tuple] = []
         for paire in gratuites + payantes:
             payante = paire not in self.paires
             if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
@@ -914,15 +915,38 @@ class CoursePlanDemo:
                 continue
             if self._ecarte_par_une_lecon(paire, signal, ctx):
                 continue
-            self._contexte_du_signal = ctx
             self.etat.signaux_trouves += 1
-            self.etat.paires_sans_historique = sans_historique
-            self.etat.paires_hors_calibration = hors_calibration
-            self._fin_bougie_du_signal = derniere.ts_sec + 60
-            return signal
+            retenus.append((signal, ctx, derniere.ts_sec + 60))
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
-        return None
+        if not retenus:
+            return None
+        # ⚠ LA MEILLEURE PAIRE D'ABORD, pas la première trouvée.
+        #
+        # Demandé par l'utilisateur : « les paires en priorité par ordre
+        # gagné ». Quand plusieurs paires signalent au même passage, on ne
+        # peut en jouer qu'une — un seul ordre à la fois. La première
+        # trouvée l'emportait, selon la rotation ; c'est désormais celle
+        # qui gagne le plus souvent sur le rejeu. Le tri est STABLE : à
+        # priorité égale (pas encore de rejeu), la rotation décide comme
+        # avant.
+        retenus.sort(key=lambda r: -self.priorite(r[0].pair))
+        signal, ctx, fin = retenus[0]
+        if len(retenus) > 1:
+            log.info("%d signaux au même passage : %s retenue (priorité "
+                     "%.0f %%), %s laissée(s).", len(retenus), signal.pair,
+                     100 * self.priorite(signal.pair),
+                     ", ".join(r[0].pair for r in retenus[1:]))
+        self._contexte_du_signal = ctx
+        self._fin_bougie_du_signal = fin
+        return signal
+
+    def priorite(self, paire: str) -> float:
+        """Voir `Apprentissage.priorite`. Sans rejeu, toutes se valent."""
+        a = self.etat.apprentissage
+        if a is None or not a.par_paire:
+            return 0.5
+        return a.priorite(paire)
 
     def _contre_l_heure_en_cours(self, paire: str, signal, ctx) -> bool:
         """Vrai si l'heure en cours va trop fortement contre le trade.
@@ -2288,8 +2312,11 @@ def texte_du_bilan(executions, maintenant_sec: int,
     for e in ordres:
         par_paire.setdefault(e.pair, []).append(e)
     lignes.append("\n<b>Par paire</b> (⚠ = perdante PROUVÉE à 95 %)")
-    for paire, liste in sorted(par_paire.items(),
-                               key=lambda kv: -len(kv[1])):
+    # La meilleure d'abord (taux, puis nombre d'ordres).
+    for paire, liste in sorted(
+            par_paire.items(),
+            key=lambda kv: (-sum(e.resultat == "win" for e in kv[1])
+                            / len(kv[1]), -len(kv[1]))):
         g = sum(e.resultat == "win" for e in liste)
         # ⚠ Seulement une paire PROUVÉE perdante : même le haut de son
         # intervalle à 95 % sous le seuil. Le signal était « sous le seuil
