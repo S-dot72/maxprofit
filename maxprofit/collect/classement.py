@@ -11,19 +11,17 @@ Le reste a déjà coûté : une crypto n'a pas d'échéance de 900 s (BTCUSD_otc
 une devise arrimée ne bouge pas (AEDCNY_otc : zéro signal sur 416 bougies),
 et une action ou une matière première n'est pas ce que la stratégie a vu.
 
-Les paires ÉPINGLÉES en tête restent en tête : ce sont elles qui portent les
-séries continues de l'univers pré-inscrit.
+Le classement PROPOSE (`/classement`), il n'impose rien : la liste collectée
+est `PAIRES_FIXES`, collée une fois et stable. Appliqué à chaque démarrage, il
+faisait entrer et sortir des paires à chaque déploiement, et leurs séries se
+fragmentaient.
 """
 
 from __future__ import annotations
 
-import logging
-import time
 from typing import Sequence
 
 from maxprofit.core.payout import FLUX_POUR_LE_PLAFOND
-
-log = logging.getLogger(__name__)
 
 DEVISES_FLOTTANTES = frozenset(
     ("EUR", "USD", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"))
@@ -62,23 +60,3 @@ def completer(tete: Sequence[str], classement: Sequence[tuple[str, float, int]],
         if pair not in sortie and part > 0:
             sortie.append(pair)
     return tuple(sortie[:max(total, len(tete))])
-
-
-def les_meilleures(conn, tete: Sequence[str], total: int,
-                   maintenant: float | None = None) -> tuple[str, ...] | None:
-    """Les `total` paires, ou `None` si le classement est impossible."""
-    depuis = int((maintenant or time.time()) - JOURS_DE_CLASSEMENT * 86400)
-    try:
-        classement = classer(conn, depuis)
-    except Exception as erreur:                          # noqa: BLE001
-        log.warning("Classement des paires impossible : %s", erreur)
-        return None
-    if not classement:
-        log.warning("Classement des paires : aucun relevé exploitable.")
-        return None
-    choisies = completer(tete, classement, total)
-    parts = {p: part for p, part, _ in classement}
-    log.info("Les %d paires retenues (part du temps au payout maximum sur "
-             "%d jours) : %s", len(choisies), JOURS_DE_CLASSEMENT,
-             ", ".join(f"{p} {100 * parts.get(p, 0):.0f} %" for p in choisies))
-    return choisies

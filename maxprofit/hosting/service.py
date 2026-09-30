@@ -197,51 +197,62 @@ def _alerte_synchrone(bot):
     return alerter
 
 
-def nombre_de_paires() -> int:
-    """`PAIRES_TOTAL` : combien de paires collecter et trader (20 par défaut,
-    0 = la liste fixe de `PAIRES_FIXES` telle quelle)."""
-    try:
-        return max(0, int(os.environ.get("PAIRES_TOTAL", "20")))
-    except ValueError:
-        return 20
+def proposer_les_paires(cfg, argument: str = "", ouvrir=None) -> str:
+    """`/classement [N]` : les N meilleures paires, PROPOSÉES, jamais imposées.
 
-
-def choisir_les_paires(cfg, ouvrir=None):
-    """Les `PAIRES_TOTAL` meilleures paires, les quatre pré-inscrites en tête.
-
-    Classées au démarrage sur la part du temps passée au payout maximum
-    (voir `collect.classement`). Si le classement est impossible — base
-    neuve, requête en échec —, la configuration reste celle des variables
-    d'environnement : on ne collecte jamais MOINS faute d'avoir pu classer.
+    ⚠ LE CLASSEMENT NE DÉCIDE RIEN TOUT SEUL. Il était appliqué à chaque
+    démarrage : chaque déploiement pouvait faire entrer ou sortir une paire
+    au gré des payouts de la semaine, et ses séries de bougies se
+    fragmentaient — ce qui rendait les analyses difficiles. La liste qui
+    compte est `PAIRES_FIXES`, que l'opérateur colle UNE fois ; ce texte lui
+    donne la chaîne prête à coller et dit ce qu'elle ajoute et retire.
     """
-    total = nombre_de_paires()
-    if not total:
-        return cfg
-    from dataclasses import replace
-
-    from maxprofit.collect.classement import les_meilleures
+    from maxprofit.collect.classement import (
+        JOURS_DE_CLASSEMENT, classer, completer)
     from maxprofit.store.db import open_read_only
+    import time as _time
+
+    try:
+        total = int(argument.strip() or 20)
+    except ValueError:
+        return "Usage : /classement 20"
     try:
         conn = ouvrir() if ouvrir else open_read_only(cfg.db)
     except Exception as erreur:                  # noqa: BLE001
-        log.warning("Paires non classées (base illisible : %s) : la liste "
-                    "fixe est gardée.", erreur)
-        return cfg
+        return f"Base illisible : {erreur}"
     try:
-        choisies = les_meilleures(conn, PAIRES_PAR_DEFAUT, total)
+        classement = classer(
+            conn, int(_time.time() - JOURS_DE_CLASSEMENT * 86400))
     finally:
         try:
             conn.close()
         except Exception:                        # noqa: BLE001
             pass
-    if not choisies:
-        return cfg
-    return replace(cfg, paires_fixes=choisies,
-                   paires_socle=max(cfg.paires_socle, len(PAIRES_PAR_DEFAUT)))
+    if not classement:
+        return "Aucun relevé de payout exploitable."
+    parts = {p: part for p, part, _ in classement}
+    actuelles = tuple(cfg.paires_fixes or PAIRES_PAR_DEFAUT)
+    proposees = completer(PAIRES_PAR_DEFAUT, classement, total)
+    lignes = [f"🏆 <b>Les {len(proposees)} meilleures paires</b> — part du "
+              f"temps au payout maximum sur {JOURS_DE_CLASSEMENT} jours "
+              f"(les 4 pré-inscrites restent en tête)"]
+    for i, p in enumerate(proposees, start=1):
+        marque = "" if p in actuelles else "  🆕"
+        lignes.append(f"{i:>2}. {p.replace('_otc', '')} "
+                      f"{100 * parts.get(p, 0):.0f} %{marque}")
+    retirees = [p for p in actuelles if p not in proposees]
+    if retirees:
+        lignes.append("\nSortiraient de la liste actuelle : " + ", ".join(
+            f"{p.replace('_otc', '')} ({100 * parts.get(p, 0):.0f} %)"
+            for p in retirees))
+    lignes.append("\nÀ coller UNE fois dans PAIRES_FIXES, puis ne plus y "
+                  "toucher — une liste stable garde des séries continues :")
+    lignes.append("<code>" + ",".join(proposees) + "</code>")
+    return "\n".join(lignes)
 
 
 async def _servir(args) -> int:
-    cfg = choisir_les_paires(build_config(args))
+    cfg = build_config(args)
     _verifier_emplacement_base(cfg.db)
     # En premier, avant tout le reste : c'est la ligne qui dit si le journal
     # qu'on est en train de lire correspond au code qu'on vient de corriger.
@@ -273,6 +284,8 @@ async def _servir(args) -> int:
             bot._rapatrier = lambda argument: asyncio.to_thread(
                 rapatrier, getattr(_course.get("sup"), "_course", None),
                 argument)
+            bot._classement = lambda argument: asyncio.to_thread(
+                proposer_les_paires, cfg, argument)
             bot._bilan = lambda: asyncio.to_thread(
                 bilan, getattr(_course.get("sup"), "_course", None))
             bot._echeances = lambda: asyncio.to_thread(
