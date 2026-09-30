@@ -2511,6 +2511,15 @@ def echeances(course, ouvrir=None) -> str:
             pass
 
 
+def simulation(course) -> str:
+    """`/simulation` : le plan simulé, par stratégie et par martingale."""
+    from maxprofit.live.simulation import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte(a.simulations if a else {}, a.jours if a else None)
+
+
 def lecons(course) -> str:
     """`/lecons` : ce que l'apprentissage a tiré de l'historique."""
     if course is None:

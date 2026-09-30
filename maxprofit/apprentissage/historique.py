@@ -24,7 +24,8 @@ def exemples_historiques(
         echeance_sec: int,
         garde: Callable[[str, Sequence[Candle]], bool] = lambda p, f: True,
         respirer: Callable[[], None] | None = None,
-        echeances: Sequence[int] = ECHEANCES_COMPAREES) -> list[Exemple]:
+        echeances: Sequence[int] = ECHEANCES_COMPAREES,
+        avec_contexte: bool = True) -> list[Exemple]:
     """Chaque signal que la stratégie aurait émis, avec son contexte.
 
     `respirer`, appelée régulièrement, laisse la main aux autres fils du
@@ -64,7 +65,8 @@ def exemples_historiques(
                     issues[sec] = (prix > bougie.close) == call
             sortie.append(Exemple(
                 ts_sec=bougie.ts_sec + 60, pair=pair,
-                contexte=contexte(fenetre, call, signal.features),
+                contexte=(contexte(fenetre, call, signal.features)
+                          if avec_contexte else {}),
                 gagne=(sortie_prix > bougie.close) == call, issues=issues))
     sortie.sort(key=lambda e: e.ts_sec)
     return sortie
