@@ -298,3 +298,19 @@ def test_aucun_texte_de_l_apprentissage_ne_casse_le_HTML_de_Telegram():
                                        a)):
         sans_balises = re.sub(r"</?(b|i|code)>", "", texte)
         assert "<" not in sans_balises and ">" not in sans_balises, texte
+
+
+def test_lecons_donne_le_taux_de_chaque_PAIRE_sur_le_rejeu():
+    """« Les paires qui font perdre » : les ordres réels n'en comptent
+    qu'une dizaine par paire, le rejeu dix fois plus."""
+    alea = random.Random(2)
+    exemples = [Exemple(T0 + 60 * i, p, {"elan_15m": 0.0},
+                        alea.random() < (0.30 if p == "USDCAD_otc" else 0.62))
+                for i, p in enumerate(["EURUSD_otc", "USDCAD_otc"] * 150)]
+    a = apprendre(exemples)
+    assert a.par_paire["USDCAD_otc"][0] == 150
+    texte = a.resume()
+    ligne = next(l for l in texte.splitlines() if "USDCAD" in l)
+    assert "⚠" in ligne, ligne
+    assert "⚠" not in next(l for l in texte.splitlines() if "EURUSD :" in l)
+    assert Apprentissage.from_dict(a.to_dict()).par_paire == a.par_paire
