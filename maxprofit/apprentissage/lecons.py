@@ -250,6 +250,8 @@ class Apprentissage:
     #: signaux ; « récents » = la période de validation.
     echeances: Mapping[int, tuple[int, int, int, int]] = field(
         default_factory=dict)
+    #: {paire: (signaux, gagnés)} sur les signaux rejoués.
+    par_paire: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
     # --- ce que la course demande ------------------------------------------
 
@@ -307,6 +309,9 @@ class Apprentissage:
                     f"{detectable:.0%} du temps peut être établi. Un contexte "
                     f"à 45 % — perdant, mais moins franchement — passe "
                     f"inaperçu jusqu'à ce que l'historique grossisse.")
+        par_paire = self.texte_par_paire()
+        if par_paire:
+            lignes.append("\n" + par_paire)
         tableau = self.tableau()
         if tableau:
             lignes.append("\n<b>Avec ou contre le mouvement</b> (négatif = "
@@ -339,6 +344,20 @@ class Apprentissage:
                 marque = " ⚠" if haut < SEUIL else ""
                 lignes.append(f"  {_tiers(st.tranche)} : {st.taux:.0%} sur "
                               f"{st.n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
+        return "\n".join(lignes)
+
+    def texte_par_paire(self) -> str:
+        """Le taux de chaque paire sur le rejeu — dix fois plus de signaux
+        que les ordres réels, qui n'en comptent qu'une dizaine par paire."""
+        if not self.par_paire:
+            return ""
+        lignes = ["<b>Par paire</b> (rejeu ; ⚠ = perdante prouvée à 95 %)"]
+        for paire, (n, g) in sorted(self.par_paire.items(),
+                                    key=lambda kv: kv[1][1] / kv[1][0]):
+            bas, haut = wilson(g, n, 1.96)
+            marque = " ⚠" if haut < SEUIL else ""
+            lignes.append(f"  {paire.replace('_otc', '')} : {g / n:.0%} sur "
+                          f"{n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
         return "\n".join(lignes)
 
     def texte_echeances(self) -> str:
@@ -374,6 +393,7 @@ class Apprentissage:
             "apres": self.taux_validation_apres,
             "part": self.part_ecartee, "cree": self.cree_ts, "note": self.note,
             "echeances": {str(k): list(v) for k, v in self.echeances.items()},
+            "par_paire": {k: list(v) for k, v in self.par_paire.items()},
         }
 
     @classmethod
@@ -392,7 +412,9 @@ class Apprentissage:
             part_ecartee=float(d.get("part", 0.0)),
             cree_ts=int(d.get("cree", 0)), note=str(d.get("note", "")),
             echeances={int(k): tuple(int(x) for x in v)
-                       for k, v in (d.get("echeances") or {}).items()})
+                       for k, v in (d.get("echeances") or {}).items()},
+            par_paire={str(k): (int(v[0]), int(v[1]))
+                       for k, v in (d.get("par_paire") or {}).items()})
 
 
 def _statistiques(exemples: Sequence[Exemple]) -> tuple[StatTranche, ...]:
@@ -405,6 +427,15 @@ def _statistiques(exemples: Sequence[Exemple]) -> tuple[StatTranche, ...]:
             if sous:
                 sortie.append(StatTranche(t, len(sous), _taux(sous)))
     return tuple(sortie)
+
+
+def _par_paire(tries: Sequence[Exemple]) -> dict[str, tuple[int, int]]:
+    sortie: dict[str, list[int]] = {}
+    for e in tries:
+        compte = sortie.setdefault(e.pair, [0, 0])
+        compte[0] += 1
+        compte[1] += int(e.gagne)
+    return {p: (n, g) for p, (n, g) in sortie.items()}
 
 
 def _comparer_echeances(tries: Sequence[Exemple]
@@ -425,7 +456,8 @@ def apprendre(exemples: Sequence[Exemple]) -> Apprentissage:
         return Apprentissage(note="Aucun signal rejoué.")
     base = dict(n=len(tries), taux=_taux(tries), debut_sec=tries[0].ts_sec,
                 fin_sec=tries[-1].ts_sec, statistiques=_statistiques(tries),
-                echeances=_comparer_echeances(tries))
+                echeances=_comparer_echeances(tries),
+                par_paire=_par_paire(tries))
     if len(tries) < N_MIN_EXEMPLES:
         return Apprentissage(**base, note=(
             f"Seulement {len(tries)} signaux : il en faut {N_MIN_EXEMPLES} "

@@ -86,8 +86,9 @@ class Apprenti:
         actuel = self.course.etat.apprentissage
         # Un apprentissage d'avant la comparaison des échéances est refait
         # tout de suite : /echeances resterait sinon muet jusqu'à un jour.
+        # Et d'avant le taux par paire : /lecons le montrerait vide.
         if actuel is None or not actuel.n or not actuel.echeances \
-                or not _mesure_tout(actuel):
+                or not actuel.par_paire or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
                    actuel.cree_ts + PERIODE_SEC - time.time())
