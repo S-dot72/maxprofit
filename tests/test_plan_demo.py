@@ -2496,3 +2496,20 @@ def test_un_ordre_reel_est_rejuge_a_d_autres_echeances():
     assert " 5 min : <b>100%</b>" in texte and "15 min : <b>0%</b>" in texte
     assert "d'accord avec le broker sur 1/1" in texte
     assert "premier apprentissage en attente" in texte
+
+
+def test_l_autopsie_relit_les_pas_dans_le_JOURNAL_apres_un_redemarrage(course):
+    """2026-09-30 : des déploiements ont coupé une session de trois pas, et
+    l'autopsie n'a rendu que « contexte non enregistré » alors que le contexte
+    de chaque ordre était au journal."""
+    messages = []
+    c = course(["loose"] * 3)
+    c._alerter = messages.append
+    c._contexte_du_signal = {"elan_15m": -1.4, "heure_utc": 1.0}
+    for i in range(3):
+        c._pas_de_la_session = []          # la mémoire perdue à chaque pas
+        c.tour()
+    texte = next(m for m in messages if "Autopsie" in m)
+    assert "non enregistré" not in texte, texte
+    for pas in (1, 2, 3):
+        assert any(f"Pas {pas} {p} CALL" in texte for p in PAIRES_TEST), texte
