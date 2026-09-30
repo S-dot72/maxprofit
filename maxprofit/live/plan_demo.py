@@ -2204,11 +2204,16 @@ def texte_du_bilan(executions, maintenant_sec: int,
     par_paire: dict[str, list] = {}
     for e in ordres:
         par_paire.setdefault(e.pair, []).append(e)
-    lignes.append("\n<b>Par paire</b>")
+    lignes.append("\n<b>Par paire</b> (⚠ = perdante PROUVÉE à 95 %)")
     for paire, liste in sorted(par_paire.items(),
                                key=lambda kv: -len(kv[1])):
         g = sum(e.resultat == "win" for e in liste)
-        alerte = " ⚠" if len(liste) >= 5 and g / len(liste) < SEUIL else ""
+        # ⚠ Seulement une paire PROUVÉE perdante : même le haut de son
+        # intervalle à 95 % sous le seuil. Le signal était « sous le seuil
+        # sur 5 ordres » : EURUSD à 4/9 était marquée, alors que 4/9 est
+        # compatible avec 73 % de réussite — de quoi retirer à tort la paire
+        # la mieux validée de la stratégie.
+        alerte = " ⚠" if wilson(g, len(liste), 1.96)[1] < SEUIL else ""
         lignes.append(f"{paire.replace('_otc', '')} : {g}/{len(liste)} "
                       f"({g / len(liste):.0%}){alerte}")
     return "\n".join(lignes)
