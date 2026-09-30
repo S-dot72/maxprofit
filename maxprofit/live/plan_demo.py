@@ -994,19 +994,47 @@ class CoursePlanDemo:
         return Echelle(payout_pct=92, gain_vise=gain)
 
     def _faire_l_autopsie(self, session) -> None:
-        """Ce que la session perdue dit, et ce qu'elle ne dit pas."""
-        perdus = [(p, s, c) for p, s, c, r in self._pas_de_la_session
-                  if r != "win"]
-        # Après un redémarrage en pleine session, les premiers pas sont
-        # perdus pour la mémoire : on les signale sans contexte plutôt que
-        # de les taire.
-        manquants = max(0, session.pas_joues - len(perdus))
-        perdus = [("?", "?", {})] * manquants + perdus
+        """Ce que la session perdue dit, et ce qu'elle ne dit pas.
+
+        ⚠ LES PAS SONT RELUS DANS LE JOURNAL, pas dans la mémoire du
+        processus. La mémoire ne survivait pas à un redémarrage : le
+        2026-09-30, quatre déploiements en une heure ont coupé une session
+        de trois pas, et l'autopsie n'a rendu que « contexte non enregistré »
+        — alors que le contexte de chaque ordre était au journal, écrit avec
+        lui au moment de la décision.
+        """
+        perdus = self._pas_perdus_du_journal(session.pas_joues)
+        if perdus is None:
+            perdus = [(p, s, c) for p, s, c, r in self._pas_de_la_session
+                      if r != "win"]
+            manquants = max(0, session.pas_joues - len(perdus))
+            perdus = [("?", "?", {})] * manquants + perdus
         self._pas_de_la_session = []
         try:
             self._prevenir(autopsie(perdus, self.etat.apprentissage))
         except Exception:                        # noqa: BLE001
             log.exception("Autopsie impossible")
+
+    def _pas_perdus_du_journal(self, n: int):
+        """(paire, sens, contexte) des `n` derniers ordres dénoués, ou None.
+
+        Une session est séquentielle et un seul ordre vit à la fois : ses
+        pas sont donc les `n` derniers ordres acceptés et dénoués.
+        """
+        if n <= 0:
+            return None
+        try:
+            ordres = [e for e in self.journal.toutes()
+                      if e.accepte and e.resultat is not None][-n:]
+        except Exception:                        # noqa: BLE001
+            log.warning("Journal illisible pour l'autopsie", exc_info=True)
+            return None
+        if len(ordres) < n:
+            return None
+        return [(e.pair, e.sens,
+                 {k: v for k, v in ((e.brut or {}).get("contexte") or {}).items()
+                  if k != "pas"})
+                for e in ordres if e.resultat != "win"]
 
     def _recaler_sur_le_plan(self, motif: str) -> bool:
         """Replace le plan au (jour, sessions) que le solde RÉEL représente.
