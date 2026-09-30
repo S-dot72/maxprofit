@@ -356,7 +356,8 @@ class Etat:
     #: et la relecture ne puissent pas diverger.
     COMPTEURS = ("bougies_evaluees", "bougies_perimees", "signaux_bruts",
                  "signaux_trouves", "pas_sautes_independance",
-                 "sessions_interrompues", "signaux_ecartes_lecons")
+                 "sessions_interrompues", "signaux_ecartes_lecons",
+                 "signaux_contre_heure")
 
     #: Quand la course a démarré. Affiché, parce que « rien ne bouge » et
     #: « ça tourne depuis trois minutes » se ressemblent trait pour trait à
@@ -411,6 +412,8 @@ class Etat:
     apprentissage: Apprentissage | None = None
     #: Signaux écartés par une leçon active.
     signaux_ecartes_lecons: int = 0
+    #: Signaux écartés parce que l'heure en cours allait fortement contre.
+    signaux_contre_heure: int = 0
 
     def cible_du_jour(self, jour: int | None = None) -> float | None:
         """Le solde que le planning prévoit à la fin du jour `jour`.
@@ -488,6 +491,34 @@ def dans_la_plage_de_calibration(tolerance_pct: float, bougies) -> bool:
         <= RAPPORT_TOLERANCE_MAX
 
 
+#: Au-delà de ce mouvement CONTRE le trade depuis le début de l'heure en
+#: cours (en amplitudes M1 moyennes), on n'entre pas.
+#:
+#: ⚠ UNE RÈGLE FERME, DÉCIDÉE PAR L'UTILISATEUR LE 2026-09-30, SUR CHIFFRES.
+#: La tendance H1 de la stratégie ne lit que des heures CLOSES : une chute
+#: ou une montée dans l'heure en cours lui est invisible (AUD/CAD à 21:40,
+#: USD/CAD à 22:44). Sur 488 signaux rejoués (11/09 → 30/09), le tiers le
+#: plus contre l'heure en cours (sous −3,27) gagnait 51 % — le seuil de
+#: rentabilité —, les deux autres 63 % et 66 % (écart |z| ≈ 2,9). L'élan
+#: 30 min disait la même chose (51 / 62 / 67 %).
+#:
+#: Ce que la règle coûte et rapporte, à ces chiffres : un tiers de trades en
+#: moins, un gain total à peu près égal, et environ 30 % de sessions perdues
+#: en trois pas en moins — le choix explicite de l'utilisateur. Le rejeu
+#: continue de juger ces signaux : /lecons dit si l'écart tient.
+SEUIL_CONTRE_HEURE = 3.3
+
+
+def seuil_contre_heure() -> float | None:
+    """`CONTRE_HEURE_MAX` (amplitudes) ; 0 ou négatif désactive la règle."""
+    import os
+    try:
+        seuil = float(os.environ.get("CONTRE_HEURE_MAX", SEUIL_CONTRE_HEURE))
+    except ValueError:
+        return SEUIL_CONTRE_HEURE
+    return seuil if seuil > 0 else None
+
+
 def mode_apprentissage() -> str:
     """`APPRENTISSAGE` : actif (défaut), observation ou inactif."""
     import os
@@ -543,6 +574,7 @@ class CoursePlanDemo:
         #: « actif » : les leçons écartent ; « observation » : elles ne font
         #: que compter ce qu'elles auraient écarté ; « inactif » : rien.
         self.mode_apprentissage = mode_apprentissage()
+        self.seuil_contre_heure = seuil_contre_heure()
         #: Contexte du signal en main, et (paire, sens, contexte, issue) de
         #: chaque pas de la session : c'est ce que l'autopsie examine.
         self._contexte_du_signal: dict = {}
@@ -878,6 +910,8 @@ class CoursePlanDemo:
                 continue
             ctx = contexte_du_signal(
                 bougies, signal.direction is Direction.CALL, signal.features)
+            if self._contre_l_heure_en_cours(paire, signal, ctx):
+                continue
             if self._ecarte_par_une_lecon(paire, signal, ctx):
                 continue
             self._contexte_du_signal = ctx
@@ -889,6 +923,21 @@ class CoursePlanDemo:
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
         return None
+
+    def _contre_l_heure_en_cours(self, paire: str, signal, ctx) -> bool:
+        """Vrai si l'heure en cours va trop fortement contre le trade.
+
+        Voir `SEUIL_CONTRE_HEURE` : ce que la tendance H1 ne voit pas.
+        """
+        seuil = self.seuil_contre_heure
+        mouvement = ctx.get("mouvement_heure")
+        if seuil is None or mouvement is None or mouvement >= -seuil:
+            return False
+        self.etat.signaux_contre_heure += 1
+        log.info("%s %s écarté : l'heure en cours va contre le trade de %.1f "
+                 "amplitudes (au-delà de %.1f).", paire,
+                 signal.direction.name, -mouvement, seuil)
+        return True
 
     def _ecarte_par_une_lecon(self, paire: str, signal, ctx) -> bool:
         """Vrai si une leçon ACTIVE écarte ce signal.
@@ -1310,6 +1359,12 @@ class CoursePlanDemo:
             f"{self._ligne_cible()}")
 
     def _ligne_apprentissage(self) -> str:
+        contre = ("" if self.seuil_contre_heure is None else
+                  f"  contre l'heure en cours : "
+                  f"{self.etat.signaux_contre_heure} écarté(s)")
+        return self._ligne_lecons() + contre
+
+    def _ligne_lecons(self) -> str:
         a = self.etat.apprentissage
         if self.mode_apprentissage == "inactif":
             return "  apprentissage inactif"

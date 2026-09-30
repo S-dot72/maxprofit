@@ -2513,3 +2513,30 @@ def test_l_autopsie_relit_les_pas_dans_le_JOURNAL_apres_un_redemarrage(course):
     assert "non enregistré" not in texte, texte
     for pas in (1, 2, 3):
         assert any(f"Pas {pas} {p} CALL" in texte for p in PAIRES_TEST), texte
+
+
+def test_on_n_entre_pas_CONTRE_une_heure_en_cours_qui_va_fortement_contre(
+        course, monkeypatch):
+    """AUD/CAD 21:40, USD/CAD 22:44 : la tendance H1 ne lit que des heures
+    closes. Sur 488 signaux rejoués, le tiers le plus contre l'heure en
+    cours gagnait 51 %, les deux autres 63 et 66 %. Décidé : on n'y entre
+    plus."""
+    c = course([])
+    signal = Signal(pair="EURUSD_otc", direction=Direction.PUT,
+                    decided_at_ms=T0_MS, expiry_sec=900, reason="t")
+    assert c._contre_l_heure_en_cours("EURUSD_otc", signal,
+                                      {"mouvement_heure": -4.0}) is True
+    assert c._contre_l_heure_en_cours("EURUSD_otc", signal,
+                                      {"mouvement_heure": -3.0}) is False
+    assert c._contre_l_heure_en_cours("EURUSD_otc", signal,
+                                      {"mouvement_heure": 5.0}) is False
+    assert c._contre_l_heure_en_cours("EURUSD_otc", signal, {}) is False
+    assert c.etat.signaux_contre_heure == 1
+    c.etat.bougies_evaluees = 10
+    assert "contre l'heure en cours : 1 écarté(s)" in c.resume()
+
+    from maxprofit.live.plan_demo import seuil_contre_heure
+    monkeypatch.setenv("CONTRE_HEURE_MAX", "0")
+    assert seuil_contre_heure() is None, "0 désactive la règle"
+    monkeypatch.setenv("CONTRE_HEURE_MAX", "2.5")
+    assert seuil_contre_heure() == 2.5
