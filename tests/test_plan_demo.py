@@ -2559,7 +2559,7 @@ def test_entre_des_signaux_simultanes_la_MEILLEURE_paire_est_choisie(tmp_path):
         pair=vue.pair, direction=Direction.CALL, decided_at_ms=T0_MS,
         expiry_sec=900, reason="t")
     c.etat.apprentissage = Apprentissage(
-        n=203, taux=0.6, par_paire={"A_otc": (100, 50), "B_otc": (100, 70),
+        n=203, taux=0.6, par_paire={"A_otc": (100, 56), "B_otc": (100, 70),
                                     "C_otc": (3, 3)})
     assert c.priorite("B_otc") > c.priorite("C_otc") > c.priorite("A_otc")
     signal = c.chercher_un_signal()
@@ -2588,3 +2588,37 @@ def test_les_ordres_REELS_de_bilan_comptent_dans_la_priorite(course):
     assert c.priorite("AUDUSD_otc") > avant, "les gains réels la font monter"
     assert c.priorite("EURUSD_otc") > c.priorite("AUDUSD_otc"), (
         "mais six ordres ne pèsent pas autant que cent")
+
+
+def test_une_paire_dont_le_taux_estime_est_PERDANT_n_est_plus_jouee(tmp_path,
+                                                                  monkeypatch):
+    """« On perd sur les paires qu'on a l'habitude de perdre » : EURGBP_otc,
+    2 gains sur 7, jouée quand elle signalait seule."""
+    from maxprofit.apprentissage.lecons import Apprentissage
+
+    deux = ("A_otc", "B_otc")
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    frais = int(time.time()) // 60 * 60 - 60
+    c = CoursePlanDemo(LecteurAvecBougies(fin_ts=frais), CourtierFactice([]),
+                       journal, _plan(sessions=18), deux)
+    c.univers = lambda: list(deux)
+    c.strategie.on_bar = lambda vue: Signal(
+        pair=vue.pair, direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="t")
+    c.etat.apprentissage = Apprentissage(
+        n=200, taux=0.6, par_paire={"A_otc": (100, 40), "B_otc": (100, 62)})
+    c.etat.derniere_bougie.clear()
+    assert c.chercher_un_signal().pair == "B_otc"
+    assert c.etat.paires_perdantes == ["A_otc"]
+    c.etat.bougies_evaluees = 10
+    assert "paires écartées (taux sous le seuil) : A" in c.resume()
+
+    # Deux pertes réelles ne suffisent pas à écarter une paire sans passé.
+    c.etat.apprentissage = Apprentissage(n=200, taux=0.6, par_paire={})
+    c._reels, c._reels_ts = {"A_otc": (2, 0)}, float("inf")
+    assert c._paire_perdante("A_otc") is False
+
+    c.ecarter_les_perdantes = False
+    c._reels = {"A_otc": (50, 10)}
+    assert c._paire_perdante("A_otc") is False, "PAIRES_PERDANTES=0"
+    journal.close()
