@@ -154,6 +154,14 @@ class LecteurFactice:
 PAIRES_TEST = ("EURUSD_otc", "AUDCAD_otc")
 
 
+@pytest.fixture(autouse=True)
+def _martingale_en_trois_pas(monkeypatch):
+    """Ce fichier décrit la mécanique de l'échelle en TROIS pas — le réglage
+    de la course jusqu'au 2026-09-30, toujours disponible (PAS_MAX=3). Le
+    défaut à deux pas a ses propres tests, qui retirent ce réglage."""
+    monkeypatch.setenv("PAS_MAX", "3")
+
+
 @pytest.fixture
 def course(tmp_path, monkeypatch):
     # Le délai est neutralisé : ces tests mesurent l'ENCHAÎNEMENT, pas
@@ -2622,3 +2630,53 @@ def test_une_paire_dont_le_taux_estime_est_PERDANT_n_est_plus_jouee(tmp_path,
     c._reels = {"A_otc": (50, 10)}
     assert c._paire_perdante("A_otc") is False, "PAIRES_PERDANTES=0"
     journal.close()
+
+
+
+# --------------------------------------------------------------------------- #
+# La martingale en DEUX pas (défaut depuis le 2026-09-30)
+# --------------------------------------------------------------------------- #
+
+def test_par_defaut_la_session_s_arrete_au_DEUXIEME_pas_perdu(course,
+                                                             monkeypatch):
+    """Choix de l'utilisateur sur la simulation de 30 jours : 2 pas rapporte
+    75 % du gain de 3 pas pour un creux divisé par deux, et plus aucune série
+    de trois pertes."""
+    monkeypatch.delenv("PAS_MAX")
+    c = course(["loose", "loose", "win"])
+    assert c.pas_max == 2
+    c.tour()
+    c.tour()
+    assert c.etat.session is None, "deux pas perdus closent la session"
+    assert len(c.journal.toutes()) == 2
+    assert len(c.courtier.mises_recues) == 2
+
+
+def test_une_session_de_TROIS_pas_restauree_au_pas_2_est_close(course,
+                                                               monkeypatch):
+    """Passer à 2 pas ne doit pas faire jouer le pas 3 à ~7 $ d'une session
+    commencée sous l'ancien réglage."""
+    from maxprofit.plan import Echelle, EtatSession, Session
+
+    monkeypatch.setenv("PAS_MAX", "2")
+    c = course([])
+    c.pas_max = 2
+    session = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46,
+                                      pas_max=3))
+    session.enregistrer(False)
+    session.enregistrer(False)
+    c.etat.session = session
+    c.etat.solde_ouverture_session = c.etat.solde
+    assert c.clore_une_session_trop_longue() is True
+    assert c.etat.session is None
+    assert session.etat is EtatSession.PERDUE
+
+
+def test_PAS_MAX_reglable(monkeypatch):
+    from maxprofit.live.plan_demo import pas_max_de_la_martingale
+
+    monkeypatch.delenv("PAS_MAX")
+    assert pas_max_de_la_martingale() == 2
+    for valeur, attendu in (("1", 1), ("3", 3), ("9", 2), ("x", 2)):
+        monkeypatch.setenv("PAS_MAX", valeur)
+        assert pas_max_de_la_martingale() == attendu
