@@ -2237,6 +2237,105 @@ def bilan(course, ouvrir=None) -> str:
             pass
 
 
+def issue_reconstituee(execution, bougies, echeance_sec: int) -> bool | None:
+    """L'ordre réel, rejugé à une autre échéance, depuis les bougies M1.
+
+    Entrée au prix du broker à l'instant du clic ; sortie à la clôture de la
+    dernière bougie finie avant l'échéance — jusqu'à une minute trop tôt, et
+    c'est pourquoi la reconstitution est mesurée contre le résultat RÉEL à
+    l'échéance jouée avant d'être crue. `None` sans bougie, ou à égalité.
+    """
+    entree = execution.prix_entree or execution.prix_attendu
+    if not entree:
+        return None
+    t = execution.clic_ts_ms // 1000
+    debut_sortie = (t + echeance_sec) // 60 * 60 - 60
+    cloture = next((b.close for b in bougies if b.ts_sec == debut_sortie),
+                   None)
+    if cloture is None or cloture == entree:
+        return None
+    return (cloture > entree) == (execution.sens == "call")
+
+
+def texte_des_echeances(executions, lire_bougies, apprentissage,
+                        echeances=(300, 600, 900), jouee: int = 900) -> str:
+    """Les ordres réels ET le rejeu, jugés à plusieurs échéances.
+
+    `lire_bougies(paire, debut_sec, fin_sec)` rend les bougies M1.
+    """
+    from maxprofit.apprentissage.lecons import SEUIL, wilson
+
+    ordres = [e for e in executions
+              if e.accepte and e.resultat in ("win", "loose")]
+    lignes = [f"⏱ <b>Échéances comparées</b> — seuil {SEUIL:.1%}, jouée "
+              f"aujourd'hui : {jouee // 60} min"]
+    if ordres:
+        issues: dict[int, list[bool]] = {sec: [] for sec in echeances}
+        accords = []
+        for e in ordres:
+            t = e.clic_ts_ms // 1000
+            bougies = lire_bougies(e.pair, t - 120, t + max(echeances) + 120)
+            for sec in echeances:
+                issue = issue_reconstituee(e, bougies, sec)
+                if issue is not None:
+                    issues[sec].append(issue)
+                    if sec == jouee:
+                        accords.append(issue == (e.resultat == "win"))
+        lignes.append(f"\n<b>Ordres réels</b> ({len(ordres)}), issue "
+                      f"reconstituée depuis les bougies :")
+        for sec in echeances:
+            liste = issues[sec]
+            if not liste:
+                lignes.append(f"{sec // 60:>2} min : bougies manquantes")
+                continue
+            g, n = sum(liste), len(liste)
+            bas, haut = wilson(g, n, 1.96)
+            lignes.append(f"{sec // 60:>2} min : <b>{g / n:.0%}</b> "
+                          f"({g}/{n}, 95 % : {bas:.0%}–{haut:.0%})")
+        reel = sum(e.resultat == "win" for e in ordres)
+        if accords:
+            lignes.append(
+                f"Fidélité : à {jouee // 60} min, la reconstitution est "
+                f"d'accord avec le broker sur {sum(accords)}/{len(accords)} "
+                f"ordres ({sum(accords) / len(accords):.0%}) — réel "
+                f"{reel}/{len(ordres)}.")
+    else:
+        lignes.append("\nAucun ordre réel dénoué.")
+    lignes.append("\n" + (apprentissage.texte_echeances() if apprentissage
+                          else "Rejeu : premier apprentissage en attente."))
+    lignes.append(
+        "\n<b>Lecture</b> : une échéance plus courte n'est intéressante que "
+        "si son taux reste au-dessus du seuil sur le rejeu ET sur les ordres "
+        "réels. Elle rendrait chaque pas plus court (10 min au lieu de 15 : "
+        "jusqu'à 1,5 fois plus de pas par heure), mais un pari plus court est "
+        "aussi plus bruité. ⚠ Le payout à 10 min doit aussi être de 92 % "
+        "chez le broker : à vérifier sur la plateforme.")
+    return "\n".join(lignes)
+
+
+def echeances(course, ouvrir=None) -> str:
+    """`/echeances` : 5, 10 et 15 min comparées, sur SA propre connexion."""
+    if course is None:
+        return "Course indisponible."
+    from pathlib import Path
+
+    from maxprofit.store.db import open_read_only
+    conn = ouvrir() if ouvrir else open_read_only(Path("lecture"))
+    try:
+        lecteur = MarketReader(conn)
+        journal = JournalExecution(conn, course.journal.campagne)
+        return texte_des_echeances(
+            journal.toutes(),
+            lambda p, a, b: lecteur.candles(p, 60, a, b),
+            course.etat.apprentissage,
+            jouee=course.strategie.p.expiry_sec)
+    finally:
+        try:
+            conn.close()
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 def lecons(course) -> str:
     """`/lecons` : ce que l'apprentissage a tiré de l'historique."""
     if course is None:

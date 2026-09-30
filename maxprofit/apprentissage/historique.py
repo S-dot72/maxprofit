@@ -14,7 +14,7 @@ import bisect
 from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.contexte import contexte
-from maxprofit.apprentissage.lecons import Exemple
+from maxprofit.apprentissage.lecons import ECHEANCES_COMPAREES, Exemple
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.types import Candle, Direction
 
@@ -23,7 +23,8 @@ def exemples_historiques(
         bougies_par_paire: Mapping[str, Sequence[Candle]], strategie, *,
         echeance_sec: int,
         garde: Callable[[str, Sequence[Candle]], bool] = lambda p, f: True,
-        respirer: Callable[[], None] | None = None) -> list[Exemple]:
+        respirer: Callable[[], None] | None = None,
+        echeances: Sequence[int] = ECHEANCES_COMPAREES) -> list[Exemple]:
     """Chaque signal que la stratégie aurait émis, avec son contexte.
 
     `respirer`, appelée régulièrement, laisse la main aux autres fils du
@@ -54,9 +55,16 @@ def exemples_historiques(
             if sortie_prix is None or sortie_prix == bougie.close:
                 continue
             call = signal.direction is Direction.CALL
+            # Le MÊME signal jugé à d'autres échéances : c'est ce qui rend
+            # la comparaison juste — mêmes entrées, seule la sortie change.
+            issues = {}
+            for sec in echeances:
+                prix = closes.get(bougie.ts_sec + sec)
+                if prix is not None and prix != bougie.close:
+                    issues[sec] = (prix > bougie.close) == call
             sortie.append(Exemple(
                 ts_sec=bougie.ts_sec + 60, pair=pair,
                 contexte=contexte(fenetre, call, signal.features),
-                gagne=(sortie_prix > bougie.close) == call))
+                gagne=(sortie_prix > bougie.close) == call, issues=issues))
     sortie.sort(key=lambda e: e.ts_sec)
     return sortie

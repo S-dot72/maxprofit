@@ -46,6 +46,9 @@ COUVERTURE_MAX = 0.35
 N_MIN_EXEMPLES = 150
 #: Effectif minimal d'une tranche citée dans une autopsie.
 N_MIN_AUTOPSIE = 30
+#: Échéances comparées sur les mêmes signaux (secondes).
+ECHEANCES_COMPAREES: tuple[int, ...] = (300, 600, 900)
+
 #: Taux de réussite par pas mesuré sur l'historique de la stratégie (221
 #: signaux, 12 jours) : sert à l'autopsie tant que rien n'a été appris.
 TAUX_DE_REFERENCE = 0.579
@@ -57,6 +60,9 @@ class Exemple:
     pair: str
     contexte: Mapping[str, float]
     gagne: bool
+    #: Issue du MÊME signal à d'autres échéances : {secondes: gagné}. Une
+    #: échéance sans bougie de sortie, ou à égalité, est absente.
+    issues: Mapping[int, bool] = field(default_factory=dict)
 
 
 def wilson(gains: int, n: int, z: float = Z) -> tuple[float, float]:
@@ -224,6 +230,10 @@ class Apprentissage:
     part_ecartee: float = 0.0
     cree_ts: int = field(default_factory=lambda: int(time.time()))
     note: str = ""
+    #: {échéance: (n, gagnés, n récents, gagnés récents)} sur les MÊMES
+    #: signaux ; « récents » = la période de validation.
+    echeances: Mapping[int, tuple[int, int, int, int]] = field(
+        default_factory=dict)
 
     # --- ce que la course demande ------------------------------------------
 
@@ -289,6 +299,22 @@ class Apprentissage:
                        for r in self.candidates[:3]]
         return "\n".join(lignes)
 
+    def texte_echeances(self) -> str:
+        """Les mêmes signaux rejoués, jugés à chaque échéance."""
+        if not self.echeances:
+            return "Rejeu : comparaison pas encore calculée."
+        lignes = [f"<b>Rejeu</b> — mêmes signaux, {self.n} au total "
+                  f"(dont la période récente) :"]
+        for sec in sorted(self.echeances):
+            n, g, nr, gr = self.echeances[sec]
+            if not n:
+                continue
+            bas, haut = wilson(g, n, 1.96)
+            recent = f", récents {gr / nr:.0%} sur {nr}" if nr else ""
+            lignes.append(f"{sec // 60:>2} min : <b>{g / n:.1%}</b> sur {n} "
+                          f"(95 % : {bas:.0%}–{haut:.0%}){recent}")
+        return "\n".join(lignes)
+
     def autopsie(self, pas: Sequence[tuple[str, str, Mapping[str, float]]]
                  ) -> str:
         return autopsie(pas, self)
@@ -305,6 +331,7 @@ class Apprentissage:
             "avant": self.taux_validation_avant,
             "apres": self.taux_validation_apres,
             "part": self.part_ecartee, "cree": self.cree_ts, "note": self.note,
+            "echeances": {str(k): list(v) for k, v in self.echeances.items()},
         }
 
     @classmethod
@@ -321,7 +348,9 @@ class Apprentissage:
             taux_validation_avant=d.get("avant"),
             taux_validation_apres=d.get("apres"),
             part_ecartee=float(d.get("part", 0.0)),
-            cree_ts=int(d.get("cree", 0)), note=str(d.get("note", "")))
+            cree_ts=int(d.get("cree", 0)), note=str(d.get("note", "")),
+            echeances={int(k): tuple(int(x) for x in v)
+                       for k, v in (d.get("echeances") or {}).items()})
 
 
 def _statistiques(exemples: Sequence[Exemple]) -> tuple[StatTranche, ...]:
@@ -336,13 +365,25 @@ def _statistiques(exemples: Sequence[Exemple]) -> tuple[StatTranche, ...]:
     return tuple(sortie)
 
 
+def _comparer_echeances(tries: Sequence[Exemple]
+                        ) -> dict[int, tuple[int, int, int, int]]:
+    coupure = int(len(tries) * (1 - PART_VALIDATION))
+    sortie = {}
+    for sec in sorted({s for e in tries for s in e.issues}):
+        tous = [e.issues[sec] for e in tries if sec in e.issues]
+        recents = [e.issues[sec] for e in tries[coupure:] if sec in e.issues]
+        sortie[sec] = (len(tous), sum(tous), len(recents), sum(recents))
+    return sortie
+
+
 def apprendre(exemples: Sequence[Exemple]) -> Apprentissage:
     """Les leçons que ces exemples PROUVENT. Voir le protocole en tête."""
     tries = sorted(exemples, key=lambda e: e.ts_sec)
     if not tries:
         return Apprentissage(note="Aucun signal rejoué.")
     base = dict(n=len(tries), taux=_taux(tries), debut_sec=tries[0].ts_sec,
-                fin_sec=tries[-1].ts_sec, statistiques=_statistiques(tries))
+                fin_sec=tries[-1].ts_sec, statistiques=_statistiques(tries),
+                echeances=_comparer_echeances(tries))
     if len(tries) < N_MIN_EXEMPLES:
         return Apprentissage(**base, note=(
             f"Seulement {len(tries)} signaux : il en faut {N_MIN_EXEMPLES} "

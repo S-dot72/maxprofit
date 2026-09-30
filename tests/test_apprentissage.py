@@ -225,3 +225,28 @@ def test_aucune_lecon_ne_se_fait_PAS_passer_pour_une_absence_de_lien():
     assert "Ce n'est PAS la preuve que les pertes sont sans lien" in texte
     assert taux_detectable(193) <= 0.31
     assert taux_detectable(2000) > 0.44, "plus d'historique, plus de finesse"
+
+
+def test_le_rejeu_juge_le_MEME_signal_a_plusieurs_echeances():
+    serie = _serie([0.0001] * 40 + [-0.0001] * 40)
+    exemples = exemples_historiques({"EURUSD_otc": serie},
+                                    _StrategieToujoursCall(), echeance_sec=120,
+                                    echeances=(60, 120))
+    assert all(set(e.issues) <= {60, 120} for e in exemples)
+    assert all(e.issues.get(120) == e.gagne for e in exemples)
+
+
+def test_la_comparaison_des_echeances_survit_et_s_affiche():
+    alea = random.Random(5)
+    exemples = [Exemple(T0 + 60 * i, "X", {"elan_15m": 0.0}, g,
+                        issues={600: alea.random() < 0.5, 900: g})
+                for i, g in enumerate(alea.random() < 0.6
+                                      for _ in range(300))]
+    a = apprendre(exemples)
+    assert set(a.echeances) == {600, 900}
+    n, g, nr, gr = a.echeances[900]
+    assert n == 300 and nr == 90
+    relu = Apprentissage.from_dict(a.to_dict())
+    assert relu.echeances == a.echeances
+    texte = relu.texte_echeances()
+    assert "10 min" in texte and "15 min" in texte

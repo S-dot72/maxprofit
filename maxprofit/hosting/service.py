@@ -52,8 +52,8 @@ from maxprofit.hosting.course import (
     SuperviseurCourse, course_activee, date_de_depart)
 from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.live.plan_demo import (
-    UNIVERS_PRE_INSCRIT, bilan, demander_reprise, fabriquer_course, lecons,
-    rapatrier)
+    UNIVERS_PRE_INSCRIT, bilan, demander_reprise, echeances, fabriquer_course,
+    lecons, rapatrier)
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -232,6 +232,8 @@ async def _servir(args) -> int:
                 argument)
             bot._bilan = lambda: asyncio.to_thread(
                 bilan, getattr(_course.get("sup"), "_course", None))
+            bot._echeances = lambda: asyncio.to_thread(
+                echeances, getattr(_course.get("sup"), "_course", None))
             bot._lecons = lambda: asyncio.to_thread(
                 lecons, getattr(_course.get("sup"), "_course", None))
             bot._reprendre = lambda argument: asyncio.to_thread(
