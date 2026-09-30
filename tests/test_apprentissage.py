@@ -250,3 +250,15 @@ def test_la_comparaison_des_echeances_survit_et_s_affiche():
     assert relu.echeances == a.echeances
     texte = relu.texte_echeances()
     assert "10 min" in texte and "15 min" in texte
+
+
+def test_le_contexte_VOIT_la_chute_de_l_heure_en_cours():
+    """AUD/CAD, 2026-09-30 : la tendance H1 lisait les heures closes, la
+    chute de vingt minutes était dans l'heure en cours. Le contexte d'un
+    CALL doit la montrer comme CONTRE le trade."""
+    montee = [0.0001] * 280                        # heures closes : hausse
+    chute = [-0.0005] * 20                         # heure en cours : chute
+    serie = _serie(montee + chute)
+    ctx = contexte(serie, True)
+    assert ctx["tendance_h1"] > 0, "les heures closes montaient"
+    assert ctx["mouvement_heure"] < 0 and ctx["elan_30m"] < 0

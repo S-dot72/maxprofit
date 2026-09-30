@@ -86,7 +86,8 @@ class Apprenti:
         actuel = self.course.etat.apprentissage
         # Un apprentissage d'avant la comparaison des échéances est refait
         # tout de suite : /echeances resterait sinon muet jusqu'à un jour.
-        if actuel is None or not actuel.n or not actuel.echeances:
+        if actuel is None or not actuel.n or not actuel.echeances \
+                or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
                    actuel.cree_ts + PERIODE_SEC - time.time())
@@ -135,6 +136,13 @@ class Apprenti:
                  "%d leçon(s) active(s).", nouveau.n, jours,
                  time.monotonic() - debut_calcul, len(nouveau.regles))
         course._prevenir(_annonce(ancien, nouveau))
+
+
+def _mesure_tout(apprentissage) -> bool:
+    """Faux si l'apprentissage date d'avant une caractéristique ajoutée
+    depuis : il est alors refait au démarrage, pas dans vingt-quatre heures."""
+    vues = {s.tranche.caracteristique for s in apprentissage.statistiques}
+    return {"elan_30m", "mouvement_heure"} <= vues
 
 
 def _annonce(ancien, nouveau) -> str:

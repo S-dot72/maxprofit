@@ -23,6 +23,13 @@ LIBELLES: dict[str, str] = {
     "heure_utc": "heure (UTC)",
     "tendance_h1": "tendance des 3 dernières heures dans le sens du trade",
     "elan_15m": "élan des 15 dernières minutes dans le sens du trade",
+    "elan_30m": "élan des 30 dernières minutes dans le sens du trade",
+    # ⚠ Ce que la stratégie NE VOIT PAS : sa tendance H1 ne lit que des
+    # heures closes. Une chute de 1 % en vingt minutes dans l'heure en cours
+    # (AUD/CAD, 2026-09-30, 21:16-21:36 UTC-4) lui est invisible, et elle
+    # achète le rebond sur zone en la croyant dans le sens de la tendance.
+    "mouvement_heure": "mouvement depuis le début de l'heure en cours "
+                       "dans le sens du trade",
     "volatilite_relative": "volatilité des 15 dernières minutes / habituelle",
     "bougies_contre": "bougies consécutives contre le trade",
     "corps_signal": "corps de la bougie de signal (part de son amplitude)",
@@ -69,6 +76,10 @@ def contexte(bougies: Sequence[Candle], call: bool,
     tendance = 0.0
     if len(heures) >= 4:
         tendance = (fermetures[heures[-1]] - fermetures[heures[-4]]) * sens
+    heure_en_cours = 0.0
+    if heures:
+        heure_en_cours = (der.close - fermetures[heures[-1]]) * sens
+    il_y_a_30 = bougies[-31].close if len(bougies) >= 31 else bougies[0].close
 
     il_y_a_15 = bougies[-16].close if len(bougies) >= 16 else bougies[0].close
     contre = 0
@@ -93,6 +104,8 @@ def contexte(bougies: Sequence[Candle], call: bool,
         "heure_utc": float(((der.ts_sec + 60) // 3600) % 24),
         "tendance_h1": tendance / amplitude,
         "elan_15m": (der.close - il_y_a_15) * sens / amplitude,
+        "elan_30m": (der.close - il_y_a_30) * sens / amplitude,
+        "mouvement_heure": heure_en_cours / amplitude,
         "volatilite_relative": (
             _moyenne([c.high - c.low for c in bougies[-15:]])
             / (_moyenne([c.high - c.low for c in bougies]) or 1e-12)),
