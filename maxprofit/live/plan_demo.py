@@ -191,6 +191,9 @@ RECOUVREMENT_CACHE_SEC = 300
 #: Au-delà de l'échéance, délai laissé au broker avant de confronter une
 #: réservation restée sans issue à la liste de ses ordres clôturés.
 MARGE_CONFIRMATION_SEC = 120
+#: Intervalle minimal entre deux relectures des ordres réels par paire.
+RELIRE_REELS_SEC = 600
+
 #: Intervalle minimal entre deux relectures des ordres notés « inconnu ».
 RELIRE_INCONNUS_SEC = 60
 
@@ -571,6 +574,8 @@ class CoursePlanDemo:
         self._univers: list[str] | None = None
         self._univers_ts = 0
         self._inconnus_ts = float("-inf")
+        self._reels: dict[str, tuple[int, int]] = {}
+        self._reels_ts = float("-inf")
         #: « actif » : les leçons écartent ; « observation » : elles ne font
         #: que compter ce qu'elles auraient écarté ; « inactif » : rien.
         self.mode_apprentissage = mode_apprentissage()
@@ -942,11 +947,36 @@ class CoursePlanDemo:
         return signal
 
     def priorite(self, paire: str) -> float:
-        """Voir `Apprentissage.priorite`. Sans rejeu, toutes se valent."""
-        a = self.etat.apprentissage
-        if a is None or not a.par_paire:
-            return 0.5
-        return a.priorite(paire)
+        """Rejeu + ordres réels de la paire (voir `Apprentissage.priorite`).
+
+        Sans aucun des deux, toutes les paires se valent et la rotation
+        décide.
+        """
+        reels = self._ordres_reels_par_paire().get(paire, (0, 0))
+        return (self.etat.apprentissage or Apprentissage()).priorite(
+            paire, reels)
+
+    def _ordres_reels_par_paire(self) -> dict[str, tuple[int, int]]:
+        """(ordres, gagnés) par paire au journal, relu au plus toutes les
+        `RELIRE_REELS_SEC` : relire tout le journal à chaque signal coûterait
+        pour rien, un ordre ne se dénoue que tous les quarts d'heure."""
+        maintenant = time.monotonic()
+        if maintenant - self._reels_ts < RELIRE_REELS_SEC:
+            return self._reels
+        self._reels_ts = maintenant
+        try:
+            ordres = self.journal.toutes()
+        except Exception as erreur:              # noqa: BLE001
+            log.debug("Journal illisible pour la priorité : %s", erreur)
+            return self._reels
+        comptes: dict[str, list[int]] = {}
+        for e in ordres:
+            if e.accepte and e.resultat in ("win", "loose"):
+                c = comptes.setdefault(e.pair, [0, 0])
+                c[0] += 1
+                c[1] += int(e.resultat == "win")
+        self._reels = {p: (n, g) for p, (n, g) in comptes.items()}
+        return self._reels
 
     def _contre_l_heure_en_cours(self, paire: str, signal, ctx) -> bool:
         """Vrai si l'heure en cours va trop fortement contre le trade.

@@ -2568,6 +2568,23 @@ def test_entre_des_signaux_simultanes_la_MEILLEURE_paire_est_choisie(tmp_path):
     journal.close()
 
 
-def test_sans_rejeu_les_paires_se_valent_et_la_rotation_decide(course):
+def test_sans_rejeu_ni_ordre_les_paires_se_valent_et_la_rotation_decide(
+        course):
     c = course([])
-    assert c.priorite("EURUSD_otc") == c.priorite("AUDCAD_otc") == 0.5
+    assert c.priorite("EURUSD_otc") == c.priorite("AUDCAD_otc")
+
+
+def test_les_ordres_REELS_de_bilan_comptent_dans_la_priorite(course):
+    """Les ordres réels sont ceux que le broker a vraiment payés ; tempérés,
+    six gains sur six ne passent pas devant 65 % sur cent."""
+    from maxprofit.apprentissage.lecons import Apprentissage
+
+    c = course([])
+    c.etat.apprentissage = Apprentissage(
+        n=200, taux=0.6, par_paire={"AUDUSD_otc": (100, 60),
+                                    "EURUSD_otc": (100, 65)})
+    avant = c.priorite("AUDUSD_otc")
+    c._reels, c._reels_ts = {"AUDUSD_otc": (6, 6)}, float("inf")
+    assert c.priorite("AUDUSD_otc") > avant, "les gains réels la font monter"
+    assert c.priorite("EURUSD_otc") > c.priorite("AUDUSD_otc"), (
+        "mais six ordres ne pèsent pas autant que cent")
