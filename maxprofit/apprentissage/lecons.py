@@ -51,6 +51,11 @@ N_MIN_AUTOPSIE = 30
 #: prend-elle position contre le mouvement de l'heure en cours ?
 TENDANCES: tuple[str, ...] = ("mouvement_heure", "elan_30m", "tendance_h1")
 
+#: Signaux fictifs, au taux d'ensemble, ajoutés à chaque paire pour classer
+#: les priorités : une paire vue trois fois ne passe pas devant une paire
+#: vue cent fois sur la foi de trois gains.
+POIDS_PRIORITE = 20
+
 #: Échéances comparées sur les mêmes signaux (secondes).
 ECHEANCES_COMPAREES: tuple[int, ...] = (300, 600, 900)
 
@@ -346,14 +351,30 @@ class Apprentissage:
                               f"{st.n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
         return "\n".join(lignes)
 
+    def priorite(self, paire: str) -> float:
+        """Le taux de réussite de la paire sur le rejeu, TEMPÉRÉ.
+
+        Tempéré vers le taux d'ensemble à hauteur de `POIDS_PRIORITE`
+        signaux : trois gains sur trois ne doivent pas passer devant 65 %
+        sur cent. C'est l'ordre dans lequel la course choisit entre des
+        signaux simultanés.
+        """
+        if not self.taux:
+            return 0.5
+        n, g = self.par_paire.get(paire, (0, 0))
+        return (g + POIDS_PRIORITE * self.taux) / (n + POIDS_PRIORITE)
+
     def texte_par_paire(self) -> str:
         """Le taux de chaque paire sur le rejeu — dix fois plus de signaux
         que les ordres réels, qui n'en comptent qu'une dizaine par paire."""
         if not self.par_paire:
             return ""
-        lignes = ["<b>Par paire</b> (rejeu ; ⚠ = perdante prouvée à 95 %)"]
+        lignes = ["<b>Par paire</b> (rejeu, de la meilleure à la moins bonne "
+                  "— l'ordre de priorité de la course ; ⚠ = perdante prouvée "
+                  "à 95 %)"]
+        # Dans l'ordre de priorité de la course.
         for paire, (n, g) in sorted(self.par_paire.items(),
-                                    key=lambda kv: kv[1][1] / kv[1][0]):
+                                    key=lambda kv: -self.priorite(kv[0])):
             bas, haut = wilson(g, n, 1.96)
             marque = " ⚠" if haut < SEUIL else ""
             lignes.append(f"  {paire.replace('_otc', '')} : {g / n:.0%} sur "

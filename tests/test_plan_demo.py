@@ -2540,3 +2540,34 @@ def test_on_n_entre_pas_CONTRE_une_heure_en_cours_qui_va_fortement_contre(
     assert seuil_contre_heure() is None, "0 désactive la règle"
     monkeypatch.setenv("CONTRE_HEURE_MAX", "2.5")
     assert seuil_contre_heure() == 2.5
+
+
+def test_entre_des_signaux_simultanes_la_MEILLEURE_paire_est_choisie(tmp_path):
+    """« Les paires en priorité par ordre gagné » : un seul ordre à la fois,
+    donc quand plusieurs paires signalent au même passage, on prend celle
+    qui gagne le plus sur le rejeu — tempérée, pour que trois gains sur trois
+    ne passent pas devant 70 % sur cent."""
+    from maxprofit.apprentissage.lecons import Apprentissage
+
+    trois = ("A_otc", "B_otc", "C_otc")
+    journal = JournalExecution(tmp_path / "e.db", campagne="t")
+    frais = int(time.time()) // 60 * 60 - 60
+    c = CoursePlanDemo(LecteurAvecBougies(fin_ts=frais), CourtierFactice([]),
+                       journal, _plan(sessions=18), trois)
+    c.univers = lambda: list(trois)
+    c.strategie.on_bar = lambda vue: Signal(
+        pair=vue.pair, direction=Direction.CALL, decided_at_ms=T0_MS,
+        expiry_sec=900, reason="t")
+    c.etat.apprentissage = Apprentissage(
+        n=203, taux=0.6, par_paire={"A_otc": (100, 50), "B_otc": (100, 70),
+                                    "C_otc": (3, 3)})
+    assert c.priorite("B_otc") > c.priorite("C_otc") > c.priorite("A_otc")
+    signal = c.chercher_un_signal()
+    assert signal is not None and signal.pair == "B_otc"
+    assert c.etat.signaux_trouves == 3
+    journal.close()
+
+
+def test_sans_rejeu_les_paires_se_valent_et_la_rotation_decide(course):
+    c = course([])
+    assert c.priorite("EURUSD_otc") == c.priorite("AUDCAD_otc") == 0.5
