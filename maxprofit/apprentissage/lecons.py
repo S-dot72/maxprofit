@@ -152,6 +152,24 @@ class StatTranche:
                    float(d["taux"]))
 
 
+def taux_detectable(n_etalonnage: int) -> float | None:
+    """Le taux de réussite qu'un contexte doit avoir, AU PLUS, pour que
+    l'étalonnage puisse l'établir comme perdant.
+
+    Une tranche typique couvre un cinquième des signaux (jamais moins de
+    `N_MIN_ETALONNAGE`). Plus l'étalonnage est court, plus un contexte doit
+    perdre franchement pour être vu : c'est ce qui distingue « aucun contexte
+    ne perd » de « aucun contexte ne perd ASSEZ pour qu'on le voie ».
+    """
+    n = max(N_MIN_ETALONNAGE, n_etalonnage // 5)
+    if n_etalonnage < N_MIN_ETALONNAGE:
+        return None
+    for gains in range(n, -1, -1):
+        if wilson(gains, n)[1] < SEUIL:
+            return gains / n
+    return None
+
+
 def _taux(exemples: Sequence[Exemple]) -> float | None:
     return (sum(e.gagne for e in exemples) / len(exemples)
             if exemples else None)
@@ -249,10 +267,20 @@ class Apprentissage:
                 f"<b>{self.taux_validation_apres:.1%}</b>, "
                 f"{self.part_ecartee:.0%} des signaux écartés.")
         else:
+            detectable = taux_detectable(int(self.n * (1 - PART_VALIDATION)))
             lignes.append(
                 "\nAucune leçon active : aucun contexte ne perd de façon "
-                "établie ET confirmée. Ce n'est pas un échec de "
-                "l'apprentissage, c'est ce qu'il a mesuré.")
+                "établie ET confirmée.")
+            if detectable is not None:
+                # ⚠ « Rien de prouvé » n'est pas « rien de lié ». Le message
+                # disait « c'est ce qu'il a mesuré » sur 276 signaux, où seul
+                # un contexte perdant deux fois sur trois pouvait être vu.
+                lignes.append(
+                    f"⚠ Ce n'est PAS la preuve que les pertes sont sans lien : "
+                    f"avec {self.n} signaux, seul un contexte gagnant moins de "
+                    f"{detectable:.0%} du temps peut être établi. Un contexte "
+                    f"à 45 % — perdant, mais moins franchement — passe "
+                    f"inaperçu jusqu'à ce que l'historique grossisse.")
         if self.candidates:
             lignes.append(f"\nÀ surveiller, non confirmées "
                           f"({len(self.candidates)}) :")

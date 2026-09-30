@@ -2436,3 +2436,36 @@ def test_lecons_dit_ce_qui_a_ete_appris(course):
     texte = lecons(c)
     assert "Leçons ACTIVES (1)" in texte and "élan" in texte
     assert lecons(None) == "Course indisponible."
+
+
+def _ordre_du_journal(pair, resultat, ts_sec, pas=None):
+    e = _ordre_en_vol(f"{pair}{ts_sec}")
+    e.pair, e.resultat, e.clic_ts_ms = pair, resultat, ts_sec * 1000
+    if pas:
+        e.brut = {"contexte": {"pas": pas}}
+    return e
+
+
+def test_le_bilan_dit_si_la_baisse_depasse_le_HASARD():
+    from maxprofit.live.plan_demo import texte_du_bilan
+
+    maintenant = 2_000_000_000
+    avant = [_ordre_du_journal("EURUSD_otc", "win" if i % 4 else "loose",
+                               maintenant - 5 * 86400 + i * 60)
+             for i in range(40)]                             # 75 %
+    recents_faibles = [_ordre_du_journal("USDCAD_otc",
+                                         "loose" if i % 2 else "win",
+                                         maintenant - 3600 + i, pas=1)
+                       for i in range(10)]                    # 50 %
+    texte = texte_du_bilan(avant + recents_faibles, maintenant)
+    assert "compatible avec le hasard" in texte, texte
+    assert "USDCAD : 5/10 (50%) ⚠" in texte
+    assert "pas 1" in texte
+
+    recents_mauvais = [_ordre_du_journal("USDCAD_otc",
+                                         "win" if i % 5 == 0 else "loose",
+                                         maintenant - 3600 + i)
+                       for i in range(30)]                    # 20 %
+    assert "baisse DÉPASSE" in texte_du_bilan(avant + recents_mauvais,
+                                               maintenant)
+    assert "Aucun ordre" in texte_du_bilan([], maintenant)

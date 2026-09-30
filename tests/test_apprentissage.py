@@ -213,3 +213,15 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     assert course.etat.apprentissage.n > 0
     assert messages and "Apprentissage" in messages[-1]
     conn.close()
+
+
+def test_aucune_lecon_ne_se_fait_PAS_passer_pour_une_absence_de_lien():
+    """276 signaux : seul un contexte perdant deux fois sur trois pouvait
+    être établi, et le message disait « c'est ce qu'il a mesuré »."""
+    from maxprofit.apprentissage.lecons import taux_detectable
+
+    a = apprendre(_exemples(276, regle_perdante=False))
+    texte = a.resume()
+    assert "Ce n'est PAS la preuve que les pertes sont sans lien" in texte
+    assert taux_detectable(193) <= 0.31
+    assert taux_detectable(2000) > 0.44, "plus d'historique, plus de finesse"

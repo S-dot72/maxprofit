@@ -34,10 +34,16 @@ DELAI_INITIAL_SEC = 120
 
 
 def jours_d_apprentissage() -> int:
+    """Trente jours par défaut, soit tout l'historique collecté.
+
+    Dix jours n'ont donné que 276 signaux : trop peu pour établir autre
+    chose qu'un contexte perdant deux fois sur trois. Le coût est un rejeu
+    trois fois plus long, une fois par jour.
+    """
     try:
-        return max(2, int(os.environ.get("JOURS_APPRENTISSAGE", "10")))
+        return max(2, int(os.environ.get("JOURS_APPRENTISSAGE", "30")))
     except ValueError:
-        return 10
+        return 30
 
 
 class Apprenti:

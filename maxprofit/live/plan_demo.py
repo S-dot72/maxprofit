@@ -2149,6 +2149,89 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     return etat, int(ligne[5])
 
 
+def texte_du_bilan(executions, maintenant_sec: int,
+                   recent_h: int = 48) -> str:
+    """Le taux de réussite RÉEL des ordres, et s'il a changé.
+
+    Répond à « on perd plus souvent qu'avant ? » avec des chiffres, et dit
+    si l'écart dépasse ce que le hasard produit sur si peu d'ordres — deux
+    choses qu'une impression de série ne distingue pas.
+    """
+    from maxprofit.apprentissage.lecons import SEUIL, wilson
+
+    ordres = sorted((e for e in executions
+                     if e.accepte and e.resultat in ("win", "loose")),
+                    key=lambda e: e.clic_ts_ms)
+    if not ordres:
+        return "📒 Aucun ordre dénoué dans la campagne."
+
+    def ligne(nom, liste):
+        n = len(liste)
+        g = sum(e.resultat == "win" for e in liste)
+        bas, haut = wilson(g, n, 1.96)
+        return (f"{nom} : {g}/{n} gagnés, <b>{g / n:.0%}</b> "
+                f"(entre {bas:.0%} et {haut:.0%} à 95 %)")
+
+    coupure = (maintenant_sec - recent_h * 3600) * 1000
+    recents = [e for e in ordres if e.clic_ts_ms >= coupure]
+    anciens = [e for e in ordres if e.clic_ts_ms < coupure]
+    lignes = [f"📒 <b>Bilan des ordres</b> — seuil de rentabilité "
+              f"{SEUIL:.1%} par ordre",
+              ligne("Depuis le début", ordres)]
+    if recents and anciens:
+        lignes += [ligne(f"Dernières {recent_h} h", recents),
+                   ligne("Avant", anciens)]
+        n1, n2 = len(recents), len(anciens)
+        p1 = sum(e.resultat == "win" for e in recents) / n1
+        p2 = sum(e.resultat == "win" for e in anciens) / n2
+        p = (p1 * n1 + p2 * n2) / (n1 + n2)
+        ecart_type = (p * (1 - p) * (1 / n1 + 1 / n2)) ** 0.5
+        z = (p1 - p2) / ecart_type if ecart_type else 0.0
+        if abs(z) >= 1.96:
+            lignes.append(f"→ la {'baisse' if z < 0 else 'hausse'} DÉPASSE "
+                          f"ce que le hasard explique (|z| = {abs(z):.1f})")
+        else:
+            lignes.append(f"→ écart compatible avec le hasard sur {n1} + "
+                          f"{n2} ordres (|z| = {abs(z):.1f} < 2)")
+    par_pas: dict[int, list] = {}
+    for e in ordres:
+        pas = (e.brut or {}).get("contexte", {}).get("pas")
+        if pas:
+            par_pas.setdefault(int(pas), []).append(e)
+    if par_pas:
+        lignes.append("\n<b>Par pas</b> (ordres récents seulement)")
+        lignes += [ligne(f"pas {k}", v) for k, v in sorted(par_pas.items())]
+    par_paire: dict[str, list] = {}
+    for e in ordres:
+        par_paire.setdefault(e.pair, []).append(e)
+    lignes.append("\n<b>Par paire</b>")
+    for paire, liste in sorted(par_paire.items(),
+                               key=lambda kv: -len(kv[1])):
+        g = sum(e.resultat == "win" for e in liste)
+        alerte = " ⚠" if len(liste) >= 5 and g / len(liste) < SEUIL else ""
+        lignes.append(f"{paire.replace('_otc', '')} : {g}/{len(liste)} "
+                      f"({g / len(liste):.0%}){alerte}")
+    return "\n".join(lignes)
+
+
+def bilan(course, ouvrir=None) -> str:
+    """`/bilan` : les ordres réels du journal, sur SA propre connexion."""
+    if course is None:
+        return "Course indisponible."
+    from pathlib import Path
+
+    from maxprofit.store.db import open_read_only
+    conn = ouvrir() if ouvrir else open_read_only(Path("lecture"))
+    try:
+        journal = JournalExecution(conn, course.journal.campagne)
+        return texte_du_bilan(journal.toutes(), int(time.time()))
+    finally:
+        try:
+            conn.close()
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 def lecons(course) -> str:
     """`/lecons` : ce que l'apprentissage a tiré de l'historique."""
     if course is None:
