@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from maxprofit.collect.classement import (
-    classer, completer, est_une_paire_flottante, les_meilleures)
+    classer, completer, est_une_paire_flottante)
 from maxprofit.store.db import open_read_write
 
 TETE = ("EURUSD_otc", "AUDUSD_otc", "GBPAUD_otc", "AUDCAD_otc")
@@ -49,28 +49,40 @@ def test_la_tete_reste_en_tete_et_l_on_complete_jusqu_au_total():
         "une paire JAMAIS au plafond ne rapporterait rien")
 
 
-def test_sans_releves_on_ne_collecte_pas_moins(tmp_path):
-    conn = open_read_write(tmp_path / "vide.db")
-    assert les_meilleures(conn, TETE, 20) is None
-    conn.close()
-
-
-def test_le_service_retient_les_meilleures_et_garde_la_tete(tmp_path,
-                                                             monkeypatch):
+def test_sans_releves_rien_n_est_propose(tmp_path):
     from maxprofit.collect.collector import Config
-    from maxprofit.hosting.service import choisir_les_paires
+    from maxprofit.hosting.service import proposer_les_paires
+
+    conn = open_read_write(tmp_path / "vide.db")
+    cfg = Config(db=tmp_path / "vide.db", min_payout=80, max_paires=4)
+    assert "Aucun relevé" in proposer_les_paires(cfg, "", ouvrir=lambda: conn)
+
+
+def test_le_classement_PROPOSE_une_liste_fixe_sans_rien_imposer(tmp_path):
+    """Appliqué à chaque démarrage, le classement faisait entrer et sortir
+    des paires à chaque déploiement : des séries fragmentées. Il propose
+    désormais la chaîne à coller une fois dans PAIRES_FIXES."""
+    from maxprofit.collect.collector import Config
+    from maxprofit.hosting.service import proposer_les_paires
 
     parts = {f"{a}{b}_otc": 0.1 * i for i, (a, b) in enumerate(
         [("EUR", "JPY"), ("CAD", "JPY"), ("NZD", "USD"), ("GBP", "JPY"),
          ("EUR", "CHF")], start=1)}
     conn = _base(tmp_path, parts)
     cfg = Config(db=tmp_path / "m.db", min_payout=80, max_paires=4,
-                 paires_fixes=("AUDNZD_otc",))
-    monkeypatch.setenv("PAIRES_TOTAL", "7")
-    choisi = choisir_les_paires(cfg, ouvrir=lambda: conn)
-    assert choisi.paires_fixes[:4] == TETE
-    assert choisi.paires_fixes[4:] == ("EURCHF_otc", "GBPJPY_otc",
-                                       "NZDUSD_otc")
-    assert choisi.paires_socle >= 4
-    monkeypatch.setenv("PAIRES_TOTAL", "0")
-    assert choisir_les_paires(cfg, ouvrir=lambda: conn) is cfg
+                 paires_fixes=TETE + ("CADJPY_otc", "AUDNZD_otc"))
+    texte = proposer_les_paires(cfg, "7", ouvrir=lambda: conn)
+    assert ("<code>" + ",".join(TETE + ("EURCHF_otc", "GBPJPY_otc",
+                                         "NZDUSD_otc")) + "</code>") in texte
+    assert "EURCHF 50 %  🆕" in texte
+    assert "Sortiraient de la liste actuelle : CADJPY (20 %), AUDNZD (0 %)" \
+        in texte
+    assert cfg.paires_fixes == TETE + ("CADJPY_otc", "AUDNZD_otc"), (
+        "rien n'est appliqué")
+
+
+def test_le_demarrage_n_applique_plus_aucun_classement():
+    import inspect
+
+    from maxprofit.hosting import service
+    assert "choisir_les_paires" not in inspect.getsource(service._servir)

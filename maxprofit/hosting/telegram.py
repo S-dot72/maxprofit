@@ -169,6 +169,7 @@ COMMANDES = [
     ("reprendre", "Remettre en route la session interrompue (admin)"),
     ("lecons", "Ce que le bot a appris de l'historique"),
     ("bilan", "Taux de réussite réel des ordres, par période et par paire"),
+    ("classement", "Les N meilleures paires à coller dans PAIRES_FIXES"),
     ("echeances", "Taux de réussite à 5, 10 et 15 min comparés"),
     ("aide", "Comment ça marche"),
 ]
@@ -259,6 +260,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._reprendre: Callable[[str], Awaitable[str]] | None = None
         self._lecons: Callable[[], Awaitable[str]] | None = None
         self._bilan: Callable[[], Awaitable[str]] | None = None
+        self._classement: Callable[[str], Awaitable[str]] | None = None
         self._echeances: Callable[[], Awaitable[str]] | None = None
         self._offset = 0
         self.actif = True
@@ -439,6 +441,13 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             else:
                 await self.client.envoyer(chat, await self._echeances(),
                                           CLAVIER)
+        elif texte.startswith("/classement"):
+            if self._classement is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, await self._classement(
+                        texte[len("/classement"):].strip()), CLAVIER)
         elif texte.startswith("/bilan"):
             if self._bilan is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
