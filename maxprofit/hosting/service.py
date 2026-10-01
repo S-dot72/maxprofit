@@ -54,6 +54,7 @@ from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.live.plan_demo import (
     UNIVERS_PRE_INSCRIT, bilan, demander_reprise, echeances, fabriquer_course,
     lecons, rapatrier, simulation)
+from maxprofit.hosting.pilotage import Pilote, gouverne
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -269,6 +270,24 @@ async def _servir(args) -> int:
 
     etat_collecte = EtatCollecte(cfg.db)
 
+    def _ouvrir_en_ecriture():
+        from maxprofit.store.db import open_read_write
+        return open_read_write(cfg.db, reparer=False)
+
+    campagne_env = os.environ.get("PLAN_CAMPAGNE", "plan-demo-v2")
+    pilote = Pilote(_ouvrir_en_ecriture, lambda: _course.get("sup"),
+                    campagne_env)
+
+    def _configuration_qui_gouverne():
+        """La configuration enregistrée si elle décide de la course."""
+        try:
+            reglage = pilote.charger()
+        except Exception:                        # noqa: BLE001
+            log.exception("Configuration illisible : la course suit "
+                          "l'environnement.")
+            return None
+        return reglage if gouverne(reglage) else None
+
     async with aiohttp.ClientSession() as http:
         bot = _fabriquer_bot(http)
         superviseur = Superviseur(
@@ -297,6 +316,8 @@ async def _servir(args) -> int:
             bot._reprendre = lambda argument: asyncio.to_thread(
                 demander_reprise, getattr(_course.get("sup"), "_course", None),
                 argument)
+            bot._piloter = lambda commande, argument: asyncio.to_thread(
+                pilote, commande, argument)
 
         # Le serveur est démarré APRÈS le superviseur, pour lui passer
         # l'installateur à la construction : aiohttp déprécie la modification
@@ -342,8 +363,29 @@ async def _servir(args) -> int:
         # marteler le broker, et son thread est `daemon`. La collecte vaut
         # plus que la course — quatorze jours de série continue ne se
         # rattrapent pas, dix jours de course si.
-        course = SuperviseurCourse(
-            lambda alerter: fabriquer_course(
+        def _fabriquer_la_course(alerter):
+            # Relue à CHAQUE construction : c'est ainsi qu'une relance
+            # demandée sur Telegram prend le nouveau réglage.
+            reglage = _configuration_qui_gouverne()
+            if reglage is None:
+                return _fabriquer_depuis_l_environnement(alerter)
+            log.info("Course construite sur la configuration enregistrée : "
+                     "%s, campagne %s", reglage.mode, reglage.campagne)
+            return fabriquer_course(
+                resoudre_ssid(demo=True),
+                campagne=reglage.campagne, capital=reglage.capital,
+                sessions_par_jour=reglage.sessions_par_jour,
+                jours=30, paires=univers_trade(cfg),
+                paires_collectees=cfg.paires_fixes or PAIRES_PAR_DEFAUT,
+                mode_univers=os.environ.get(
+                    "PLAN_UNIVERS", "epinglees").strip() or "epinglees",
+                alerter=alerter,
+                etape=lambda texte: course.noter_etape(texte),
+                configuration=reglage,
+                campagnes_precedentes=tuple(reglage.campagnes_precedentes))
+
+        def _fabriquer_depuis_l_environnement(alerter):
+            return fabriquer_course(
                 resoudre_ssid(demo=True),
                 # ⚠ LE NOM DE CAMPAGNE EST CE QUI REMET LE TEST À ZÉRO.
                 #
@@ -359,7 +401,7 @@ async def _servir(args) -> int:
                 # dans une même campagne des ordres pris avant et après ce
                 # changement rendrait la mesure illisible — on ne saurait plus
                 # ce que le taux décrit.
-                campagne=os.environ.get("PLAN_CAMPAGNE", "plan-demo-v2"),
+                campagne=campagne_env,
                 capital=float(os.environ.get("PLAN_CAPITAL", "250")),
                 sessions_par_jour=SESSIONS_PAR_JOUR_DU_PLAN,
                 jours=int(os.environ.get("PLAN_JOURS", "30")),
@@ -399,7 +441,10 @@ async def _servir(args) -> int:
                 alerter=alerter,
                 # `course` est le superviseur en cours de construction :
                 # la fabrique n'est appelée qu'une fois qu'il existe.
-                etape=lambda texte: course.noter_etape(texte)),
+                etape=lambda texte: course.noter_etape(texte))
+
+        course = SuperviseurCourse(
+            _fabriquer_la_course,
             alerter=(lambda m: None) if bot is None else _alerte_synchrone(bot),
             # Le départ est une DATE, pas un geste. Faire dépendre le
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.
@@ -407,7 +452,17 @@ async def _servir(args) -> int:
             reveil=BOUGIES_ECRITES,
         )
         _course["sup"] = course
-        if course_activee():
+        reglage = _configuration_qui_gouverne()
+        if reglage is not None:
+            # La configuration lancée — ou arrêtée — depuis Telegram décide,
+            # redémarrages compris ; `PLAN_DEMO` ne compte plus.
+            if reglage.lancee:
+                course.debut_ts_sec = None
+                course.demarrer()
+            else:
+                log.info("Course du plan : arrêtée depuis Telegram "
+                         "(/demarrer pour la relancer).")
+        elif course_activee():
             course.demarrer()
         else:
             log.info("Course du plan : INACTIVE (PLAN_DEMO=0). Le code est "

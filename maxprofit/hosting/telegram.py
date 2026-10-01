@@ -209,6 +209,15 @@ COMMANDES = [
     # oblige à la deviner.
     ("start", "Demander l'accès"),
     ("etat", "État de la collecte"),
+    ("configuration", "Le réglage du bot et sa projection à 30 jours"),
+    ("configurer", "Régler le bot pas à pas"),
+    ("mode", "plan ou trading (trading seul) (admin)"),
+    ("compte", "demo ou reel (admin)"),
+    ("capital", "Capital de départ, ex. /capital 250 (admin)"),
+    ("risque", "N gagnants sur M trades, ex. /risque 1/7 (admin)"),
+    ("sessions", "Sessions par jour, ex. /sessions 6 (admin)"),
+    ("demarrer", "Lancer la course sur le réglage (admin)"),
+    ("arreter", "Arrêter la course, la collecte continue (admin)"),
     ("paires", "Paires actuellement suivies"),
     ("diag", "Ce que la bibliotheque recoit vraiment (admin)"),
     ("ssid", "Installer un nouveau jeton de session (admin)"),
@@ -234,6 +243,11 @@ AIDE = (
     "/etat — état de la collecte\n"
     "/paires — paires actuellement suivies\n"
     "/aide — ce message\n\n"
+    "<b>Réglage du bot</b>\n"
+    "/configurer — régler pas à pas\n"
+    "/configuration — le réglage et sa projection à 30 jours\n"
+    "/mode, /compte, /capital, /risque, /sessions — modifier\n"
+    "/demarrer — lancer · /arreter — arrêter\n\n"
     "<b>Administration</b>\n"
     "/ssid <i>jeton</i> — installer un nouveau jeton de session\n"
     "/operateurs — qui a accès\n"
@@ -288,6 +302,21 @@ INSTRUCTIONS_JETON = (
 )
 
 
+#: Les commandes de réglage, servies par `hosting.pilotage`.
+COMMANDES_DE_PILOTAGE = ("configuration", "configurer", "mode", "compte",
+                         "capital", "risque", "sessions", "demarrer",
+                         "arreter")
+
+
+def _commande(texte: str) -> str:
+    """« /Capital@MonBot 300 » -> « capital ». Accents tolérés."""
+    if not texte.startswith("/"):
+        return ""
+    mot = texte[1:].split(maxsplit=1)[0] if texte[1:].strip() else ""
+    mot = mot.split("@", 1)[0].lower()
+    return mot.replace("é", "e").replace("ê", "e")
+
+
 class BotExploitation:
     """Boucle de réception. Une seule conversation autorisée.
 
@@ -315,6 +344,9 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._simulation: Callable[[], Awaitable[str]] | None = None
         self._classement: Callable[[str], Awaitable[str]] | None = None
         self._echeances: Callable[[], Awaitable[str]] | None = None
+        #: `(commande, argument) -> réponse` : /configuration, /mode,
+        #: /capital… /demarrer, /arreter.
+        self._piloter: Callable[[str, str], Awaitable[str]] | None = None
         self._offset = 0
         self.actif = True
         #: Empreinte -> instant du dernier envoi, pour ne pas répéter la même
@@ -517,6 +549,18 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
             else:
                 await self.client.envoyer(chat, await self._lecons(), CLAVIER)
+        elif _commande(texte) in COMMANDES_DE_PILOTAGE:
+            commande = _commande(texte)
+            morceaux = texte.split(maxsplit=1)
+            argument = morceaux[1] if len(morceaux) > 1 else ""
+            if commande not in ("configuration", "configurer") \
+                    and not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._piloter is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, await self._piloter(commande, argument), CLAVIER)
         elif texte.startswith("/etat") or texte.startswith("📊"):
             await self.client.envoyer(chat, await self._etat(), CLAVIER)
         elif texte.startswith("/paires") or texte.startswith("📈"):

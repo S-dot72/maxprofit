@@ -69,6 +69,12 @@ class Apprenti:
         with cls._verrou:
             if cls._actif is not None and cls._actif._thread is not None \
                     and cls._actif._thread.is_alive():
+                # Une course relancée sur un nouveau réglage repart d'une
+                # campagne neuve, donc sans apprentissage : elle hérite de
+                # celui de la précédente plutôt que d'attendre un rejeu.
+                if course.etat.apprentissage is None:
+                    course.etat.apprentissage = \
+                        cls._actif.course.etat.apprentissage
                 cls._actif.course = course
                 cls._actif.paires = tuple(paires)
                 return cls._actif
