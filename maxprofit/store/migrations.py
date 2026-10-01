@@ -404,6 +404,22 @@ def _v9_compteurs_d_activite(conn) -> None:
             pass
 
 
+def _v10_reglages(conn) -> None:
+    """Les réglages choisis par l'utilisateur, en BASE.
+
+    Mode (plan ou trading seul), compte (démo ou réel), capital, risque,
+    sessions par jour : configurés depuis Telegram, ils doivent survivre aux
+    redéploiements — un hébergement sans disque oublie tout fichier. Une clé,
+    une valeur JSON : la configuration évolue, la table non.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS reglages (
+               cle        TEXT PRIMARY KEY,
+               valeur     TEXT    NOT NULL,
+               maj_ts_sec INTEGER NOT NULL
+           )""")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "tables de marché", _v1_tables_de_marche),
     Migration(2, "état des connexions au broker", _v2_etat_broker),
@@ -416,6 +432,7 @@ MIGRATIONS: tuple[Migration, ...] = (
               _v7_entiers_64_bits),
     Migration(8, "ancre du solde broker", _v8_ancre_du_solde),
     Migration(9, "compteurs d'activité persistés", _v9_compteurs_d_activite),
+    Migration(10, "réglages de l'utilisateur", _v10_reglages),
 )
 
 #: Version de schéma que ce code sait produire.

@@ -137,7 +137,7 @@ def test_le_resume_distingue_desactivee_de_en_panne():
     """« Désactivée » et « en panne » sont deux états différents, et les
     confondre ferait croire à une course qui tourne alors qu'elle est morte."""
     s = SuperviseurCourse(lambda _alerter=None: CourseFactice())
-    assert "désactivée" in s.resume()
+    assert "course arrêtée" in s.resume()
 
     s.demarrer()
     assert _attendre(lambda: "🟢" in s.resume())
@@ -374,7 +374,7 @@ def test_la_fabrique_rapporte_chaque_etape(monkeypatch):
 
     monkeypatch.setattr(mod_courtier, "CourtierDemo", _Courtier)
     monkeypatch.setattr(plan_demo, "_assembler",
-                        lambda *a: a[-2]("rattrapage des ordres en vol")
+                        lambda *a, **k: a[-2]("rattrapage des ordres en vol")
                         or "course")
     monkeypatch.setattr("maxprofit.store.db.open_read_only", lambda p: None)
     monkeypatch.setattr("maxprofit.store.db.open_read_write",

@@ -422,6 +422,12 @@ class Etat:
     signaux_contre_heure: int = 0
     #: Paires écartées au dernier passage : taux estimé sous le seuil.
     paires_perdantes: list[str] = field(default_factory=list)
+    #: Trading seul : pas de planning, donc pas de cible de solde. La journée
+    #: s'arrête sur son objectif (+2 %) ou sa perte maximale (−3 %), mesurés
+    #: depuis son ouverture, et reprend le jour UTC suivant.
+    sans_cible: bool = False
+    #: Le jour UTC où la journée en cours s'est ouverte (trading seul).
+    journee_utc: int = 0
 
     def cible_du_jour(self, jour: int | None = None) -> float | None:
         """Le solde que le planning prévoit à la fin du jour `jour`.
@@ -432,7 +438,7 @@ class Etat:
         le solde baisse, et six sessions jouées à 240 $ ne la rapprochent pas.
         """
         objectif = self.plan.objectif_journalier_pct
-        if objectif is None:
+        if objectif is None or self.sans_cible:
             return None
         jour = self.jour if jour is None else jour
         jour = min(max(jour, 0), self.plan.jours)
@@ -604,6 +610,12 @@ class CoursePlanDemo:
         self.mode_apprentissage = mode_apprentissage()
         self.seuil_contre_heure = seuil_contre_heure()
         self.pas_max = pas_max_de_la_martingale()
+        #: Trading seul : une journée par jour UTC, sans planning à suivre.
+        self.mode_trading = False
+        #: Les campagnes précédentes de la même stratégie, relues pour les
+        #: taux de réussite par paire : un nouveau réglage ouvre une campagne
+        #: neuve, il ne doit pas effacer ce que les ordres réels ont appris.
+        self.campagnes_precedentes: tuple[str, ...] = ()
         import os
         self.ecarter_les_perdantes = (
             os.environ.get("PAIRES_PERDANTES", "1").strip() != "0")
@@ -1015,7 +1027,7 @@ class CoursePlanDemo:
             return self._reels
         self._reels_ts = maintenant
         try:
-            ordres = self.journal.toutes()
+            ordres = self.journal.toutes(self.campagnes_precedentes)
         except Exception as erreur:              # noqa: BLE001
             log.debug("Journal illisible pour la priorité : %s", erreur)
             return self._reels
@@ -1461,6 +1473,14 @@ class CoursePlanDemo:
             f"{_sessions_du_jour(self.etat.journee, self.etat.plan.sessions_par_jour)} "
             f"({self.etat.journee.resultat_pct:+.2f} %)"
             f"{self._ligne_cible()}")
+        arret = self.etat.journee.arret
+        if self.mode_trading and arret is not None:
+            self._prevenir(
+                f"{'✅' if arret is Arret.OBJECTIF_ATTEINT else '🛑'} "
+                f"<b>Journée terminée</b> — {arret}\n"
+                f"{self.etat.journee.resultat:+.2f} $ "
+                f"({self.etat.journee.resultat_pct:+.2f} %), solde "
+                f"<b>{self.etat.solde:.2f} $</b>. Reprise demain (UTC).")
 
     def _ligne_apprentissage(self) -> str:
         contre = ("" if self.seuil_contre_heure is None else
@@ -1496,6 +1516,16 @@ class CoursePlanDemo:
 
     def peut_ouvrir(self) -> Arret | None:
         return self.etat.journee.peut_ouvrir_une_session()
+
+    def au_repos(self) -> bool:
+        """Ni session entamée, ni ordre en vol : on peut changer de réglage.
+
+        Changer de plan au milieu d'une martingale abandonnerait la mise déjà
+        perdue sans lui laisser le pas qui la rattrape.
+        """
+        return (self.etat.session is None
+                and self.etat.trade_en_cours is None
+                and not self.attente_confirmation)
 
     def tour(self) -> bool:
         """Un passage : cherche un signal, joue un pas si c'est possible.
@@ -1865,6 +1895,8 @@ class CoursePlanDemo:
         Rend `True` si la journée a tourné, pour que l'appelant persiste.
         """
         self.jour_utc_courant = jour_utc_courant or self.jour_utc_courant
+        if self.mode_trading:
+            return self._passer_le_jour_utc(jour_utc_courant or jour_utc())
         if self.etat.session is not None:
             # Une session en cours finit d'abord. La couper laisserait des
             # mises engagées dans une journée qui n'existe plus.
@@ -1938,6 +1970,34 @@ class CoursePlanDemo:
             f"solde <b>{self.etat.solde:.2f} $</b>\n"
             f"jour {self.etat.jour} : cible <b>{cible:.2f} $</b>, "
             f"{self.etat.plan.sessions_par_jour} sessions gagnées y mènent")
+        return True
+
+    def _passer_le_jour_utc(self, aujourdhui: int) -> bool:
+        """Trading seul : une journée par jour UTC, rouverte sur le solde réel.
+
+        Objectif atteint ou perte maximale, la journée s'arrête jusqu'au
+        lendemain UTC — c'est tout ce qui la borne. Pas de planning à
+        rattraper : la nouvelle journée vise +2 % du solde qu'elle trouve.
+        """
+        e = self.etat
+        if not e.journee_utc:
+            e.journee_utc = aujourdhui
+            return True
+        if aujourdhui <= e.journee_utc or e.session is not None:
+            return False
+        hier = e.journee
+        nouveau_jour(e)
+        e.journee_utc = aujourdhui
+        e.sessions_perdues_daffilee = 0
+        log.info("Trading seul : journée %d ouverte, solde %.2f $.", e.jour,
+                 e.solde)
+        self._prevenir(
+            f"📅 <b>Nouvelle journée</b> (trading seul) — hier "
+            f"{hier.resultat:+.2f} $ ({hier.resultat_pct:+.2f} %)\n"
+            f"solde <b>{e.solde:.2f} $</b> ; objectif du jour "
+            f"+{e.plan.objectif_journalier_pct:.0f} % "
+            f"({e.solde * e.plan.objectif_journalier_pct / 100:.2f} $), arrêt "
+            f"à −{e.plan.perte_journaliere_max_pct:.0f} %.")
         return True
 
     def clore_une_session_trop_longue(self) -> bool:
@@ -2093,13 +2153,26 @@ class CoursePlanDemo:
                     f"aucune bougie évaluée — c'est l'HISTORIQUE demandé au "
                     f"broker qui est en cause, pas la base")
         age = int(time.time()) - e.derniere_evaluation_ts
-        base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
-                f"sessions {_sessions_du_jour(j, e.plan.sessions_par_jour)}  "
-                f"journée {j.resultat_pct:+.2f} %  "
-                + (f"cible {j.cible:.2f} $ (manque {j.manque:.2f} $)  "
-                   if j.cible is not None else "")
-                + f"réancrages {len(e.reancrages)}"
-                + self._ligne_apprentissage())
+        if self.mode_trading:
+            pause = ("  ⏸ journée terminée, reprise demain (UTC)"
+                     if j.arret is not None else "")
+            base = (f"trading seul, jour {e.jour}  solde {e.solde:.2f} $  "
+                    f"journée {j.resultat:+.2f} $ ({j.resultat_pct:+.2f} %, "
+                    f"objectif +{e.plan.objectif_journalier_pct:.0f} %, arrêt "
+                    f"à −{e.plan.perte_journaliere_max_pct:.0f} %)  "
+                    f"ordres {j.sessions_jouees} dont {j.sessions_gagnees} "
+                    f"gagnés{pause}" + self._ligne_apprentissage())
+        else:
+            base = (f"jour {e.jour}/{e.plan.jours}  solde {e.solde:.2f} $  "
+                    f"sessions "
+                    f"{_sessions_du_jour(j, e.plan.sessions_par_jour)}  "
+                    f"journée {j.resultat_pct:+.2f} %  "
+                    + (f"cible {j.cible:.2f} $ (manque {j.manque:.2f} $)  "
+                       if j.cible is not None else "")
+                    + (f"🎯 fin du plan {self.capital_vise():.2f} $  "
+                       if e.plan.objectif_journalier_pct is not None else "")
+                    + f"réancrages {len(e.reancrages)}"
+                    + self._ligne_apprentissage())
         # Les compteurs d'activité viennent APRÈS le plan mais ils sont le
         # seul moyen de dire qu'une course sans ordre est vivante.
         depuis = (int(time.time()) - e.demarre_ts) // 60 if e.demarre_ts else 0
@@ -2171,6 +2244,11 @@ class CoursePlanDemo:
                 f"{ecartees}{debit}"
                 f"{self._reactivite()}"
                 f"{' | ' + attente if attente else ''}")
+
+    def capital_vise(self) -> float:
+        """Le solde que le planning prévoit au dernier jour du plan."""
+        return self.etat.cible_du_jour(self.etat.plan.jours) or \
+            self.etat.plan.capital_initial
 
     def _reactivite(self) -> str:
         """Délai médian et maximal entre la clôture d'une bougie et son
@@ -2274,6 +2352,7 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      "_refus_ts": etat.dernier_refus_ts,
                      "_quarantaines": etat.quarantaines_subies,
                      "_gagnees_jour": etat.journee.sessions_gagnees,
+                     "_journee_utc": etat.journee_utc,
                      "_session_suspendue": etat.session_suspendue,
                      "_apprentissage": (etat.apprentissage.to_dict()
                                         if etat.apprentissage else None)}),
@@ -2348,6 +2427,7 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     etat.journee.sessions_gagnees = min(
         int(sauve.get("_gagnees_jour") or 0), etat.journee.sessions_jouees)
     etat.demarre_ts = int(ligne[15] or 0)
+    etat.journee_utc = int(sauve.get("_journee_utc") or 0)
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même
@@ -2446,7 +2526,9 @@ def bilan(course, ouvrir=None) -> str:
     conn = ouvrir() if ouvrir else open_read_only(Path("lecture"))
     try:
         journal = JournalExecution(conn, course.journal.campagne)
-        return texte_du_bilan(journal.toutes(), int(time.time()))
+        return texte_du_bilan(
+            journal.toutes(getattr(course, "campagnes_precedentes", ())),
+            int(time.time()))
     finally:
         try:
             conn.close()
@@ -2542,7 +2624,7 @@ def echeances(course, ouvrir=None) -> str:
         lecteur = MarketReader(conn)
         journal = JournalExecution(conn, course.journal.campagne)
         return texte_des_echeances(
-            journal.toutes(),
+            journal.toutes(getattr(course, "campagnes_precedentes", ())),
             lambda p, a, b: lecteur.candles(p, 60, a, b),
             course.etat.apprentissage,
             jouee=course.strategie.p.expiry_sec)
@@ -2720,8 +2802,13 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                      chemin_ecriture="ecriture",
                      mode_univers: str = UNIVERS_EPINGLEES, alerter=None,
                      paires_collectees: tuple[str, ...] | None = None,
-                     etape=None):
+                     etape=None, configuration=None,
+                     campagnes_precedentes: tuple[str, ...] = ()):
     """Assemble une course prête à tourner, et reprend celle en cours s'il y en a.
+
+    `configuration` : le réglage choisi sur Telegram (`Configuration`). Il
+    remplace alors capital, sessions et martingale, et peut demander le
+    trading seul. Sans lui, le plan 1/7 des variables d'environnement.
 
     ⚠ `ssid` est PASSÉ et non résolu ici. Le résoudre demanderait d'importer
     `collect`, droit que `live` n'a pas et ne doit pas avoir : la couche qui
@@ -2740,10 +2827,13 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     from maxprofit.store.db import open_read_only, open_read_write
     from maxprofit.store.market import MarketReader
 
-    plan = PlanCapital.depuis_risque(
-        capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
-        sessions_par_jour=sessions_par_jour, jours=jours,
-        sessions_perdues_max=2)
+    if configuration is not None:
+        plan = configuration.plan_de_course()
+    else:
+        plan = PlanCapital.depuis_risque(
+            capital_initial=capital, risque=Risque(1, 7), payout_pct=92,
+            sessions_par_jour=sessions_par_jour, jours=jours,
+            sessions_perdues_max=2)
     # ⚠ L'OBJECTIF DU JOUR EST CE QUE SES SESSIONS DOIVENT RAPPORTER.
     #
     # Il valait `None` — aucun arrêt au gain — donc une journée ne s'arrêtait
@@ -2754,10 +2844,11 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     # Six sessions à 0,5834 % font 3,50 %. Le chiffre n'est donc pas un réglage
     # de plus : c'est la définition d'un jour du plan, déduite du nombre de
     # sessions qui le composent.
-    plan = replace(
-        plan,
-        objectif_journalier_pct=(
-            plan.sessions_par_jour * plan.gain_par_session_pct))
+    if configuration is None:
+        plan = replace(
+            plan,
+            objectif_journalier_pct=(
+                plan.sessions_par_jour * plan.gain_par_session_pct))
     # Le plafond est le 3e pas AU CAPITAL VISÉ, pas au capital initial.
     #
     # Les mises sont dimensionnées sur le solde COURANT : elles grandissent
@@ -2766,14 +2857,18 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
     # abandonnant la course au bout de cinq refus. C'est exactement ce qui est
     # arrivé, à une nuance près : le plafond absolu de 10 $ a bloqué dès le
     # premier ordre.
-    vise = solde_projete(plan, plan.jours)
-    pire = Echelle(payout_pct=92,
-                   gain_vise=vise * plan.gain_par_session_pct / 100).mises()[-1]
-    plafond = round(pire * 1.1, 2)
+    if configuration is not None:
+        vise, plafond = configuration.plafond_de_mise()
+    else:
+        vise = solde_projete(plan, plan.jours)
+        pire = Echelle(
+            payout_pct=92,
+            gain_vise=vise * plan.gain_par_session_pct / 100).mises()[-1]
+        plafond = round(pire * 1.1, 2)
     plafonds = Plafonds(mise=plafond, mise_max_absolue=plafond,
                         ordres_max=2000, duree_max_sec=11 * 86400)
-    log.info("Plafond de mise : %.2f $ (3e pas au capital visé de %.2f $)",
-             plafond, vise)
+    log.info("Plafond de mise : %.2f $ (dernier pas au capital visé de "
+             "%.2f $)", plafond, vise)
 
     # ⚠ CHAQUE ÉTAPE DU DÉMARRAGE EST NOMMÉE ET CHRONOMÉTRÉE. `/etat`
     # affichait « connexion au broker en cours » du lancement du thread
@@ -2800,7 +2895,9 @@ def fabriquer_course(ssid: str, *, campagne: str, capital: float,
                             alerter, chrono,
                             # Le fil d'apprentissage a SA connexion : une
                             # connexion ne se partage pas entre deux fils.
-                            lambda: open_read_only(Path(chemin_lecture)))
+                            lambda: open_read_only(Path(chemin_lecture)),
+                            configuration=configuration,
+                            campagnes_precedentes=campagnes_precedentes)
         chrono.fin()
         return course
     except BaseException:
@@ -2840,7 +2937,8 @@ class _Chrono:
 
 def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
                mode_univers, paires_collectees, alerter, chrono=None,
-               ouvrir_la_base=None):
+               ouvrir_la_base=None, configuration=None,
+               campagnes_precedentes=()):
     chrono = chrono or _Chrono()
     from maxprofit.strategies.zone_h1 import ZoneH1
 
@@ -2848,6 +2946,10 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
                             ZoneH1(), mode_univers=mode_univers,
                             paires_collectees=paires_collectees,
                             alerter=alerter)
+    course.campagnes_precedentes = tuple(campagnes_precedentes)
+    if configuration is not None:
+        course.pas_max = configuration.pas_de_course()
+        course.mode_trading = configuration.mode == "trading"
     log.info("Univers : %s (%s)", mode_univers,
              ", ".join(paires) if mode_univers == UNIVERS_EPINGLEES
              else "tous les actifs au plafond")
@@ -2870,6 +2972,10 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
     # mesurer un débit.
     if not course.etat.demarre_ts:
         course.etat.demarre_ts = int(time.time())
+    if course.mode_trading:
+        # Ni planning ni recalage : la journée se mesure à son ouverture.
+        course.etat.sans_cible = True
+        course.etat.caler_la_cible()
 
     def sauver():
         sauver_etat(ecriture, campagne, course.etat, jour_utc())

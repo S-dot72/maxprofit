@@ -420,10 +420,22 @@ class JournalExecution:
             (self.campagne,)).fetchone()
         return float(ligne[0])
 
-    def toutes(self) -> list[Execution]:
-        return self._lire()
+    def toutes(self, autres_campagnes: tuple[str, ...] = ()) -> list[Execution]:
+        """Les ordres de la campagne, et ceux d'`autres_campagnes` avant eux.
 
-    def _lire(self, condition: str = "") -> list[Execution]:
+        Chaque lancement depuis Telegram ouvre une campagne neuve — c'est ce
+        qui remet le solde du plan au capital choisi. Les taux de réussite
+        par paire, eux, ne doivent pas repartir de zéro à chaque réglage :
+        on relit donc aussi les campagnes précédentes de la même stratégie.
+        """
+        return self._lire(autres_campagnes=autres_campagnes)
+
+    def _lire(self, condition: str = "",
+              autres_campagnes: tuple[str, ...] = ()) -> list[Execution]:
+        noms = (self.campagne,
+                *dict.fromkeys(c for c in autres_campagnes
+                               if c and c != self.campagne))
+        marques = ", ".join("?" * len(noms))
         # `prix_attendu > 0` écarte les réservations jamais complétées : ce ne
         # sont pas des ordres, seulement la trace d'un envoi tenté.
         lignes = self.conn.execute(
@@ -433,10 +445,11 @@ class JournalExecution:
                       prix_sortie, payout_broker_pct, expiration_ts_ms,
                       resultat, profit, brut, ouverture_ts_ms,
                       decalage_broker_ms
-               FROM executions WHERE campagne = ? AND prix_attendu > 0
+               FROM executions WHERE campagne IN ({marques})
+               AND prix_attendu > 0
                {condition}
                ORDER BY id""",
-            (self.campagne,)).fetchall()
+            noms).fetchall()
         return [
             Execution(
                 pair=r[0], sens=r[1], mise=r[2], signal_ts_ms=r[3],

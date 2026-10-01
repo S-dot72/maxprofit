@@ -31,7 +31,7 @@ _R = "double precision"
 _O = "bytea"
 
 #: table -> (colonnes et leur type attendu, clé primaire). Reflète les
-#: migrations 1 à 9 telles que `dialecte.vers_postgres` les traduit.
+#: migrations 1 à 10 telles que `dialecte.vers_postgres` les traduit.
 SCHEMA_ATTENDU: dict[str, tuple[dict[str, str], tuple[str, ...]]] = {
     "ticks": ({"pair": _T, "ts_ms": _E, "price": _R}, ("pair", "ts_ms")),
     "candles": ({"pair": _T, "tf_sec": _E, "ts_sec": _E, "open": _R,
@@ -64,6 +64,7 @@ SCHEMA_ATTENDU: dict[str, tuple[dict[str, str], tuple[str, ...]]] = {
                    "session_gain_vise": _R, "dernier_trade_pair": _T,
                    "dernier_trade_ts_sec": _E, "solde_broker_ancre": _R,
                    "compteurs": _T, "demarre_ts": _E}, ("campagne",)),
+    "reglages": ({"cle": _T, "valeur": _T, "maj_ts_sec": _E}, ("cle",)),
 }
 
 _COMPATIBLES = {

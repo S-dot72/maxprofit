@@ -147,6 +147,10 @@ class SuperviseurCourse:
         #: où quelque chose se passait — des ordres partaient chez le broker et
         #: Telegram montrait encore « connexion en cours ».
         self._course = None
+        #: « relancer » ou « arreter », demandé depuis Telegram et appliqué
+        #: par le thread de la course dès qu'elle est AU REPOS : jamais au
+        #: milieu d'une martingale ni pendant qu'un ordre vit.
+        self._consigne: str | None = None
 
     # --- cycle de vie -------------------------------------------------------
 
@@ -158,6 +162,47 @@ class SuperviseurCourse:
             target=self._boucle, name="course-plan", daemon=True)
         self._thread.start()
         log.info("Course du plan : thread démarré.")
+
+    def tourne(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def relancer(self) -> str:
+        """Reconstruit la course sur la configuration enregistrée.
+
+        Démarre le thread s'il ne tourne pas ; sinon la relance attend que la
+        course soit au repos. Rend ce qui va se passer, pour l'utilisateur.
+        """
+        if not self.tourne():
+            self._thread = None
+            self._arret.clear()
+            self._consigne = None
+            self.abandonnee = False
+            self.echecs_consecutifs = 0
+            self.debut_ts_sec = None
+            self.demarrer()
+            return "La course démarre."
+        self._consigne = "relancer"
+        self._reveiller()
+        if self._course is None or _au_repos(self._course):
+            return "La course repart avec ce réglage dans un instant."
+        return ("Une session est en cours : la course repartira avec ce "
+                "réglage dès qu'elle sera terminée.")
+
+    def suspendre(self) -> str:
+        """Arrête la course au prochain repos ; la collecte continue."""
+        if not self.tourne():
+            self.active = False
+            return "La course est déjà arrêtée."
+        self._consigne = "arreter"
+        self._reveiller()
+        if self._course is None or _au_repos(self._course):
+            return "La course s'arrête dans un instant."
+        return ("Une session est en cours : la course s'arrêtera dès qu'elle "
+                "sera terminée, sans laisser de martingale à moitié jouée.")
+
+    def _reveiller(self) -> None:
+        if self._reveil is not None:
+            self._reveil.set()
 
     def arreter(self) -> None:
         self._arret.set()
@@ -205,11 +250,16 @@ class SuperviseurCourse:
                 self._etape = None
                 # L'alerteur est transmis a la course : c'est elle qui sait
                 # quand une session se clot ou qu'un reancrage se declenche.
+                # La fabrique lit la configuration du moment : une relance
+                # demandée avant ce point est donc déjà servie.
+                if self._consigne == "relancer":
+                    self._consigne = None
                 course = self._fabriquer(self._alerter)
                 self._course = course
                 self._etape = None
                 self.echecs_consecutifs = 0
                 attente = BACKOFF_SEC
+                consigne = None
                 while not self._arret.is_set():
                     joue = course.tour()
                     # Le résumé est rafraîchi à CHAQUE passage, pas seulement
@@ -218,9 +268,26 @@ class SuperviseurCourse:
                     # pendant des heures sur une course parfaitement vivante
                     # qui attendait simplement un signal.
                     self._dernier_resume = course.resume()
+                    if self._consigne is not None and _au_repos(course):
+                        consigne, self._consigne = self._consigne, None
+                        break
                     if not joue:
                         self._attendre_le_prochain_passage()
-                return
+                if consigne is None:
+                    return
+                self._liberer_le_courtier()
+                if consigne == "arreter":
+                    self.active = False
+                    self._dernier_resume = "course arrêtée depuis Telegram"
+                    log.info("Course du plan : arrêtée à la demande.")
+                    self._prevenir("⏹ <b>Course arrêtée</b>. La collecte "
+                                   "continue ; /demarrer pour reprendre.")
+                    return
+                log.info("Course du plan : relance sur la nouvelle "
+                         "configuration.")
+                self._prevenir("🔄 <b>Course relancée</b> sur le nouveau "
+                               "réglage.")
+                continue
             except BaseException as erreur:      # noqa: BLE001
                 # TOUT est avalé, y compris ce qui serait fatal ailleurs.
                 # Laisser remonter tuerait le processus qui collecte, et la
@@ -294,7 +361,8 @@ class SuperviseurCourse:
             return (f"🔴 course ABANDONNÉE après {ECHECS_MAX} échecs — "
                     f"{self.derniere_erreur}")
         if not self.active:
-            return "⏸ course du plan désactivée (PLAN_DEMO=0)"
+            return ("⏸ course arrêtée — /configuration pour la régler, "
+                    "/demarrer pour la lancer")
         if self.en_attente():
             restant = self.debut_ts_sec - time.time()
             return (f"⏳ course armée — départ dans "
@@ -311,6 +379,14 @@ class SuperviseurCourse:
             except Exception:                    # noqa: BLE001
                 log.debug("Résumé de course illisible", exc_info=True)
         return f"🟢 {self._resume_du_demarrage()}"
+
+
+def _au_repos(course) -> bool:
+    """Une course qui ne sait pas le dire est réputée au repos."""
+    try:
+        return bool(getattr(course, "au_repos", lambda: True)())
+    except Exception:                            # noqa: BLE001
+        return False
 
 
 def course_activee() -> bool:
