@@ -260,6 +260,9 @@ class Apprentissage:
     #: {stratégie: {"signaux": n, "resultats": [...]}} : le plan simulé (voir
     #: `live.simulation`). Posé par la course, qui seule connaît le plan.
     simulations: Mapping[str, Mapping] = field(default_factory=dict)
+    #: Les variantes de la stratégie jugées hors échantillon (voir
+    #: `live.laboratoire`).
+    laboratoire: Mapping = field(default_factory=dict)
     #: Jours d'historique rejoués.
     jours: int = 0
 
@@ -425,6 +428,7 @@ class Apprentissage:
             "echeances": {str(k): list(v) for k, v in self.echeances.items()},
             "par_paire": {k: list(v) for k, v in self.par_paire.items()},
             "simulations": dict(self.simulations), "jours": self.jours,
+            "laboratoire": dict(self.laboratoire),
         }
 
     @classmethod
@@ -447,6 +451,7 @@ class Apprentissage:
             par_paire={str(k): (int(v[0]), int(v[1]))
                        for k, v in (d.get("par_paire") or {}).items()},
             simulations=dict(d.get("simulations") or {}),
+            laboratoire=dict(d.get("laboratoire") or {}),
             jours=int(d.get("jours") or 0))
 
 

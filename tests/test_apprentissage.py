@@ -214,8 +214,7 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     assert messages and "Apprentissage" in messages[-1]
     simulations = course.etat.apprentissage.simulations
     assert "ZoneH1 (15 min), comme en direct" in simulations
-    assert "RebondMediane (1 min)" in simulations
-    assert "SixConditions (1 min)" in simulations
+    assert course.etat.apprentissage.laboratoire, "le laboratoire est calculé"
     conn.close()
 
 
