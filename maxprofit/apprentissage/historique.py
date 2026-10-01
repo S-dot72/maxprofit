@@ -63,10 +63,34 @@ def exemples_historiques(
                 prix = closes.get(bougie.ts_sec + sec)
                 if prix is not None and prix != bougie.close:
                     issues[sec] = (prix > bougie.close) == call
+            ctx = (contexte(fenetre, call, signal.features)
+                   if avec_contexte else {})
+            if avec_contexte:
+                ctx.update(_au_dela_de_la_fenetre(
+                    closes, bougie.ts_sec, call, signal.features))
             sortie.append(Exemple(
-                ts_sec=bougie.ts_sec + 60, pair=pair,
-                contexte=(contexte(fenetre, call, signal.features)
-                          if avec_contexte else {}),
+                ts_sec=bougie.ts_sec + 60, pair=pair, contexte=ctx,
                 gagne=(sortie_prix > bougie.close) == call, issues=issues))
     sortie.sort(key=lambda e: e.ts_sec)
+    return sortie
+
+
+def _au_dela_de_la_fenetre(closes: Mapping[int, float], ts_sec: int,
+                           call: bool, features) -> dict[str, float]:
+    """Ce que le laboratoire mesure en plus du contexte de la stratégie.
+
+    `tendance_4h` : du close d'il y a quatre heures closes au close de la
+    dernière heure close, dans le sens du trade — plus loin que la fenêtre de
+    cinq heures de la stratégie, d'où la lecture dans la série complète.
+    `niveau` : le prix de la zone, pour reconnaître deux signaux sur la même.
+    Hors de `CARACTERISTIQUES` : l'apprentissage des leçons ne les voit pas.
+    """
+    sortie: dict[str, float] = {}
+    heure = (ts_sec + 60) // 3600 * 3600
+    recent, ancien = closes.get(heure - 60), closes.get(heure - 4 * 3600 - 60)
+    if recent is not None and ancien is not None:
+        sortie["tendance_4h"] = round((recent - ancien) * (1 if call else -1)
+                                      / (abs(ancien) or 1) * 1e4, 4)
+    if features and "niveau" in features:
+        sortie["niveau"] = float(features["niveau"])
     return sortie

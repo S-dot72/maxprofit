@@ -95,6 +95,7 @@ class Apprenti:
         # Et d'avant le taux par paire : /lecons le montrerait vide.
         if actuel is None or not actuel.n or not actuel.echeances \
                 or not actuel.par_paire or not actuel.simulations \
+                or not actuel.laboratoire \
                 or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
@@ -120,8 +121,17 @@ class Apprenti:
         fin = int(time.time())
         debut = fin - jours * 86400
         debut_calcul = time.monotonic()
-        autres = _autres_strategies()
-        par_autre: dict[str, list] = {nom: [] for nom, _ in autres}
+        # ZoneH1 avec deux entrées par zone de plus : la variante « seconde
+        # chance » du laboratoire en a besoin, et ne peut pas les déduire des
+        # signaux de la stratégie jouée.
+        import dataclasses
+        elargie = None
+        if dataclasses.is_dataclass(strategie.p) and \
+                hasattr(strategie.p, "entrees_max_par_zone"):
+            elargie = type(strategie)(dataclasses.replace(
+                strategie.p,
+                entrees_max_par_zone=strategie.p.entrees_max_par_zone + 2))
+        etendus: list | None = [] if elargie is not None else None
         conn = self._ouvrir()
         try:
             lecteur = MarketReader(conn)
@@ -134,17 +144,17 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=lambda: time.sleep(0.002))
-                # Les autres stratégies, sur les MÊMES bougies déjà en
-                # mémoire : c'est ce qui rend la comparaison juste.
-                for nom, autre in autres:
-                    par_autre[nom] += exemples_historiques(
-                        {paire: bougies}, autre,
-                        echeance_sec=autre.p.expiry_sec,
-                        echeances=(autre.p.expiry_sec,),
-                        # La simulation n'en a pas besoin, et une stratégie à
-                        # 1 min peut rendre des milliers de signaux.
-                        avec_contexte=False,
-                        respirer=lambda: time.sleep(0.002))
+                # Sur les MÊMES bougies déjà en mémoire : c'est ce qui rend
+                # la comparaison juste.
+                if elargie is None:
+                    continue
+                etendus += exemples_historiques(
+                    {paire: bougies}, elargie,
+                    echeance_sec=strategie.p.expiry_sec,
+                    echeances=(strategie.p.expiry_sec,),
+                    garde=lambda p, f: dans_la_plage_de_calibration(
+                        tolerance, f),
+                    respirer=lambda: time.sleep(0.002))
         finally:
             try:
                 conn.close()
@@ -154,23 +164,19 @@ class Apprenti:
         nouveau = apprendre(exemples)
         nouveau.jours = jours
         nouveau.simulations = _simulations(
-            exemples, strategie.p.expiry_sec, course.seuil_contre_heure,
-            {nom: (par_autre[nom], autre.p.expiry_sec)
-             for nom, autre in autres})
+            exemples, strategie.p.expiry_sec, course.seuil_contre_heure, {})
+        from maxprofit.live.laboratoire import laboratoire
+        seuil = course.seuil_contre_heure
+        nouveau.laboratoire = laboratoire(
+            exemples, etendus,
+            (lambda e: True) if seuil is None else
+            (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
+            strategie.p.expiry_sec)
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
                  time.monotonic() - debut_calcul, len(nouveau.regles))
         course._prevenir(_annonce(ancien, nouveau))
-
-
-def _autres_strategies():
-    """(nom, stratégie) de chaque stratégie du dépôt autre que celle jouée."""
-    from maxprofit.strategies.rebond_mediane import RebondMediane
-    from maxprofit.strategies.six_conditions import (
-        PARAMETRES_DEPART, SixConditions)
-    return (("RebondMediane (1 min)", RebondMediane()),
-            ("SixConditions (1 min)", SixConditions(PARAMETRES_DEPART)))
 
 
 def _simulations(exemples, echeance_sec, seuil_contre_heure, autres) -> dict:

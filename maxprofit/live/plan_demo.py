@@ -2644,6 +2644,15 @@ def simulation(course) -> str:
     return texte(a.simulations if a else {}, a.jours if a else None)
 
 
+def laboratoire(course) -> str:
+    """`/laboratoire` : les variantes de ZoneH1 jugées hors échantillon."""
+    from maxprofit.live.laboratoire import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte(a.laboratoire if a else None)
+
+
 def lecons(course) -> str:
     """`/lecons` : ce que l'apprentissage a tiré de l'historique."""
     if course is None:
