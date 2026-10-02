@@ -1012,9 +1012,11 @@ class CoursePlanDemo:
             payante = paire not in self.paires
             if payante and examinees >= PAIRES_MAX_PAR_PASSAGE:
                 break
-            if self._paire_perdante(paire):
+            perdante = self._paire_perdante(paire)
+            if perdante:
                 ecartees.append(paire)
-                continue
+                if payante:
+                    continue          # inutile de payer le broker pour elle
             try:
                 bougies = self._bougies_de(paire)
             except BotError as erreur:
@@ -1028,20 +1030,41 @@ class CoursePlanDemo:
                 # fermer le socket. Une paire lue dans notre base ne lui
                 # demande rien, et n'a donc rien à attendre.
                 time.sleep(DELAI_ENTRE_ACTIFS_SEC)
-            if not self._dans_sa_plage_de_calibration(paire, bougies):
-                hors_calibration += 1
-                continue
             if len(bougies) < 2 * self.strategie.p.fenetre_pique + 2:
                 # Trop peu d'historique pour même chercher une zone. C'est le
                 # cas normal d'une paire fraîchement ajoutée à la collecte,
                 # et il dure des heures : il doit se compter, pas se taire.
                 sans_historique += 1
                 continue
+            precedent = self.etat.derniere_bougie.get(paire, 0)
             derniere = bougies[-1]
-            if derniere.ts_sec <= self.etat.derniere_bougie.get(paire, 0):
+            if derniere.ts_sec <= precedent:
                 continue          # déjà évaluée
             self.etat.derniere_bougie[paire] = derniere.ts_sec
-            self.etat.bougies_evaluees += 1
+            # ⚠ TOUTES LES BOUGIES NOUVELLES, PAS SEULEMENT LA DERNIÈRE.
+            #
+            # Un passage ralenti — redémarrage, rejeu du laboratoire qui
+            # occupe le processeur — pouvait laisser passer deux bougies
+            # d'une paire : seule la dernière était vue, l'autre jamais, et
+            # rien ne le disait. Celles qui sont encore fraîches sont
+            # rattrapées ; les autres sont comptées comme MANQUÉES.
+            if precedent:
+                nouvelles = [b for b in bougies[-10:] if b.ts_sec > precedent]
+            else:
+                nouvelles = [derniere]
+            fraiches = [b for b in nouvelles
+                        if maintenant - (b.ts_sec + 60) <= FRAICHEUR_MAX_SEC]
+            if precedent and maintenant - precedent < 600 and \
+                    len(nouvelles) > len(fraiches):
+                self.etat.noter("manquees", len(nouvelles) - len(fraiches))
+            if perdante:
+                self.etat.noter("paire_perdante", len(fraiches))
+                continue
+            if not self._dans_sa_plage_de_calibration(paire, bougies):
+                hors_calibration += 1
+                self.etat.noter("hors_calibration", len(fraiches))
+                continue
+            self.etat.bougies_evaluees += len(nouvelles)
             self.etat.derniere_evaluation_ts = maintenant
             # La bougie close à ts_sec couvre [ts_sec, ts_sec+60[. Le signal
             # est donc daté de sa FIN, et c'est de là qu'on compte la
@@ -1051,49 +1074,17 @@ class CoursePlanDemo:
             # qu'elle vient d'être comptée « évaluée » juste au-dessus. Le
             # compteur annonçait donc 810 quand la stratégie en avait vu une
             # poignée — et l'on cherchait le défaut dans la stratégie.
-            if maintenant - (derniere.ts_sec + 60) > FRAICHEUR_MAX_SEC:
-                self.etat.bougies_perimees += 1
-                continue
-            # Après le filtre de fraîcheur : une bougie vieille de deux jours
-            # parce que la collecte est arrêtée ne dit rien de la vitesse de
-            # la course, et noyait la mesure (« 174 540 s »).
-            self.delais_evaluation.append(
-                time.time() - (derniere.ts_sec + 60))
-            self.etat.noter("vues")
-            vue = SequenceMarketView(paire, bougies)
-            signal = self.strategie.on_bar(vue)
-            if signal is not None:
-                self.etat.noter("signaux")
-            signal = self._confirmer_en_m1(paire, signal, bougies, vue)
-            if signal is None:
-                continue
-            # Compté AVANT la revérification du payout : sans cela, un signal
-            # écarté pour cause de payout retombé est indiscernable d'un
-            # signal jamais produit, et les deux appellent des gestes opposés.
-            self.etat.signaux_bruts += 1
-            # Le payout est revérifié À L'INSTANT DU SIGNAL. Le catalogue peut
-            # dater de quelques minutes, et entrer sur un payout périmé est
-            # exactement ce que le filtre existe pour empêcher.
-            if not self._payout_au_maximum(paire):
-                self.etat.noter("payout")
-                continue
-            ctx = contexte_du_signal(
-                bougies, signal.direction is Direction.CALL, signal.features)
-            if self._contre_l_heure_en_cours(paire, signal, ctx):
-                self.etat.noter("contre_heure")
-                continue
-            if self._ecarte_par_une_lecon(paire, signal, ctx):
-                self.etat.noter("lecon")
-                continue
-            if self.vagues_min_minutes:
-                from maxprofit.strategies.zones_zigzag import rythme_minutes
-                rythme = rythme_minutes(bougies)
-                if rythme is None or rythme < self.vagues_min_minutes:
-                    self.etat.noter("vagues_courtes")
-                    continue
-            self.etat.noter("retenus")
-            self.etat.signaux_trouves += 1
-            retenus.append((signal, ctx, derniere.ts_sec + 60, bougies))
+            self.etat.bougies_perimees += len(nouvelles) - len(fraiches)
+            retenu_de_la_paire = None
+            for bougie in fraiches:
+                k = len(bougies) - 1
+                while bougies[k].ts_sec != bougie.ts_sec:
+                    k -= 1
+                retenu = self._evaluer_une_bougie(paire, bougies[:k + 1])
+                if retenu is not None:
+                    retenu_de_la_paire = retenu
+            if retenu_de_la_paire is not None:
+                retenus.append(retenu_de_la_paire)
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
         self.etat.paires_perdantes = sorted(ecartees)
@@ -1119,6 +1110,50 @@ class CoursePlanDemo:
         self._contexte_du_signal = ctx
         self._fin_bougie_du_signal = fin
         return signal
+
+    def _evaluer_une_bougie(self, paire: str, bougies):
+        """La stratégie et ses filtres sur la fenêtre finissant à
+        `bougies[-1]`. Rend (signal, contexte, fin, bougies) ou `None`."""
+        derniere = bougies[-1]
+        # Après le filtre de fraîcheur : une bougie vieille de deux jours
+        # parce que la collecte est arrêtée ne dit rien de la vitesse de la
+        # course, et noyait la mesure (« 174 540 s »).
+        self.delais_evaluation.append(time.time() - (derniere.ts_sec + 60))
+        self.etat.noter("vues")
+        vue = SequenceMarketView(paire, bougies)
+        signal = self.strategie.on_bar(vue)
+        if signal is not None:
+            self.etat.noter("signaux")
+        signal = self._confirmer_en_m1(paire, signal, bougies, vue)
+        if signal is None:
+            return None
+        # Compté AVANT la revérification du payout : sans cela, un signal
+        # écarté pour cause de payout retombé est indiscernable d'un signal
+        # jamais produit, et les deux appellent des gestes opposés.
+        self.etat.signaux_bruts += 1
+        # Le payout est revérifié À L'INSTANT DU SIGNAL. Le catalogue peut
+        # dater de quelques minutes, et entrer sur un payout périmé est
+        # exactement ce que le filtre existe pour empêcher.
+        if not self._payout_au_maximum(paire):
+            self.etat.noter("payout")
+            return None
+        ctx = contexte_du_signal(
+            bougies, signal.direction is Direction.CALL, signal.features)
+        if self._contre_l_heure_en_cours(paire, signal, ctx):
+            self.etat.noter("contre_heure")
+            return None
+        if self._ecarte_par_une_lecon(paire, signal, ctx):
+            self.etat.noter("lecon")
+            return None
+        if self.vagues_min_minutes:
+            from maxprofit.strategies.zones_zigzag import rythme_minutes
+            rythme = rythme_minutes(bougies)
+            if rythme is None or rythme < self.vagues_min_minutes:
+                self.etat.noter("vagues_courtes")
+                return None
+        self.etat.noter("retenus")
+        self.etat.signaux_trouves += 1
+        return signal, ctx, derniere.ts_sec + 60, bougies
 
     def _confirmer_en_m1(self, paire: str, signal, bougies, vue):
         """La confirmation M1 demandée le 2026-10-02 : « la stratégie de
@@ -2526,7 +2561,14 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
         confirmation = (f"confirmation M1 : {a.get('confirmes', 0)} "
                         f"confirmé(s), {a.get('non_confirmes', 0)} "
                         f"abandonné(s) ; ")
-    return (f"{heures} h : {plafond}{a.get('vues', 0)} bougies vues, "
+    autres = ""
+    for cle, libelle in (("paire_perdante", "sur des paires au taux perdant"),
+                         ("hors_calibration", "hors calibration"),
+                         ("manquees", "MANQUÉES (passage trop lent)")):
+        if a.get(cle):
+            autres += f", {a[cle]} {libelle}"
+    return (f"{heures} h : {plafond}{a.get('vues', 0)} bougies vues"
+            f"{autres}, "
             f"{a.get('signaux', 0)} signal(aux) de la stratégie ; "
             f"{confirmation}écartés : "
             f"{a.get('payout', 0)} payout sous le maximum, "
