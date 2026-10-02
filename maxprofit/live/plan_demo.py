@@ -1236,12 +1236,18 @@ class CoursePlanDemo:
                 ctx.get("elan_30m", 0.0) < -self.elan_30m_max:
             self.etat.noter("elan_contre")
             return None
-        if self.criteres_exiges:
+        # Les critères de validation sont MESURÉS sur chaque signal, exigés
+        # ou non : ils partent avec l'ordre dans son contexte, et /bilan
+        # compare sur de vrais ordres ceux qui les remplissaient et les
+        # autres (demandé le 2026-10-03 : « regarder le 8e de près »).
+        try:
             from maxprofit.strategies.criteres import criteres
-            mesures = criteres(bougies, signal.direction is Direction.CALL,
-                               (signal.features or {}).get("niveau"))
-            ctx.update(mesures)
-            refuse = criteres_refuses(self.criteres_exiges, mesures)
+            ctx.update(criteres(bougies, signal.direction is Direction.CALL,
+                                (signal.features or {}).get("niveau")))
+        except Exception:                        # noqa: BLE001
+            log.debug("Critères non mesurés", exc_info=True)
+        if self.criteres_exiges:
+            refuse = criteres_refuses(self.criteres_exiges, ctx)
             if refuse:
                 self.etat.noter("critere_" + refuse)
                 return None
@@ -2671,6 +2677,11 @@ def texte_du_contexte(ctx: dict, signal) -> str:
         zone.append(f"{ctx['touches']:.0f} touche(s)")
     if (signal.features or {}).get("inversee") == 1.0:
         zone.append("niveau inversé")
+    if "obstacle_inverse" in ctx:
+        obstacle = ctx["obstacle_inverse"]
+        zone.append("8e ✅ aucun niveau cassé devant" if obstacle >= 99 else
+                    f"8e {'✅' if obstacle >= 3 else '⛔'} niveau cassé à "
+                    f"{obstacle:.1f} amplitude(s) devant")
     if zone:
         lignes.append("\n🧱 " + " · ".join(zone))
     return "".join(lignes)
@@ -2881,6 +2892,30 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
     return etat, int(ligne[5])
 
 
+def _lignes_8e(ordres, ligne) -> list[str]:
+    """Les ordres réels que 8e aurait gardés, et ceux qu'il aurait écartés.
+
+    Le critère est mesuré sur chaque ordre (contexte « obstacle_inverse »),
+    qu'il soit exigé ou non : c'est ce qui permet de le juger sur de vrais
+    ordres avant de l'activer.
+    """
+    gardes, ecartes = [], []
+    for e in ordres:
+        obstacle = (e.brut or {}).get("contexte", {}).get("obstacle_inverse")
+        if obstacle is None:
+            continue
+        (gardes if obstacle >= 3 else ecartes).append(e)
+    if not gardes and not ecartes:
+        return []
+    sortie = ["\n<b>Critère 8e</b> — niveau cassé devant le trade, sur les "
+              "ordres réels"]
+    if gardes:
+        sortie.append(ligne("8e ✅ gardés", gardes))
+    if ecartes:
+        sortie.append(ligne("8e ⛔ qu'il aurait écartés", ecartes))
+    return sortie
+
+
 def texte_du_bilan(executions, maintenant_sec: int,
                    recent_h: int = 48) -> str:
     """Le taux de réussite RÉEL des ordres, et s'il a changé.
@@ -2933,6 +2968,7 @@ def texte_du_bilan(executions, maintenant_sec: int,
     if par_pas:
         lignes.append("\n<b>Par pas</b> (ordres récents seulement)")
         lignes += [ligne(f"pas {k}", v) for k, v in sorted(par_pas.items())]
+    lignes += _lignes_8e(ordres, ligne)
     par_paire: dict[str, list] = {}
     for e in ordres:
         par_paire.setdefault(e.pair, []).append(e)

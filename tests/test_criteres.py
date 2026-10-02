@@ -71,3 +71,37 @@ def test_le_laboratoire_juge_les_criteres_contre_la_variante_8():
     m = {d["nom"]: Mesure.from_dict(d) for d in r["mesures"]}
     assert m["8b. + structure ZigZag dans le sens du trade"].verdict \
         .startswith("✅")
+
+
+def test_le_bilan_compare_les_ordres_gardes_et_ecartes_par_8e():
+    import time as _t
+    from maxprofit.execution.journal import Execution
+    from maxprofit.live.plan_demo import texte_du_bilan
+
+    def ordre(i, gagne, obstacle):
+        return Execution(
+            pair="EURUSD_otc", sens="call", mise=1.6,
+            signal_ts_ms=1_789_000_000_000 + i, prix_attendu=1.1,
+            payout_flux_pct=92.0, expiration_sec=900,
+            clic_ts_ms=1_789_000_000_000 + i * 1000, accepte=True,
+            accepte_ts_ms=1_789_000_000_000 + i * 1000, order_id=f"o{i}",
+            resultat="win" if gagne else "loose",
+            profit=1.47 if gagne else -1.6,
+            brut={"contexte": {"pas": 1, "obstacle_inverse": obstacle}})
+
+    ordres = [ordre(i, i % 4 != 0, 99.0) for i in range(8)] + \
+             [ordre(10 + i, i % 2 == 0, 1.5) for i in range(4)]
+    texte = texte_du_bilan(ordres, int(_t.time()))
+    assert "8e ✅ gardés : 6/8" in texte
+    assert "8e ⛔ qu'il aurait écartés : 2/4" in texte
+
+
+def test_la_legende_dit_si_8e_aurait_garde_l_ordre():
+    from maxprofit.core.types import Direction, Signal
+    from maxprofit.live.plan_demo import texte_du_contexte
+    s = Signal(pair="X", direction=Direction.CALL,
+               decided_at_ms=1_789_000_020_000, expiry_sec=900)
+    assert "8e ⛔ niveau cassé à 1.5" in texte_du_contexte(
+        {"obstacle_inverse": 1.5}, s)
+    assert "8e ✅ aucun niveau cassé devant" in texte_du_contexte(
+        {"obstacle_inverse": 99.0}, s)
