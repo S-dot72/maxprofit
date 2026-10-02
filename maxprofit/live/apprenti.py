@@ -96,6 +96,8 @@ class Apprenti:
         if actuel is None or not actuel.n or not actuel.echeances \
                 or not actuel.par_paire or not actuel.simulations \
                 or not actuel.laboratoire \
+                or not ("paires" in actuel.laboratoire
+                        or "note" in actuel.laboratoire) \
                 or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
         return max(DELAI_INITIAL_SEC,
