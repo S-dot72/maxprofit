@@ -141,3 +141,22 @@ def test_la_confirmation_est_coupee_par_defaut(monkeypatch):
     assert mode_confirmation_m1() == "0"
     monkeypatch.setenv("CONFIRMATION_M1", "suivante")
     assert mode_confirmation_m1() == "suivante"
+
+
+def test_elan_30m_coupe_par_defaut(monkeypatch):
+    from maxprofit.live.plan_demo import elan_30m_max
+    monkeypatch.delenv("ELAN_30M_MAX", raising=False)
+    assert elan_30m_max() is None
+    monkeypatch.setenv("ELAN_30M_MAX", "3.3")
+    assert elan_30m_max() == 3.3
+
+
+def test_la_legende_dit_ce_que_le_bot_a_mesure():
+    from maxprofit.live.plan_demo import texte_du_contexte
+    texte = texte_du_contexte(
+        {"mouvement_heure": -2.9, "elan_30m": -6.4, "elan_15m": -4.0,
+         "tendance_h1": 3.1, "entrees_deja_offertes": 2.0, "touches": 3.0},
+        _signal(0, call=False))
+    assert "élan 30 min -6.4" in texte and "heure en cours -2.9" in texte
+    assert "2 passage(s)" in texte
+    assert "<" not in texte
