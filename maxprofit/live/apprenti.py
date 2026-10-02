@@ -126,14 +126,13 @@ class Apprenti:
         # ZoneH1 avec deux entrées par zone de plus : la variante « seconde
         # chance » du laboratoire en a besoin, et ne peut pas les déduire des
         # signaux de la stratégie jouée.
-        import dataclasses
-        elargie = None
-        if dataclasses.is_dataclass(strategie.p) and \
-                hasattr(strategie.p, "entrees_max_par_zone"):
-            elargie = type(strategie)(dataclasses.replace(
-                strategie.p,
-                entrees_max_par_zone=strategie.p.entrees_max_par_zone + 2))
-        etendus: list | None = [] if elargie is not None else None
+        # La variante « seconde chance » (ZoneH1 élargie) a été jugée deux
+        # fois sans rien apporter : son rejeu coûtait autant que celui de
+        # la stratégie. Il est remplacé par la prise de liquidité.
+        etendus = None
+        from maxprofit.strategies.prise_de_liquidite import PriseDeLiquidite
+        liquidite = PriseDeLiquidite()
+        prises: list = []
         # La zone tracée en H1, l'entrée confirmée en M1 (demandée le
         # 2026-10-02) : une stratégie à part, jugée au laboratoire.
         from maxprofit.strategies.zone_confirmee import ZoneConfirmee
@@ -160,15 +159,14 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=lambda: time.sleep(0.002))
-                if elargie is None:
-                    continue
-                etendus += exemples_historiques(
-                    {paire: bougies}, elargie,
-                    echeance_sec=strategie.p.expiry_sec,
-                    echeances=(strategie.p.expiry_sec,),
-                    garde=lambda p, f: dans_la_plage_de_calibration(
-                        tolerance, f),
-                    respirer=lambda: time.sleep(0.002))
+                if type(strategie) is not PriseDeLiquidite:
+                    prises += exemples_historiques(
+                        {paire: bougies}, liquidite,
+                        echeance_sec=liquidite.p.expiry_sec,
+                        echeances=(liquidite.p.expiry_sec,),
+                        garde=lambda p, f: dans_la_plage_de_calibration(
+                            tolerance, f),
+                        respirer=lambda: time.sleep(0.002))
         finally:
             try:
                 conn.close()
@@ -189,7 +187,12 @@ class Apprenti:
             {"6. Zone H1, confirmation M1": (
                 "zone tracée sur l'H1 ; entrée seulement si une bougie M1 "
                 "rejette la zone et casse l'extrême de la précédente",
-                confirmes)})
+                confirmes),
+             "9. Prise de liquidité M1, sens H1": (
+                "le prix va chercher les stops au-delà d'une pique M1 (mèche "
+                "ou 2 clôtures au plus), revient, et une bougie de "
+                "retournement casse l'extrême de la précédente",
+                prises)})
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -201,7 +204,7 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant la variante 8 (confirmation
     M1) : il est alors refait au démarrage, pas dans vingt-quatre heures."""
     return "paires" in laboratoire and any(
-        str(m.get("nom", "")).startswith("8.")
+        str(m.get("nom", "")).startswith("9.")
         for m in laboratoire.get("mesures", ()))
 
 

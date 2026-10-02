@@ -592,6 +592,19 @@ def pas_max_de_la_martingale() -> int:
     return pas if 1 <= pas <= 3 else PAS_MAX_PAR_DEFAUT
 
 
+def strategie_de_la_course():
+    """`STRATEGIE` : « zoneh1 » (défaut) ou « liquidite » (prise de
+    liquidité M1, demandée le 2026-10-02 — à n'activer qu'après son verdict
+    au laboratoire)."""
+    import os
+    from maxprofit.strategies.zone_h1 import ZoneH1
+    if os.environ.get("STRATEGIE", "").strip().lower() in (
+            "liquidite", "liquidité", "prise_de_liquidite"):
+        from maxprofit.strategies.prise_de_liquidite import PriseDeLiquidite
+        return PriseDeLiquidite()
+    return ZoneH1()
+
+
 def mode_confirmation_m1() -> str:
     """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 »."""
     import os
@@ -712,8 +725,12 @@ class CoursePlanDemo:
         self.attente_confirmation: str | None = None
         #: Le dernier ordre pour lequel un silence a déjà été signalé.
         self._silence_signale_depuis: int | None = None
-        #: Confirmation M1 : « suivante », « meme » ou « 0 ».
-        self.confirmation_m1 = mode_confirmation_m1()
+        #: Confirmation M1 : « suivante », « meme » ou « 0 ». La prise de
+        #: liquidité porte déjà son retournement : on ne la confirme pas
+        #: deux fois.
+        self.confirmation_m1 = (
+            "0" if getattr(self.strategie, "name", "")
+            == "prise_de_liquidite_m1" else mode_confirmation_m1())
         #: Signaux en attente de leur bougie de confirmation, par paire.
         self._en_attente: dict[str, tuple] = {}
         #: Les bougies vues au signal joué, pour l'image de l'ordre.
@@ -3162,10 +3179,9 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
                ouvrir_la_base=None, configuration=None,
                campagnes_precedentes=()):
     chrono = chrono or _Chrono()
-    from maxprofit.strategies.zone_h1 import ZoneH1
-
     course = CoursePlanDemo(lecteur, courtier, journal, plan, paires,
-                            ZoneH1(), mode_univers=mode_univers,
+                            strategie_de_la_course(),
+                            mode_univers=mode_univers,
                             paires_collectees=paires_collectees,
                             alerter=alerter)
     course.campagnes_precedentes = tuple(campagnes_precedentes)
