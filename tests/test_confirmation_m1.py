@@ -135,12 +135,32 @@ def test_vagues_min_se_lit_dans_l_environnement(monkeypatch):
     assert vagues_min_minutes() == 0.0
 
 
-def test_la_confirmation_est_coupee_par_defaut(monkeypatch):
+def test_la_confirmation_suivante_est_active_par_defaut(monkeypatch):
     from maxprofit.live.plan_demo import mode_confirmation_m1
     monkeypatch.delenv("CONFIRMATION_M1", raising=False)
-    assert mode_confirmation_m1() == "0"
-    monkeypatch.setenv("CONFIRMATION_M1", "suivante")
     assert mode_confirmation_m1() == "suivante"
+    monkeypatch.setenv("CONFIRMATION_M1", "0")
+    assert mode_confirmation_m1() == "0"
+
+
+def test_les_paires_exclues(monkeypatch):
+    from maxprofit.live.plan_demo import paires_exclues
+    monkeypatch.delenv("PAIRES_EXCLUES", raising=False)
+    assert paires_exclues() == {"EURCHF_otc", "EURJPY_otc", "NZDJPY_otc"}
+    monkeypatch.setenv("PAIRES_EXCLUES", "aucune")
+    assert paires_exclues() == frozenset()
+    monkeypatch.setenv("PAIRES_EXCLUES", "gbpjpy, EURCHF_otc")
+    assert paires_exclues() == {"GBPJPY_otc", "EURCHF_otc"}
+
+
+def test_une_paire_exclue_n_est_jamais_examinee(course, monkeypatch):
+    monkeypatch.setenv("PAIRES_EXCLUES", "EURUSD")
+    c = course("0")
+    c.univers = lambda: ["EURUSD_otc"]
+    examinees = []
+    c._bougies_de = lambda p: examinees.append(p) or []
+    assert c.chercher_un_signal() is None
+    assert examinees == []
 
 
 def test_elan_30m_coupe_par_defaut(monkeypatch):
