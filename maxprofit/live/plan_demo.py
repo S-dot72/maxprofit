@@ -593,15 +593,22 @@ def pas_max_de_la_martingale() -> int:
 
 
 def strategie_de_la_course():
-    """`STRATEGIE` : « zoneh1 » (défaut) ou « liquidite » (prise de
-    liquidité M1, demandée le 2026-10-02 — à n'activer qu'après son verdict
-    au laboratoire)."""
+    """`STRATEGIE` : « zoneh1 » (défaut), « liquidite » (prise de liquidité
+    sur les piques M1), « zigzag » (ZoneH1 sur les sommets/creux du ZigZag)
+    ou « liquidite_zigzag ». Chacune est à n'activer qu'après son verdict au
+    laboratoire."""
     import os
     from maxprofit.strategies.zone_h1 import ZoneH1
-    if os.environ.get("STRATEGIE", "").strip().lower() in (
-            "liquidite", "liquidité", "prise_de_liquidite"):
+    choix = os.environ.get("STRATEGIE", "").strip().lower().replace("é", "e")
+    if choix in ("liquidite", "prise_de_liquidite"):
         from maxprofit.strategies.prise_de_liquidite import PriseDeLiquidite
         return PriseDeLiquidite()
+    if choix == "zigzag":
+        from maxprofit.strategies.zones_zigzag import ZoneZigZag
+        return ZoneZigZag()
+    if choix in ("liquidite_zigzag", "prise_zigzag"):
+        from maxprofit.strategies.zones_zigzag import PriseZigZag
+        return PriseZigZag()
     return ZoneH1()
 
 
@@ -729,8 +736,8 @@ class CoursePlanDemo:
         #: liquidité porte déjà son retournement : on ne la confirme pas
         #: deux fois.
         self.confirmation_m1 = (
-            "0" if getattr(self.strategie, "name", "")
-            == "prise_de_liquidite_m1" else mode_confirmation_m1())
+            "0" if getattr(self.strategie, "name", "").startswith(
+                "prise_de_liquidite") else mode_confirmation_m1())
         #: Signaux en attente de leur bougie de confirmation, par paire.
         self._en_attente: dict[str, tuple] = {}
         #: Les bougies vues au signal joué, pour l'image de l'ordre.
