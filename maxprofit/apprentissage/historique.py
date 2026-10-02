@@ -18,6 +18,7 @@ from maxprofit.apprentissage.contexte import contexte
 from maxprofit.apprentissage.lecons import ECHEANCES_COMPAREES, Exemple
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.types import Candle, Direction
+from maxprofit.strategies.criteres import criteres
 from maxprofit.strategies.zones_zigzag import rythme_minutes
 
 
@@ -85,6 +86,8 @@ def exemples_historiques(
                     closes, bougie.ts_sec, call, signal.features))
                 ctx.update(_confirmation_m1(completes, i, call, closes,
                                             echeance_sec))
+                ctx.update(criteres(fenetre, call,
+                                    (signal.features or {}).get("niveau")))
                 rythme = rythme_minutes(fenetre)
                 if rythme is not None:
                     ctx["rythme_zigzag"] = round(rythme, 1)

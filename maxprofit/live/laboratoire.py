@@ -210,6 +210,31 @@ def laboratoire(exemples: Sequence[Exemple],
             "seulement les entrées sur un niveau cassé puis retesté dans le "
             "rôle inverse", [e for e in inversees
                              if e.contexte.get("inversee") == 1]))
+    # Les critères de VALIDATION, sur ce que la course joue : ZoneH1 puis la
+    # confirmation M1 (variante 8). Demandé le 2026-10-03 : le ZigZag et les
+    # zones cassées ne décident pas des ordres, ils les valident. Jugés
+    # contre la variante 8, pas contre ZoneH1 seule.
+    huit = next((liste for n, _d, liste in variantes
+                 if n.startswith("8. ")), [])
+    for nom, description, garder in (
+            ("8a. + zone sur un sommet/creux du ZigZag",
+             "la zone coïncide avec un vrai creux (achat) ou sommet (vente) "
+             "du ZigZag", lambda c: c.get("zigzag_pivot_zone") == 1),
+            ("8b. + structure ZigZag dans le sens du trade",
+             "creux montants pour un achat, sommets descendants pour une "
+             "vente", lambda c: c.get("zigzag_structure") == 1),
+            ("8c. + vagues de 15 min ou plus",
+             "les dernières vagues du ZigZag durent au moins l'échéance",
+             lambda c: c.get("rythme_zigzag", 0) >= echeance_sec / 60),
+            ("8d. + ancien niveau cassé qui a changé de rôle",
+             "support cassé devenu résistance pour une vente, et l'inverse",
+             lambda c: c.get("niveau_inverse") == 1),
+            ("8e. + pas de niveau cassé contre le trade à moins de 3 "
+             "amplitudes", "aucun ancien niveau inversé ne barre la route "
+             "dans le sens du trade",
+             lambda c: c.get("obstacle_inverse", 99) >= 3)):
+        variantes.append((nom, description + " — jugé contre la variante 8",
+                          [e for e in huit if garder(e.contexte)]))
     # Les vagues du marché sont-elles assez longues pour une option de
     # 15 minutes ? Demandé le 2026-10-02 : un creux du ZigZag repris en six
     # minutes ne tient pas jusqu'à l'échéance.
@@ -237,7 +262,10 @@ def laboratoire(exemples: Sequence[Exemple],
     mesures = [_mesurer(nom, desc, liste, coupure, jours, echeance_sec)
                for nom, desc, liste in variantes]
     ref = mesures[0]
-    jugees = [ref] + [_juger(m, ref) for m in mesures[1:]]
+    ref_huit = next((m for m in mesures if m.nom.startswith("8. ")), ref)
+    jugees = [ref] + [_juger(m, ref_huit if m.nom[:2] in ("8a", "8b", "8c",
+                                                          "8d", "8e")
+                             else ref) for m in mesures[1:]]
     return {"debut": debut, "fin": fin, "coupure": coupure,
             "mesures": [m.to_dict() for m in jugees],
             "paires": _par_paire(base, coupure)}

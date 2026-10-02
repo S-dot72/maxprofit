@@ -649,6 +649,34 @@ def vagues_min_minutes() -> float:
         return 0.0
 
 
+#: Les critères de validation qu'on peut exiger, et leur test. Demandés le
+#: 2026-10-03 : le ZigZag et les zones cassées ne décident pas des ordres,
+#: ils valident ceux de ZoneH1. À n'exiger qu'après leur verdict au
+#: laboratoire (variantes 8a à 8e).
+CRITERES = {
+    "pivot_zigzag": lambda c: c.get("zigzag_pivot_zone") == 1,
+    "structure_zigzag": lambda c: c.get("zigzag_structure") == 1,
+    "niveau_inverse": lambda c: c.get("niveau_inverse") == 1,
+    "sans_obstacle": lambda c: c.get("obstacle_inverse", 99) >= 3,
+}
+
+
+def criteres_exiges() -> tuple[str, ...]:
+    """`CRITERES` : « structure_zigzag,sans_obstacle »… ; aucun par défaut."""
+    import os
+    noms = [n.strip().lower() for n in
+            os.environ.get("CRITERES", "").split(",") if n.strip()]
+    return tuple(n for n in noms if n in CRITERES)
+
+
+def criteres_refuses(exiges, mesures) -> str | None:
+    """Le premier critère exigé que le signal ne remplit pas, ou `None`."""
+    for nom in exiges:
+        if not CRITERES[nom](mesures):
+            return nom
+    return None
+
+
 #: Paires retirées de la COURSE (pas de la collecte) le 2026-10-03, choix de
 #: l'utilisateur : ajoutées le 30/09, elles gagnaient 37,5 % ensemble sur
 #: les jours récents (EURCHF 1/4, EURJPY 4/11, NZDJPY 0/2). La collecte
@@ -803,6 +831,8 @@ class CoursePlanDemo:
         self.confirmation_m1 = (
             "0" if getattr(self.strategie, "name", "").startswith(
                 "prise_de_liquidite") else mode_confirmation_m1())
+        #: `CRITERES` : critères de validation exigés (voir `CRITERES`).
+        self.criteres_exiges = criteres_exiges()
         #: Paires que l'utilisateur a retirées de la course.
         self.paires_exclues = paires_exclues()
         #: `ELAN_30M_MAX` : pas d'entrée quand l'élan des 30 dernières
@@ -1206,6 +1236,15 @@ class CoursePlanDemo:
                 ctx.get("elan_30m", 0.0) < -self.elan_30m_max:
             self.etat.noter("elan_contre")
             return None
+        if self.criteres_exiges:
+            from maxprofit.strategies.criteres import criteres
+            mesures = criteres(bougies, signal.direction is Direction.CALL,
+                               (signal.features or {}).get("niveau"))
+            ctx.update(mesures)
+            refuse = criteres_refuses(self.criteres_exiges, mesures)
+            if refuse:
+                self.etat.noter("critere_" + refuse)
+                return None
         if self.vagues_min_minutes:
             from maxprofit.strategies.zones_zigzag import rythme_minutes
             rythme = rythme_minutes(bougies)
