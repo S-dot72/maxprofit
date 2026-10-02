@@ -143,8 +143,10 @@ class Apprenti:
         # La zone H1 confirmée en M1 (variante 6) a perdu nettement
         # (44 % puis 54 %, −60 $) : son rejeu laisse la place au ZigZag,
         # demandé le 2026-10-02 pour tracer les zones hautes et basses.
+        from maxprofit.strategies.zone_inversee import ZoneInversee
         from maxprofit.strategies.zones_zigzag import PriseZigZag, ZoneZigZag
-        candidates = {"zigzag": ZoneZigZag(), "prise_zigzag": PriseZigZag()}
+        candidates = {"zigzag": ZoneZigZag(), "prise_zigzag": PriseZigZag(),
+                      "inversee": ZoneInversee()}
         par_candidate: dict[str, list] = {n: [] for n in candidates}
         conn = self._ouvrir()
         try:
@@ -201,6 +203,10 @@ class Apprenti:
                 "prise de liquidité au-delà des mèches des sommets et creux "
                 "du ZigZag, retour, retournement, sens H1",
                 par_candidate["prise_zigzag"]),
+             "15. ZoneH1 + supports/résistances inversés": (
+                "ZoneH1, plus chaque zone cassée reprise dans le rôle "
+                "inverse : support cassé devenu résistance, et l'inverse",
+                par_candidate["inversee"]),
              "9. Prise de liquidité M1, sens H1": (
                 "le prix va chercher les stops au-delà d'une pique M1 (mèche "
                 "ou 2 clôtures au plus), revient, et une bougie de "
@@ -217,7 +223,7 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant la variante 8 (confirmation
     M1) : il est alors refait au démarrage, pas dans vingt-quatre heures."""
     return "paires" in laboratoire and any(
-        str(m.get("nom", "")).startswith("12.")
+        str(m.get("nom", "")).startswith("16.")
         for m in laboratoire.get("mesures", ()))
 
 

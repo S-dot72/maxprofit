@@ -603,6 +603,9 @@ def strategie_de_la_course():
     if choix in ("liquidite", "prise_de_liquidite"):
         from maxprofit.strategies.prise_de_liquidite import PriseDeLiquidite
         return PriseDeLiquidite()
+    if choix in ("inversion", "inversee", "zone_inversee"):
+        from maxprofit.strategies.zone_inversee import ZoneInversee
+        return ZoneInversee()
     if choix == "zigzag":
         from maxprofit.strategies.zones_zigzag import ZoneZigZag
         return ZoneZigZag()

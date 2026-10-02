@@ -113,6 +113,8 @@ def _au_dela_de_la_fenetre(closes: Mapping[int, float], ts_sec: int,
                                       / (abs(ancien) or 1) * 1e4, 4)
     if features and "niveau" in features:
         sortie["niveau"] = float(features["niveau"])
+    if features and "inversee" in features:
+        sortie["inversee"] = float(features["inversee"])
     return sortie
 
 

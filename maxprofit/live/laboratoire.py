@@ -193,6 +193,15 @@ def laboratoire(exemples: Sequence[Exemple],
           for e in base if e.contexte.get("retournement_suivant") == 1
           and "gagne_suivant" in e.contexte]),
     ]
+    # Les niveaux inversés seuls : les entrées que ZoneH1 ne prenait pas.
+    inversees = next((liste for n, _d, liste in variantes
+                      if n.startswith("15.")), None)
+    if inversees is not None:
+        variantes.append((
+            "16. Supports/résistances inversés seulement",
+            "seulement les entrées sur un niveau cassé puis retesté dans le "
+            "rôle inverse", [e for e in inversees
+                             if e.contexte.get("inversee") == 1]))
     # Les vagues du marché sont-elles assez longues pour une option de
     # 15 minutes ? Demandé le 2026-10-02 : un creux du ZigZag repris en six
     # minutes ne tient pas jusqu'à l'échéance.
