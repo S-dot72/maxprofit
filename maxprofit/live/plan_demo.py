@@ -615,6 +615,25 @@ def strategie_de_la_course():
     return ZoneH1()
 
 
+def elan_30m_max() -> float | None:
+    """`ELAN_30M_MAX` : seuil du filtre d'élan sur 30 minutes, ou `None`.
+
+    Coupé par défaut, en attendant son verdict au laboratoire (variante
+    17). Demandé le 2026-10-02 après une vente EUR/CHF prise au bout d'une
+    montée de dix minutes : la règle de l'heure en cours ne voit que le
+    mouvement depuis le début de l'heure, et une montée partie trois
+    minutes avant lui échappe. « 3.3 » écarte les signaux dont l'élan des
+    30 dernières minutes va contre le trade de plus de 3,3 amplitudes M1 —
+    le tiers qui gagnait 48 % au rejeu.
+    """
+    import os
+    brut = os.environ.get("ELAN_30M_MAX", "").strip()
+    try:
+        return float(brut) if brut else None
+    except ValueError:
+        return None
+
+
 def vagues_min_minutes() -> float:
     """`VAGUES_MIN` : durée minimale des vagues du ZigZag, en minutes.
 
@@ -763,6 +782,9 @@ class CoursePlanDemo:
         self.confirmation_m1 = (
             "0" if getattr(self.strategie, "name", "").startswith(
                 "prise_de_liquidite") else mode_confirmation_m1())
+        #: `ELAN_30M_MAX` : pas d'entrée quand l'élan des 30 dernières
+        #: minutes va contre le trade au-delà de ce nombre d'amplitudes M1.
+        self.elan_30m_max = elan_30m_max()
         #: `VAGUES_MIN` : n'entrer que si les dernières vagues du ZigZag
         #: durent au moins ce nombre de minutes (0 = pas de filtre).
         self.vagues_min_minutes = vagues_min_minutes()
@@ -1154,6 +1176,10 @@ class CoursePlanDemo:
             return None
         if self._ecarte_par_une_lecon(paire, signal, ctx):
             self.etat.noter("lecon")
+            return None
+        if self.elan_30m_max is not None and \
+                ctx.get("elan_30m", 0.0) < -self.elan_30m_max:
+            self.etat.noter("elan_contre")
             return None
         if self.vagues_min_minutes:
             from maxprofit.strategies.zones_zigzag import rythme_minutes
@@ -1568,7 +1594,7 @@ class CoursePlanDemo:
         self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
         self._envoyer_le_graphique(signal, sens, mise, session.pas_joues + 1,
-                                   session.echelle.pas_max)
+                                   session.echelle.pas_max, ctx)
         execution = self.courtier.denouer(execution)
         self._pas_de_la_session.append(
             (signal.pair, sens, ctx, execution.resultat or "unknown"))
@@ -1621,7 +1647,7 @@ class CoursePlanDemo:
             self._cloturer_session()
 
     def _envoyer_le_graphique(self, signal, sens: str, mise: float, pas: int,
-                              pas_max: int) -> None:
+                              pas_max: int, ctx: dict | None = None) -> None:
         """L'image M1 de l'ordre : bougies, zone, entrée. Jamais bloquant."""
         if self._envoyer_image is None or not self._bougies_du_signal:
             return
@@ -1643,7 +1669,8 @@ class CoursePlanDemo:
                 f"{heure:%H:%M} UTC · échéance "
                 f"{self.strategie.p.expiry_sec // 60} min"
                 + (f"\nconfirmation M1 : {self.confirmation_m1}"
-                   if self.confirmation_m1 != "0" else ""))
+                   if self.confirmation_m1 != "0" else "")
+                + texte_du_contexte(ctx or {}, signal))
             self._envoyer_image(png, legende)
         except Exception:                        # noqa: BLE001
             log.warning("Image de l'ordre non envoyée", exc_info=True)
@@ -2556,6 +2583,35 @@ def _sessions_du_jour(journee, cible: int) -> str:
     return f"{g}/{cible} gagnée{'s' if g > 1 else ''}{perdues}"
 
 
+def texte_du_contexte(ctx: dict, signal) -> str:
+    """Ce que le bot a mesuré au moment d'entrer, pour la légende.
+
+    Chaque mesure est orientée dans le sens du trade et exprimée en
+    amplitudes M1 : négative, elle va CONTRE l'ordre.
+    """
+    if not ctx:
+        return ""
+    morceaux = []
+    for cle, libelle in (("mouvement_heure", "heure en cours"),
+                         ("elan_30m", "élan 30 min"),
+                         ("elan_15m", "élan 15 min"),
+                         ("tendance_h1", "tendance 3 h")):
+        if cle in ctx:
+            morceaux.append(f"{libelle} {ctx[cle]:+.1f}")
+    lignes = ["\n📏 " + " · ".join(morceaux) if morceaux else ""]
+    zone = []
+    if "entrees_deja_offertes" in ctx:
+        zone.append(f"{ctx['entrees_deja_offertes']:.0f} passage(s) déjà "
+                    f"offert(s) par la zone")
+    if "touches" in ctx:
+        zone.append(f"{ctx['touches']:.0f} touche(s)")
+    if (signal.features or {}).get("inversee") == 1.0:
+        zone.append("niveau inversé")
+    if zone:
+        lignes.append("\n🧱 " + " · ".join(zone))
+    return "".join(lignes)
+
+
 def texte_activite(a: dict[str, int], heures: int) -> str:
     """« ce que la course a vu et écarté » sur les dernières heures."""
     if not a:
@@ -2586,6 +2642,8 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
             f"{a.get('lecon', 0)} par une leçon"
             + (f", {a['vagues_courtes']} vagues trop courtes"
                if a.get("vagues_courtes") else "")
+            + (f", {a['elan_contre']} élan 30 min contre"
+               if a.get("elan_contre") else "")
             + f" ; {a.get('retenus', 0)} "
             f"retenu(s), {a.get('independance', 0)} pas reporté(s) "
             f"(indépendance), {a.get('ordres', 0)} ordre(s).")

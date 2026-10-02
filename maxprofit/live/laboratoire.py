@@ -193,6 +193,14 @@ def laboratoire(exemples: Sequence[Exemple],
           for e in base if e.contexte.get("retournement_suivant") == 1
           and "gagne_suivant" in e.contexte]),
     ]
+    # L'élan des 30 dernières minutes, en plus de l'heure en cours : une
+    # montée partie juste avant le début de l'heure échappe à la règle
+    # actuelle (vente EUR/CHF du 02/10).
+    variantes.append((
+        "17. ZoneH1, élan 30 min pas fortement contre",
+        "ZoneH1 en direct, sans les signaux dont l'élan des 30 dernières "
+        "minutes va contre le trade de plus de 3,3 amplitudes M1",
+        [e for e in base if e.contexte.get("elan_30m", 0.0) >= -3.3]))
     # Les niveaux inversés seuls : les entrées que ZoneH1 ne prenait pas.
     inversees = next((liste for n, _d, liste in variantes
                       if n.startswith("15.")), None)
