@@ -183,6 +183,9 @@ FENETRE_AMPLITUDE = 60
 
 FRAICHEUR_MAX_SEC = 90
 
+#: Sans ordre depuis ce délai, la course prévient avec le relevé horaire.
+SILENCE_SEC = 3 * 3600
+
 #: Minutes relues à chaque rafraîchissement du cache des bougies, en plus des
 #: nouvelles : une bougie écrite incomplète lors d'une coupure peut être
 #: réécrite ensuite.
@@ -428,6 +431,44 @@ class Etat:
     sans_cible: bool = False
     #: Le jour UTC où la journée en cours s'est ouverte (trading seul).
     journee_utc: int = 0
+    #: {début d'heure : {compteur : valeur}} sur les dernières heures.
+    #:
+    #: Les compteurs ci-dessus cumulent depuis le début de la campagne : ils
+    #: ne disent pas pourquoi AUCUN ordre n'est parti cette nuit. Ceux-ci,
+    #: heure par heure, le disent — bougies vues, signaux, et la raison de
+    #: chaque signal écarté.
+    activite: dict[int, dict[str, int]] = field(default_factory=dict)
+
+    def noter(self, compteur: str, n: int = 1,
+              ts_sec: int | None = None) -> None:
+        heure = (int(time.time()) if ts_sec is None else ts_sec) \
+            // 3600 * 3600
+        seau = self.activite.setdefault(heure, {})
+        seau[compteur] = seau.get(compteur, 0) + n
+        for vieille in [h for h in self.activite if h < heure - 48 * 3600]:
+            del self.activite[vieille]
+
+    def noter_plafond(self, n: int) -> None:
+        """Le plus petit nombre d'actifs au plafond vu dans l'heure."""
+        heure = int(time.time()) // 3600 * 3600
+        seau = self.activite.setdefault(heure, {})
+        seau["plafond_min"] = min(seau.get("plafond_min", n), n)
+        seau["plafond_max"] = max(seau.get("plafond_max", n), n)
+
+    def activite_depuis(self, heures: int) -> dict[str, int]:
+        depuis = int(time.time()) // 3600 * 3600 - (heures - 1) * 3600
+        total: dict[str, int] = {}
+        for h, seau in self.activite.items():
+            if h < depuis:
+                continue
+            for k, v in seau.items():
+                if k == "plafond_min":
+                    total[k] = min(total.get(k, v), v)
+                elif k == "plafond_max":
+                    total[k] = max(total.get(k, v), v)
+                else:
+                    total[k] = total.get(k, 0) + v
+        return total
 
     def cible_du_jour(self, jour: int | None = None) -> float | None:
         """Le solde que le planning prévoit à la fin du jour `jour`.
@@ -649,6 +690,8 @@ class CoursePlanDemo:
         self._verrou_demandes = threading.Lock()
         #: Pourquoi aucun ordre ne part en ce moment, s'il y a une raison.
         self.attente_confirmation: str | None = None
+        #: Le dernier ordre pour lequel un silence a déjà été signalé.
+        self._silence_signale_depuis: int | None = None
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
         # Les bougies des paires collectées viennent de la base, mais
@@ -817,6 +860,7 @@ class CoursePlanDemo:
                 self._univers = au_plafond_
             self._univers_ts = maintenant
             self.etat.univers_taille = len(self._univers)
+            self.etat.noter_plafond(len(self._univers))
         return self._univers
 
     def chercher_un_signal(self):
@@ -944,10 +988,12 @@ class CoursePlanDemo:
             # la course, et noyait la mesure (« 174 540 s »).
             self.delais_evaluation.append(
                 time.time() - (derniere.ts_sec + 60))
+            self.etat.noter("vues")
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
             if signal is None:
                 continue
+            self.etat.noter("signaux")
             # Compté AVANT la revérification du payout : sans cela, un signal
             # écarté pour cause de payout retombé est indiscernable d'un
             # signal jamais produit, et les deux appellent des gestes opposés.
@@ -956,13 +1002,17 @@ class CoursePlanDemo:
             # dater de quelques minutes, et entrer sur un payout périmé est
             # exactement ce que le filtre existe pour empêcher.
             if not self._payout_au_maximum(paire):
+                self.etat.noter("payout")
                 continue
             ctx = contexte_du_signal(
                 bougies, signal.direction is Direction.CALL, signal.features)
             if self._contre_l_heure_en_cours(paire, signal, ctx):
+                self.etat.noter("contre_heure")
                 continue
             if self._ecarte_par_une_lecon(paire, signal, ctx):
+                self.etat.noter("lecon")
                 continue
+            self.etat.noter("retenus")
             self.etat.signaux_trouves += 1
             retenus.append((signal, ctx, derniere.ts_sec + 60))
         self.etat.paires_sans_historique = sans_historique
@@ -1537,6 +1587,7 @@ class CoursePlanDemo:
         """
         self.rafraichir_le_solde()
         self._purger_la_quarantaine()
+        self._signaler_un_silence()
         with self._verrou_demandes:
             demande, self.demande_reprise = self.demande_reprise, None
         if demande is not None:
@@ -1562,9 +1613,35 @@ class CoursePlanDemo:
             return False
         if not self._pas_independant(signal):
             self.etat.pas_sautes_independance += 1
+            self.etat.noter("independance")
             return False
+        self.etat.noter("ordres")
         self.jouer_un_pas(signal)
         return True
+
+    def _signaler_un_silence(self) -> None:
+        """Prévient UNE fois quand aucun ordre n'est parti depuis
+        `SILENCE_SEC`, avec ce qui s'est passé pendant ce temps.
+
+        Une nuit entière sans ordre ne se découvrait qu'au matin, et les
+        compteurs cumulés depuis le début de la campagne ne disaient pas
+        pourquoi.
+        """
+        maintenant = int(time.time())
+        dernier = self.etat.dernier_trade[1] if self.etat.dernier_trade \
+            else self.etat.demarre_ts
+        if not dernier or maintenant - dernier < SILENCE_SEC \
+                or self.etat.session is not None \
+                or self._silence_signale_depuis == dernier:
+            return
+        if self.etat.journee is not None and \
+                self.etat.journee.arret is not None and self.mode_trading:
+            return                      # journée terminée : silence voulu
+        self._silence_signale_depuis = dernier
+        heures = SILENCE_SEC // 3600
+        self._prevenir(
+            f"🔕 <b>Aucun ordre depuis {(maintenant - dernier) / 3600:.1f} h"
+            f"</b>\n{texte_activite(self.etat.activite_depuis(heures), heures)}")
 
     def _journaliser(self, jeton: str, execution) -> bool:
         """Complète la réservation `jeton` avec l'ordre tel qu'il est parti.
@@ -2228,6 +2305,7 @@ class CoursePlanDemo:
                      f"{(f'{pour:.0f}' if pour else '—')} bougies, "
                      f"{j.sessions_jouees} session(s) en {ecoule_h:.1f} h "
                      f"de journée, course en route depuis {depuis_h:.1f} h")
+        base += " | " + texte_activite(e.activite_depuis(12), 12)
         return (f"{base}{broker} | en route depuis {depuis} min | "
                 f"{e.univers_taille} actif(s) au plafond dont "
                 f"{e.paires_gratuites} en base"
@@ -2277,6 +2355,25 @@ def _sessions_du_jour(journee, cible: int) -> str:
     p = journee.sessions_jouees - g
     perdues = f", {p} perdue{'s' if p > 1 else ''}" if p else ""
     return f"{g}/{cible} gagnée{'s' if g > 1 else ''}{perdues}"
+
+
+def texte_activite(a: dict[str, int], heures: int) -> str:
+    """« ce que la course a vu et écarté » sur les dernières heures."""
+    if not a:
+        return f"{heures} h : aucune activité relevée."
+    plafond = ""
+    if "plafond_min" in a:
+        plafond = (f"actifs au plafond {a['plafond_min']}"
+                   + (f" à {a['plafond_max']}"
+                      if a.get("plafond_max", a["plafond_min"])
+                      != a["plafond_min"] else "") + " ; ")
+    return (f"{heures} h : {plafond}{a.get('vues', 0)} bougies vues, "
+            f"{a.get('signaux', 0)} signal(aux) de la stratégie dont "
+            f"{a.get('payout', 0)} écarté(s) payout sous le maximum, "
+            f"{a.get('contre_heure', 0)} contre l'heure en cours, "
+            f"{a.get('lecon', 0)} par une leçon ; {a.get('retenus', 0)} "
+            f"retenu(s), {a.get('independance', 0)} pas reporté(s) "
+            f"(indépendance), {a.get('ordres', 0)} ordre(s).")
 
 
 def nouveau_jour(etat: Etat) -> None:
@@ -2353,6 +2450,8 @@ def sauver_etat(conn, campagne: str, etat: Etat, jour_utc_courant: int) -> None:
                      "_quarantaines": etat.quarantaines_subies,
                      "_gagnees_jour": etat.journee.sessions_gagnees,
                      "_journee_utc": etat.journee_utc,
+                     "_activite": {str(h): v
+                                   for h, v in etat.activite.items()},
                      "_session_suspendue": etat.session_suspendue,
                      "_apprentissage": (etat.apprentissage.to_dict()
                                         if etat.apprentissage else None)}),
@@ -2428,6 +2527,8 @@ def charger_etat(conn, campagne: str, plan: PlanCapital) -> tuple[Etat, int] | N
         int(sauve.get("_gagnees_jour") or 0), etat.journee.sessions_jouees)
     etat.demarre_ts = int(ligne[15] or 0)
     etat.journee_utc = int(sauve.get("_journee_utc") or 0)
+    etat.activite = {int(h): {str(k): int(n) for k, n in v.items()}
+                     for h, v in (sauve.get("_activite") or {}).items()}
     pas, engagees, gain = int(ligne[8]), json.loads(ligne[9]), float(ligne[10])
     if pas or engagees:
         # Une session était en cours. On la reconstruit telle quelle : même
@@ -3003,7 +3104,8 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
 
     tour_nu = course.tour
 
-    etat_sauve = {"apprentissage": course.etat.apprentissage}
+    etat_sauve = {"apprentissage": course.etat.apprentissage,
+                  "ts": time.monotonic()}
 
     def tour_persistant() -> bool:
         # L'état est sauvé après CHAQUE pas. Le processus peut mourir à
@@ -3020,9 +3122,13 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
         # change, sinon un redéploiement relancerait un rejeu de plusieurs
         # minutes.
         appris = course.etat.apprentissage is not etat_sauve["apprentissage"]
-        if joue or appris:
+        # Et toutes les dix minutes : sans ordre, rien n'était sauvé, et le
+        # relevé horaire d'une nuit sans ordre disparaissait au redéploiement.
+        perime = time.monotonic() - etat_sauve["ts"] >= 600
+        if joue or appris or perime:
             sauver_etat(ecriture, campagne, course.etat, aujourdhui)
             etat_sauve["apprentissage"] = course.etat.apprentissage
+            etat_sauve["ts"] = time.monotonic()
         return joue
 
     course.tour = tour_persistant
