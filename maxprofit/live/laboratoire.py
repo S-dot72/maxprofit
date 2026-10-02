@@ -193,6 +193,29 @@ def laboratoire(exemples: Sequence[Exemple],
           for e in base if e.contexte.get("retournement_suivant") == 1
           and "gagne_suivant" in e.contexte]),
     ]
+    # Les vagues du marché sont-elles assez longues pour une option de
+    # 15 minutes ? Demandé le 2026-10-02 : un creux du ZigZag repris en six
+    # minutes ne tient pas jusqu'à l'échéance.
+    minutes = echeance_sec / 60
+
+    def vagues_longues(liste):
+        return [e for e in liste
+                if e.contexte.get("rythme_zigzag", 0) >= minutes]
+
+    variantes.append((
+        "12. ZoneH1, vagues de 15 min ou plus",
+        f"ZoneH1 en direct, seulement quand les dernières vagues du ZigZag "
+        f"durent au moins {minutes:.0f} min : le creux a le temps de tenir "
+        f"jusqu'à l'échéance", vagues_longues(base)))
+    for prefixe, nom in (("10.", "13. ZoneH1 ZigZag, vagues de 15 min ou plus"),
+                         ("11.", "14. Prise ZigZag, vagues de 15 min ou plus")):
+        source = next((liste for n, _d, liste in variantes
+                       if n.startswith(prefixe)), None)
+        if source is not None:
+            variantes.append((
+                nom, f"variante {prefixe[:-1]}, seulement quand les "
+                f"dernières vagues du ZigZag durent au moins "
+                f"{minutes:.0f} min", vagues_longues(source)))
 
     mesures = [_mesurer(nom, desc, liste, coupure, jours, echeance_sec)
                for nom, desc, liste in variantes]

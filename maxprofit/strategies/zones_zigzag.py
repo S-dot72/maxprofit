@@ -76,3 +76,26 @@ class PriseZigZag(PriseDeLiquidite):
         return [(p.confirmed_index, p.price,
                  -1 if p.kind is PivotKind.HAUT else +1)
                 for p in pivots(bougies)]
+
+
+#: Jambes récentes du ZigZag dont on prend la durée médiane.
+JAMBES_RYTHME = 6
+
+
+def rythme_minutes(bougies) -> float | None:
+    """La durée médiane, en minutes, des dernières jambes du ZigZag.
+
+    Demandé le 2026-10-02 : « les creux du ZigZag n'attendent parfois pas
+    15 minutes pour remonter ou redescendre ; il faut identifier si le creux
+    pourra être gagnant sur un ordre de 15 minutes ». Une jambe va d'un
+    sommet au creux suivant (ou l'inverse) : si le marché ondule en vagues
+    de 6 minutes, un creux acheté sera repris bien avant l'échéance d'une
+    option de 15 minutes. `None` tant qu'il n'y a pas deux jambes.
+    """
+    p = pivots(bougies)
+    if len(p) < 3:
+        return None
+    durees = sorted((b.ts_sec - a.ts_sec) / 60
+                    for a, b in zip(p[-JAMBES_RYTHME - 1:-1],
+                                    p[-JAMBES_RYTHME:]))
+    return durees[len(durees) // 2]

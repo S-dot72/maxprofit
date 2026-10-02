@@ -123,3 +123,13 @@ def test_l_image_part_avec_l_ordre(course):
     assert envoyees and "EURUSD_otc" in envoyees[0] and "zone 1.10000" \
         in envoyees[0]
     assert "<" not in envoyees[0].replace("<b>", "").replace("</b>", "")
+
+
+def test_vagues_min_se_lit_dans_l_environnement(monkeypatch):
+    from maxprofit.live.plan_demo import vagues_min_minutes
+    monkeypatch.delenv("VAGUES_MIN", raising=False)
+    assert vagues_min_minutes() == 0.0
+    monkeypatch.setenv("VAGUES_MIN", "15")
+    assert vagues_min_minutes() == 15.0
+    monkeypatch.setenv("VAGUES_MIN", "n'importe quoi")
+    assert vagues_min_minutes() == 0.0
