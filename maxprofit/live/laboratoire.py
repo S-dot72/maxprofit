@@ -187,7 +187,7 @@ def laboratoire(exemples: Sequence[Exemple],
          [e for e in base if e.contexte.get("retournement_meme") == 1]),
         ("8. Confirmation M1, bougie suivante",
          "on attend la bougie suivante : entrée à sa clôture si elle casse "
-         "l'extrême de celle du signal (réglage par défaut de la course)",
+         "l'extrême de celle du signal (CONFIRMATION_M1=suivante)",
          [replace(e, ts_sec=e.ts_sec + 60,
                   gagne=bool(e.contexte["gagne_suivant"]))
           for e in base if e.contexte.get("retournement_suivant") == 1

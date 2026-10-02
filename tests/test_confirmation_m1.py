@@ -133,3 +133,11 @@ def test_vagues_min_se_lit_dans_l_environnement(monkeypatch):
     assert vagues_min_minutes() == 15.0
     monkeypatch.setenv("VAGUES_MIN", "n'importe quoi")
     assert vagues_min_minutes() == 0.0
+
+
+def test_la_confirmation_est_coupee_par_defaut(monkeypatch):
+    from maxprofit.live.plan_demo import mode_confirmation_m1
+    monkeypatch.delenv("CONFIRMATION_M1", raising=False)
+    assert mode_confirmation_m1() == "0"
+    monkeypatch.setenv("CONFIRMATION_M1", "suivante")
+    assert mode_confirmation_m1() == "suivante"

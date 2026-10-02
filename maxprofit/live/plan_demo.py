@@ -628,14 +628,21 @@ def vagues_min_minutes() -> float:
 
 
 def mode_confirmation_m1() -> str:
-    """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 »."""
+    """`CONFIRMATION_M1` : « 0 » (défaut), « suivante » ou « meme ».
+
+    COUPÉE PAR DÉFAUT depuis le 2026-10-02, choix de l'utilisateur pour
+    retrouver le débit de 18 sessions par jour : en douze heures, elle avait
+    annulé les deux seuls signaux de ZoneH1, sans avoir prouvé au
+    laboratoire (variantes 7 et 8) qu'elle fait mieux. Elle se rallume par
+    la variable si le verdict le justifie.
+    """
     import os
-    mode = os.environ.get("CONFIRMATION_M1", "suivante").strip().lower()
-    if mode in ("0", "non", "aucune", "off"):
-        return "0"
+    mode = os.environ.get("CONFIRMATION_M1", "0").strip().lower()
+    if mode in ("suivante",):
+        return "suivante"
     if mode in ("meme", "même"):
         return "meme"
-    return "suivante"
+    return "0"
 
 
 def retournement_m1(call: bool, bougie, precedente) -> bool:
@@ -1159,14 +1166,14 @@ class CoursePlanDemo:
         """La confirmation M1 demandée le 2026-10-02 : « la stratégie de
         base, plus une confirmation en M1 ».
 
-        - « suivante » (défaut) : le signal de ZoneH1 est mis EN ATTENTE ;
+        - « suivante » : le signal de ZoneH1 est mis EN ATTENTE ;
           il n'est joué qu'à la clôture de la bougie suivante, et seulement
           si elle va dans le sens du trade ET clôture au-delà de l'extrême
           de la bougie du signal (au-dessus de son plus haut pour un achat,
           sous son plus bas pour une vente). Sinon, il est abandonné.
         - « meme » : la bougie du signal doit elle-même aller dans le sens
           du trade et casser l'extrême de la précédente.
-        - « 0 » : ZoneH1 seule, comme avant.
+        - « 0 » (défaut) : ZoneH1 seule.
 
         Rend le signal à jouer maintenant, ou `None`.
         """
