@@ -28,6 +28,11 @@ from maxprofit.store.market import MarketReader
 log = logging.getLogger(__name__)
 
 PERIODE_SEC = 24 * 3600
+#: Pause du rejeu toutes les 200 bougies. Elle valait 2 ms : le rejeu, qui
+#: rejoue désormais plusieurs stratégies, occupait le processeur et la course
+#: évaluait ses bougies jusqu'à une minute en retard. 100 ms laissent la main
+#: à la course ; le rejeu, quotidien, prend simplement plus longtemps.
+RESPIRATION_SEC = 0.1
 #: Attente avant le premier rejeu d'une course sans apprentissage : laisser
 #: la collecte et la course se connecter d'abord.
 DELAI_INITIAL_SEC = 120
@@ -152,7 +157,7 @@ class Apprenti:
                     echeance_sec=strategie.p.expiry_sec,
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
-                    respirer=lambda: time.sleep(0.002))
+                    respirer=lambda: time.sleep(RESPIRATION_SEC))
                 # Sur les MÊMES bougies déjà en mémoire : c'est ce qui rend
                 # la comparaison juste.
                 for nom, candidate in candidates.items():
@@ -162,7 +167,7 @@ class Apprenti:
                         echeances=(candidate.p.expiry_sec,),
                         garde=lambda p, f: dans_la_plage_de_calibration(
                             tolerance, f),
-                        respirer=lambda: time.sleep(0.002))
+                        respirer=lambda: time.sleep(RESPIRATION_SEC))
                 if type(strategie) is not PriseDeLiquidite:
                     prises += exemples_historiques(
                         {paire: bougies}, liquidite,
@@ -170,7 +175,7 @@ class Apprenti:
                         echeances=(liquidite.p.expiry_sec,),
                         garde=lambda p, f: dans_la_plage_de_calibration(
                             tolerance, f),
-                        respirer=lambda: time.sleep(0.002))
+                        respirer=lambda: time.sleep(RESPIRATION_SEC))
         finally:
             try:
                 conn.close()

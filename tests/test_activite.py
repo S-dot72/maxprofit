@@ -69,3 +69,37 @@ def test_le_releve_survit_au_redeploiement(tmp_path):
     sauver_etat(conn, "x", e, 1)
     relu, _ = charger_etat(conn, "x", e.plan)
     assert relu.activite_depuis(1)["vues"] == 7
+
+
+def _course_lente(tmp_path, ecart_sec):
+    """Une paire dont la dernière bougie évaluée date de `ecart_sec`."""
+    from test_plan_demo import LecteurAvecBougies
+    frais = int(time.time()) // 60 * 60 - 60
+    c = CoursePlanDemo(LecteurAvecBougies(fin_ts=frais), CourtierFactice([]),
+                       JournalExecution(tmp_path / f"l{ecart_sec}.db",
+                                        campagne=f"l{ecart_sec}"),
+                       _plan(), ("EURUSD_otc",))
+    c.univers = lambda: ["EURUSD_otc"]
+    vues = []
+    c.strategie.on_bar = lambda vue: vues.append(vue.now_ms) or None
+    c.etat.derniere_bougie["EURUSD_otc"] = frais - ecart_sec
+    return c, vues
+
+
+def test_une_bougie_encore_fraiche_est_rattrapee(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONFIRMATION_M1", "0")
+    # Selon la seconde de la minute, la bougie sautée a entre 60 et 120 s :
+    # la fraîcheur est fixée pour que le test ne dépende pas de l'horloge.
+    monkeypatch.setattr("maxprofit.live.plan_demo.FRAICHEUR_MAX_SEC", 150)
+    c, vues = _course_lente(tmp_path, 120)
+    c.chercher_un_signal()
+    assert len(vues) == 2, "la bougie sautée et la dernière"
+
+
+def test_une_bougie_trop_vieille_est_comptee_manquee(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONFIRMATION_M1", "0")
+    c, vues = _course_lente(tmp_path, 300)
+    c.chercher_un_signal()
+    a = c.etat.activite_depuis(1)
+    assert a.get("manquees", 0) >= 2
+    assert "MANQUÉES" in texte_activite(a, 1)
