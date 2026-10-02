@@ -11,6 +11,7 @@ pas un exemple.
 from __future__ import annotations
 
 import bisect
+import math
 from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.contexte import contexte
@@ -32,6 +33,9 @@ def exemples_historiques(
     processus : le rejeu tourne à côté de la collecte et de la course.
     """
     lookback = strategie.p.lookback
+    # Une stratégie à long recul (zones H1) tolère les trous de collecte ;
+    # ZoneH1, elle, exige sa fenêtre entière, comme en direct.
+    requis = math.ceil(lookback * getattr(strategie.p, "couverture_min", 1.0))
     sortie: list[Exemple] = []
     evaluees = 0
     for pair, serie in bougies_par_paire.items():
@@ -39,9 +43,17 @@ def exemples_historiques(
                            key=lambda b: b.ts_sec)
         debuts = [b.ts_sec for b in completes]
         closes = {b.ts_sec: b.close for b in completes}
+        if not completes:
+            continue
+        # UNE vue par paire, dont on avance le curseur — comme le moteur de
+        # backtest. En recréer une à chaque minute revalidait toute la
+        # fenêtre à chaque fois : 2 880 bougies par minute rejouée pour une
+        # stratégie à zones H1. `candles(lookback)` rend la même fenêtre
+        # que la tranche ci-dessous dès qu'elle est complète.
+        vue = SequenceMarketView(pair, completes, 0)
         for i, bougie in enumerate(completes):
             j = bisect.bisect_left(debuts, bougie.ts_sec - lookback * 60)
-            if i + 1 - j < lookback:
+            if i + 1 - j < requis:
                 continue                  # la stratégie refuserait de trancher
             fenetre = completes[j:i + 1]
             if not garde(pair, fenetre):
@@ -49,7 +61,9 @@ def exemples_historiques(
             evaluees += 1
             if respirer is not None and evaluees % 200 == 0:
                 respirer()
-            signal = strategie.on_bar(SequenceMarketView(pair, fenetre))
+            while vue.index < i:
+                vue.advance()
+            signal = strategie.on_bar(vue)
             if signal is None:
                 continue
             sortie_prix = closes.get(bougie.ts_sec + echeance_sec)

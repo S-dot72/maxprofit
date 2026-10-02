@@ -134,7 +134,9 @@ def _seconde_chance(etendus: Sequence[Exemple]) -> list[Exemple]:
 def laboratoire(exemples: Sequence[Exemple],
                 etendus: Sequence[Exemple] | None,
                 en_direct: Callable[[Exemple], bool],
-                echeance_sec: int = 900) -> dict:
+                echeance_sec: int = 900,
+                autres: Mapping[str, tuple[str, Sequence[Exemple]]]
+                | None = None) -> dict:
     """Les variantes mesurées, et leur verdict face à ZoneH1 en direct.
 
     `exemples` : ZoneH1 rejouée. `etendus` : ZoneH1 rejouée avec deux
@@ -174,6 +176,10 @@ def laboratoire(exemples: Sequence[Exemple],
             "5. Seconde chance",
             "zone usée rejouée si son dernier signal a gagné",
             _seconde_chance([e for e in etendus if en_direct(e)])))
+    for nom, (description, liste) in (autres or {}).items():
+        variantes.append((nom, description,
+                          sorted((e for e in liste if en_direct(e)),
+                                 key=lambda e: e.ts_sec)))
 
     mesures = [_mesurer(nom, desc, liste, coupure, jours, echeance_sec)
                for nom, desc, liste in variantes]

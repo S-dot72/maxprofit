@@ -96,7 +96,7 @@ class Apprenti:
         if actuel is None or not actuel.n or not actuel.echeances \
                 or not actuel.par_paire or not actuel.simulations \
                 or not actuel.laboratoire \
-                or not ("paires" in actuel.laboratoire
+                or not (_avec_zone_confirmee(actuel.laboratoire)
                         or "note" in actuel.laboratoire) \
                 or not _mesure_tout(actuel):
             return DELAI_INITIAL_SEC
@@ -134,6 +134,11 @@ class Apprenti:
                 strategie.p,
                 entrees_max_par_zone=strategie.p.entrees_max_par_zone + 2))
         etendus: list | None = [] if elargie is not None else None
+        # La zone tracée en H1, l'entrée confirmée en M1 (demandée le
+        # 2026-10-02) : une stratégie à part, jugée au laboratoire.
+        from maxprofit.strategies.zone_confirmee import ZoneConfirmee
+        confirmee = ZoneConfirmee()
+        confirmes: list = []
         conn = self._ouvrir()
         try:
             lecteur = MarketReader(conn)
@@ -148,6 +153,13 @@ class Apprenti:
                     respirer=lambda: time.sleep(0.002))
                 # Sur les MÊMES bougies déjà en mémoire : c'est ce qui rend
                 # la comparaison juste.
+                confirmes += exemples_historiques(
+                    {paire: bougies}, confirmee,
+                    echeance_sec=confirmee.p.expiry_sec,
+                    echeances=(confirmee.p.expiry_sec,),
+                    garde=lambda p, f: dans_la_plage_de_calibration(
+                        tolerance, f),
+                    respirer=lambda: time.sleep(0.002))
                 if elargie is None:
                     continue
                 etendus += exemples_historiques(
@@ -173,12 +185,24 @@ class Apprenti:
             exemples, etendus,
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
-            strategie.p.expiry_sec)
+            strategie.p.expiry_sec,
+            {"6. Zone H1, confirmation M1": (
+                "zone tracée sur l'H1 ; entrée seulement si une bougie M1 "
+                "rejette la zone et casse l'extrême de la précédente",
+                confirmes)})
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
                  time.monotonic() - debut_calcul, len(nouveau.regles))
         course._prevenir(_annonce(ancien, nouveau))
+
+
+def _avec_zone_confirmee(laboratoire) -> bool:
+    """Faux pour un laboratoire calculé avant la variante 6 : il est alors
+    refait au démarrage, pas dans vingt-quatre heures."""
+    return "paires" in laboratoire and any(
+        str(m.get("nom", "")).startswith("6.")
+        for m in laboratoire.get("mesures", ()))
 
 
 def _simulations(exemples, echeance_sec, seuil_contre_heure, autres) -> dict:
