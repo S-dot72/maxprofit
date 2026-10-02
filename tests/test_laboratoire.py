@@ -111,3 +111,11 @@ def test_la_baisse_recente_est_attribuee_aux_nouvelles_paires():
     sortie = texte(resultat)
     assert "NOUVELLES paires" in sortie
     assert "C 🆕 : 30%" in sortie
+
+
+def test_une_autre_strategie_est_jugee_face_a_la_reference():
+    exemples = [_ex(i, i % 2 == 0) for i in range(300)]
+    autre = [_ex(i, i % 5 != 0) for i in range(300)]
+    m = _mesures(laboratoire(exemples, None, lambda e: True, 900,
+                             {"6. Zone H1, confirmation M1": ("x", autre)}))
+    assert m["6. Zone H1, confirmation M1"].verdict.startswith("✅")
