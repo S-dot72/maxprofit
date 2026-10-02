@@ -612,6 +612,21 @@ def strategie_de_la_course():
     return ZoneH1()
 
 
+def vagues_min_minutes() -> float:
+    """`VAGUES_MIN` : durée minimale des vagues du ZigZag, en minutes.
+
+    0 par défaut : le filtre ne s'active qu'après son verdict au
+    laboratoire (variantes 12 à 14). « 15 » : on n'achète un creux que si le
+    marché ondule en vagues assez longues pour qu'il tienne jusqu'à
+    l'échéance d'une option de 15 minutes.
+    """
+    import os
+    try:
+        return max(0.0, float(os.environ.get("VAGUES_MIN", "0") or 0))
+    except ValueError:
+        return 0.0
+
+
 def mode_confirmation_m1() -> str:
     """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 »."""
     import os
@@ -738,6 +753,9 @@ class CoursePlanDemo:
         self.confirmation_m1 = (
             "0" if getattr(self.strategie, "name", "").startswith(
                 "prise_de_liquidite") else mode_confirmation_m1())
+        #: `VAGUES_MIN` : n'entrer que si les dernières vagues du ZigZag
+        #: durent au moins ce nombre de minutes (0 = pas de filtre).
+        self.vagues_min_minutes = vagues_min_minutes()
         #: Signaux en attente de leur bougie de confirmation, par paire.
         self._en_attente: dict[str, tuple] = {}
         #: Les bougies vues au signal joué, pour l'image de l'ordre.
@@ -1067,6 +1085,12 @@ class CoursePlanDemo:
             if self._ecarte_par_une_lecon(paire, signal, ctx):
                 self.etat.noter("lecon")
                 continue
+            if self.vagues_min_minutes:
+                from maxprofit.strategies.zones_zigzag import rythme_minutes
+                rythme = rythme_minutes(bougies)
+                if rythme is None or rythme < self.vagues_min_minutes:
+                    self.etat.noter("vagues_courtes")
+                    continue
             self.etat.noter("retenus")
             self.etat.signaux_trouves += 1
             retenus.append((signal, ctx, derniere.ts_sec + 60, bougies))
@@ -2507,7 +2531,10 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
             f"{confirmation}écartés : "
             f"{a.get('payout', 0)} payout sous le maximum, "
             f"{a.get('contre_heure', 0)} contre l'heure en cours, "
-            f"{a.get('lecon', 0)} par une leçon ; {a.get('retenus', 0)} "
+            f"{a.get('lecon', 0)} par une leçon"
+            + (f", {a['vagues_courtes']} vagues trop courtes"
+               if a.get("vagues_courtes") else "")
+            + f" ; {a.get('retenus', 0)} "
             f"retenu(s), {a.get('independance', 0)} pas reporté(s) "
             f"(indépendance), {a.get('ordres', 0)} ordre(s).")
 

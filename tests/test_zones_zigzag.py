@@ -69,3 +69,12 @@ def test_les_deux_strategies_evaluent_sans_erreur():
         assert ev.pair == "EURUSD_otc"
     assert {p.kind for p in pivots(_vagues())} == {PivotKind.HAUT,
                                                    PivotKind.BAS}
+
+
+def test_le_rythme_mesure_la_duree_des_vagues():
+    from maxprofit.strategies.zones_zigzag import rythme_minutes
+    lentes = rythme_minutes(_vagues(periode=60))
+    rapides = rythme_minutes(_vagues(periode=12))
+    assert lentes is not None and rapides is not None
+    assert 25 <= lentes <= 35, "demi-période de 60 min"
+    assert rapides < 15, "des vagues de 6 min ne tiennent pas 15 min"

@@ -167,3 +167,12 @@ def test_le_rejeu_note_la_confirmation_de_la_bougie_suivante():
     assert "gagne_suivant" not in _confirmation_m1(
         courte, 1, True, {c.ts_sec: c.close for c in courte}, 900), \
         "sans bougie à l'échéance, pas d'issue"
+
+
+def test_les_vagues_trop_courtes_sont_ecartees():
+    exemples = [_ex(i, i % 2 == 0, rythme_zigzag=30.0 if i % 2 == 0 else 6.0)
+                for i in range(300)]
+    m = _mesures(laboratoire(exemples, None, lambda e: True))
+    douze = m["12. ZoneH1, vagues de 15 min ou plus"]
+    assert douze.n_etalonnage + douze.n_validation == 150
+    assert douze.verdict.startswith("✅")
