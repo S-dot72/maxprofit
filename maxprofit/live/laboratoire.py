@@ -304,13 +304,20 @@ def _texte_paires(paires: Mapping[str, Sequence[int]], coupe: str) -> list[str]:
         f"<b>{taux(nr2, gr2)}</b>"
         + (f" — {', '.join(nouvelles)}" if nouvelles else ""),
     ]
-    if nr and nr2:
-        if gr / nr >= SEUIL and gr2 / nr2 < SEUIL:
-            lignes.append("→ Ce sont surtout les NOUVELLES paires qui tirent "
-                          "le taux vers le bas.")
-        elif gr / nr < SEUIL:
-            lignes.append("→ Les paires d'origine ont baissé elles aussi : "
-                          "ce n'est pas seulement l'ajout des paires.")
+    # ⚠ Les paires d'origine se comparent à LEUR passé, pas au seuil. La
+    # première version concluait « ce sont les nouvelles » dès que les
+    # anciennes restaient au-dessus de 52,1 % : 64,3 % → 52,8 % passait pour
+    # une tenue, alors que c'était l'essentiel de la baisse.
+    if na and nr:
+        baisse = 100 * (ga / na - gr / nr)
+        if baisse >= ECART_MIN_POINTS:
+            lignes.append(
+                f"→ Les paires d'origine ont baissé elles aussi "
+                f"({-baisse:+.1f} pts) : la baisse ne vient PAS seulement "
+                f"des nouvelles paires.")
+        elif nr2 and gr2 / nr2 < SEUIL:
+            lignes.append("→ Les paires d'origine tiennent : ce sont les "
+                          "NOUVELLES paires qui tirent le taux vers le bas.")
     lignes.append("Par paire, depuis le " + coupe
                   + " (avant entre parenthèses) :")
     for p, (n0, g0, n1, g1) in sorted(

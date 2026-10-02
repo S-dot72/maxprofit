@@ -119,3 +119,12 @@ def test_une_autre_strategie_est_jugee_face_a_la_reference():
     m = _mesures(laboratoire(exemples, None, lambda e: True, 900,
                              {"6. Zone H1, confirmation M1": ("x", autre)}))
     assert m["6. Zone H1, confirmation M1"].verdict.startswith("✅")
+
+
+def test_une_baisse_des_paires_d_origine_n_est_pas_mise_sur_les_nouvelles():
+    """Le cas du 02/10 : anciennes 64 % → 53 %, nouvelles 50 %."""
+    from maxprofit.live.laboratoire import _texte_paires
+    sortie = "\n".join(_texte_paires(
+        {"A_otc": [342, 220, 108, 57], "C_otc": [0, 0, 40, 20]}, "30/09"))
+    assert "ne vient PAS seulement" in sortie
+    assert "NOUVELLES paires qui tirent" not in sortie
