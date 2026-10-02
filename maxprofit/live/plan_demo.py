@@ -649,22 +649,43 @@ def vagues_min_minutes() -> float:
         return 0.0
 
 
-def mode_confirmation_m1() -> str:
-    """`CONFIRMATION_M1` : « 0 » (défaut), « suivante » ou « meme ».
+#: Paires retirées de la COURSE (pas de la collecte) le 2026-10-03, choix de
+#: l'utilisateur : ajoutées le 30/09, elles gagnaient 37,5 % ensemble sur
+#: les jours récents (EURCHF 1/4, EURJPY 4/11, NZDJPY 0/2). La collecte
+#: continue, pour les réévaluer quand leur historique aura grossi.
+PAIRES_EXCLUES_PAR_DEFAUT = ("EURCHF_otc", "EURJPY_otc", "NZDJPY_otc")
 
-    COUPÉE PAR DÉFAUT depuis le 2026-10-02, choix de l'utilisateur pour
-    retrouver le débit de 18 sessions par jour : en douze heures, elle avait
-    annulé les deux seuls signaux de ZoneH1, sans avoir prouvé au
-    laboratoire (variantes 7 et 8) qu'elle fait mieux. Elle se rallume par
-    la variable si le verdict le justifie.
+
+def paires_exclues() -> frozenset[str]:
+    """`PAIRES_EXCLUES` : « EURCHF,EURJPY » ou « aucune » ; défaut ci-dessus."""
+    import os
+    brut = os.environ.get("PAIRES_EXCLUES")
+    if brut is None:
+        return frozenset(PAIRES_EXCLUES_PAR_DEFAUT)
+    if brut.strip().lower() in ("", "0", "aucune", "non"):
+        return frozenset()
+    noms = (n.strip().upper().replace("_OTC", "") for n in brut.split(","))
+    return frozenset(f"{n}_otc" for n in noms if n)
+
+
+def mode_confirmation_m1() -> str:
+    """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 ».
+
+    ACTIVE PAR DÉFAUT depuis le 2026-10-03 : seule variante jugée
+    « prometteuse » au laboratoire — 64,7 % sur les jours jamais vus contre
+    55,6 % pour ZoneH1, 67,0 % contre 63,6 % sur les anciens, creux du plan
+    simulé −12 $ contre −35 $. Son prix est le débit : environ 8 signaux
+    par jour au lieu de 24. Choix de l'utilisateur, qui l'avait coupée la
+    veille pour le débit avant d'avoir ce verdict. « 0 » revient à ZoneH1
+    seule.
     """
     import os
-    mode = os.environ.get("CONFIRMATION_M1", "0").strip().lower()
-    if mode in ("suivante",):
-        return "suivante"
+    mode = os.environ.get("CONFIRMATION_M1", "suivante").strip().lower()
+    if mode in ("0", "non", "aucune", "off"):
+        return "0"
     if mode in ("meme", "même"):
         return "meme"
-    return "0"
+    return "suivante"
 
 
 def retournement_m1(call: bool, bougie, precedente) -> bool:
@@ -782,6 +803,8 @@ class CoursePlanDemo:
         self.confirmation_m1 = (
             "0" if getattr(self.strategie, "name", "").startswith(
                 "prise_de_liquidite") else mode_confirmation_m1())
+        #: Paires que l'utilisateur a retirées de la course.
+        self.paires_exclues = paires_exclues()
         #: `ELAN_30M_MAX` : pas d'entrée quand l'élan des 30 dernières
         #: minutes va contre le trade au-delà de ce nombre d'amplitudes M1.
         self.elan_30m_max = elan_30m_max()
@@ -988,6 +1011,8 @@ class CoursePlanDemo:
         if self.etat.quarantaine:
             candidats = [p for p in candidats
                          if p not in self.etat.quarantaine]
+        if self.paires_exclues:
+            candidats = [p for p in candidats if p not in self.paires_exclues]
         # Pendant une session, l'actif du pas précédent ne peut pas porter le
         # pas suivant. L'écarter ICI laisse la recherche trouver un signal sur
         # un autre actif dans le même passage, au lieu de s'arrêter sur un
@@ -1195,14 +1220,14 @@ class CoursePlanDemo:
         """La confirmation M1 demandée le 2026-10-02 : « la stratégie de
         base, plus une confirmation en M1 ».
 
-        - « suivante » : le signal de ZoneH1 est mis EN ATTENTE ;
+        - « suivante » (défaut) : le signal de ZoneH1 est mis EN ATTENTE ;
           il n'est joué qu'à la clôture de la bougie suivante, et seulement
           si elle va dans le sens du trade ET clôture au-delà de l'extrême
           de la bougie du signal (au-dessus de son plus haut pour un achat,
           sous son plus bas pour une vente). Sinon, il est abandonné.
         - « meme » : la bougie du signal doit elle-même aller dans le sens
           du trade et casser l'extrême de la précédente.
-        - « 0 » (défaut) : ZoneH1 seule.
+        - « 0 » : ZoneH1 seule.
 
         Rend le signal à jouer maintenant, ou `None`.
         """

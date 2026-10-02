@@ -128,26 +128,12 @@ class Apprenti:
         fin = int(time.time())
         debut = fin - jours * 86400
         debut_calcul = time.monotonic()
-        # ZoneH1 avec deux entrées par zone de plus : la variante « seconde
-        # chance » du laboratoire en a besoin, et ne peut pas les déduire des
-        # signaux de la stratégie jouée.
-        # La variante « seconde chance » (ZoneH1 élargie) a été jugée deux
-        # fois sans rien apporter : son rejeu coûtait autant que celui de
-        # la stratégie. Il est remplacé par la prise de liquidité.
+        # Les stratégies candidates (zones H1, ZigZag, prise de liquidité,
+        # supports inversés) ont toutes été jugées au laboratoire le
+        # 2026-10-03 sans faire mieux que ZoneH1 : leurs rejeux, qui
+        # occupaient le processeur de la course, sont retirés. Leur code
+        # reste, et STRATEGIE peut encore les mettre en course.
         etendus = None
-        from maxprofit.strategies.prise_de_liquidite import PriseDeLiquidite
-        liquidite = PriseDeLiquidite()
-        prises: list = []
-        # La zone tracée en H1, l'entrée confirmée en M1 (demandée le
-        # 2026-10-02) : une stratégie à part, jugée au laboratoire.
-        # La zone H1 confirmée en M1 (variante 6) a perdu nettement
-        # (44 % puis 54 %, −60 $) : son rejeu laisse la place au ZigZag,
-        # demandé le 2026-10-02 pour tracer les zones hautes et basses.
-        from maxprofit.strategies.zone_inversee import ZoneInversee
-        from maxprofit.strategies.zones_zigzag import PriseZigZag, ZoneZigZag
-        candidates = {"zigzag": ZoneZigZag(), "prise_zigzag": PriseZigZag(),
-                      "inversee": ZoneInversee()}
-        par_candidate: dict[str, list] = {n: [] for n in candidates}
         conn = self._ouvrir()
         try:
             lecteur = MarketReader(conn)
@@ -160,24 +146,6 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=lambda: time.sleep(RESPIRATION_SEC))
-                # Sur les MÊMES bougies déjà en mémoire : c'est ce qui rend
-                # la comparaison juste.
-                for nom, candidate in candidates.items():
-                    par_candidate[nom] += exemples_historiques(
-                        {paire: bougies}, candidate,
-                        echeance_sec=candidate.p.expiry_sec,
-                        echeances=(candidate.p.expiry_sec,),
-                        garde=lambda p, f: dans_la_plage_de_calibration(
-                            tolerance, f),
-                        respirer=lambda: time.sleep(RESPIRATION_SEC))
-                if type(strategie) is not PriseDeLiquidite:
-                    prises += exemples_historiques(
-                        {paire: bougies}, liquidite,
-                        echeance_sec=liquidite.p.expiry_sec,
-                        echeances=(liquidite.p.expiry_sec,),
-                        garde=lambda p, f: dans_la_plage_de_calibration(
-                            tolerance, f),
-                        respirer=lambda: time.sleep(RESPIRATION_SEC))
         finally:
             try:
                 conn.close()
@@ -194,24 +162,7 @@ class Apprenti:
             exemples, etendus,
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
-            strategie.p.expiry_sec,
-            {"10. ZoneH1, zones du ZigZag": (
-                "ZoneH1 à l'identique, mais ses zones sont les sommets et "
-                "creux confirmés du ZigZag (seuil : 4 × l'amplitude M1)",
-                par_candidate["zigzag"]),
-             "11. Prise de liquidité, sommets/creux du ZigZag": (
-                "prise de liquidité au-delà des mèches des sommets et creux "
-                "du ZigZag, retour, retournement, sens H1",
-                par_candidate["prise_zigzag"]),
-             "15. ZoneH1 + supports/résistances inversés": (
-                "ZoneH1, plus chaque zone cassée reprise dans le rôle "
-                "inverse : support cassé devenu résistance, et l'inverse",
-                par_candidate["inversee"]),
-             "9. Prise de liquidité M1, sens H1": (
-                "le prix va chercher les stops au-delà d'une pique M1 (mèche "
-                "ou 2 clôtures au plus), revient, et une bougie de "
-                "retournement casse l'extrême de la précédente",
-                prises)})
+            strategie.p.expiry_sec)
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
