@@ -592,6 +592,26 @@ def pas_max_de_la_martingale() -> int:
     return pas if 1 <= pas <= 3 else PAS_MAX_PAR_DEFAUT
 
 
+def mode_confirmation_m1() -> str:
+    """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 »."""
+    import os
+    mode = os.environ.get("CONFIRMATION_M1", "suivante").strip().lower()
+    if mode in ("0", "non", "aucune", "off"):
+        return "0"
+    if mode in ("meme", "même"):
+        return "meme"
+    return "suivante"
+
+
+def retournement_m1(call: bool, bougie, precedente) -> bool:
+    """La bougie va dans le sens du trade ET casse l'extrême de la
+    précédente : au-dessus de son plus haut pour un achat, sous son plus bas
+    pour une vente."""
+    if call:
+        return bougie.close > bougie.open and bougie.close > precedente.high
+    return bougie.close < bougie.open and bougie.close < precedente.low
+
+
 def mode_apprentissage() -> str:
     """`APPRENTISSAGE` : actif (défaut), observation ou inactif."""
     import os
@@ -692,6 +712,15 @@ class CoursePlanDemo:
         self.attente_confirmation: str | None = None
         #: Le dernier ordre pour lequel un silence a déjà été signalé.
         self._silence_signale_depuis: int | None = None
+        #: Confirmation M1 : « suivante », « meme » ou « 0 ».
+        self.confirmation_m1 = mode_confirmation_m1()
+        #: Signaux en attente de leur bougie de confirmation, par paire.
+        self._en_attente: dict[str, tuple] = {}
+        #: Les bougies vues au signal joué, pour l'image de l'ordre.
+        self._bougies_du_signal: list = []
+        #: `(png, légende) -> None`, posé par le service : l'image de chaque
+        #: ordre, envoyée sur Telegram.
+        self._envoyer_image = None
         # ⚠ L'ABONNEMENT N'EST PAS FACULTATIF, ET PLUS DANS AUCUN MODE.
         #
         # Les bougies des paires collectées viennent de la base, mais
@@ -991,9 +1020,11 @@ class CoursePlanDemo:
             self.etat.noter("vues")
             vue = SequenceMarketView(paire, bougies)
             signal = self.strategie.on_bar(vue)
+            if signal is not None:
+                self.etat.noter("signaux")
+            signal = self._confirmer_en_m1(paire, signal, bougies, vue)
             if signal is None:
                 continue
-            self.etat.noter("signaux")
             # Compté AVANT la revérification du payout : sans cela, un signal
             # écarté pour cause de payout retombé est indiscernable d'un
             # signal jamais produit, et les deux appellent des gestes opposés.
@@ -1014,7 +1045,7 @@ class CoursePlanDemo:
                 continue
             self.etat.noter("retenus")
             self.etat.signaux_trouves += 1
-            retenus.append((signal, ctx, derniere.ts_sec + 60))
+            retenus.append((signal, ctx, derniere.ts_sec + 60, bougies))
         self.etat.paires_sans_historique = sans_historique
         self.etat.paires_hors_calibration = hors_calibration
         self.etat.paires_perdantes = sorted(ecartees)
@@ -1030,7 +1061,8 @@ class CoursePlanDemo:
         # priorité égale (pas encore de rejeu), la rotation décide comme
         # avant.
         retenus.sort(key=lambda r: -self.priorite(r[0].pair))
-        signal, ctx, fin = retenus[0]
+        signal, ctx, fin, bougies = retenus[0]
+        self._bougies_du_signal = list(bougies[-90:])
         if len(retenus) > 1:
             log.info("%d signaux au même passage : %s retenue (priorité "
                      "%.0f %%), %s laissée(s).", len(retenus), signal.pair,
@@ -1039,6 +1071,50 @@ class CoursePlanDemo:
         self._contexte_du_signal = ctx
         self._fin_bougie_du_signal = fin
         return signal
+
+    def _confirmer_en_m1(self, paire: str, signal, bougies, vue):
+        """La confirmation M1 demandée le 2026-10-02 : « la stratégie de
+        base, plus une confirmation en M1 ».
+
+        - « suivante » (défaut) : le signal de ZoneH1 est mis EN ATTENTE ;
+          il n'est joué qu'à la clôture de la bougie suivante, et seulement
+          si elle va dans le sens du trade ET clôture au-delà de l'extrême
+          de la bougie du signal (au-dessus de son plus haut pour un achat,
+          sous son plus bas pour une vente). Sinon, il est abandonné.
+        - « meme » : la bougie du signal doit elle-même aller dans le sens
+          du trade et casser l'extrême de la précédente.
+        - « 0 » : ZoneH1 seule, comme avant.
+
+        Rend le signal à jouer maintenant, ou `None`.
+        """
+        if self.confirmation_m1 == "0":
+            return signal
+        der = bougies[-1]
+        if self.confirmation_m1 == "meme":
+            if signal is None:
+                return None
+            if len(bougies) >= 2 and retournement_m1(
+                    signal.direction is Direction.CALL, der, bougies[-2]):
+                self.etat.noter("confirmes")
+                return signal
+            self.etat.noter("non_confirmes")
+            return None
+        sortie = None
+        attente = self._en_attente.pop(paire, None)
+        if attente is not None:
+            initial, bougie_du_signal = attente
+            if der.ts_sec == bougie_du_signal.ts_sec + 60 and retournement_m1(
+                    initial.direction is Direction.CALL, der,
+                    bougie_du_signal):
+                sortie = replace(initial, decided_at_ms=vue.now_ms,
+                                 reason=initial.reason
+                                 + " ; confirmé par la bougie M1 suivante")
+                self.etat.noter("confirmes")
+            else:
+                self.etat.noter("non_confirmes")
+        if signal is not None and sortie is None:
+            self._en_attente[paire] = (signal, der)
+        return sortie
 
     def _paire_perdante(self, paire: str) -> bool:
         """Vrai si la meilleure estimation du taux de la paire est PERDANTE.
@@ -1398,6 +1474,8 @@ class CoursePlanDemo:
         self.etat.refus_daffilee.pop(signal.pair, None)
         self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
+        self._envoyer_le_graphique(signal, sens, mise, session.pas_joues + 1,
+                                   session.echelle.pas_max)
         execution = self.courtier.denouer(execution)
         self._pas_de_la_session.append(
             (signal.pair, sens, ctx, execution.resultat or "unknown"))
@@ -1448,6 +1526,34 @@ class CoursePlanDemo:
                  sens, mise, execution.resultat)
         if etat.terminee:
             self._cloturer_session()
+
+    def _envoyer_le_graphique(self, signal, sens: str, mise: float, pas: int,
+                              pas_max: int) -> None:
+        """L'image M1 de l'ordre : bougies, zone, entrée. Jamais bloquant."""
+        if self._envoyer_image is None or not self._bougies_du_signal:
+            return
+        try:
+            from maxprofit.live.graphique import graphique_m1
+            call = signal.direction is Direction.CALL
+            niveau = (signal.features or {}).get("niveau") or None
+            tolerance = getattr(self.strategie.p, "tolerance_pct", 0.02)
+            marge = niveau * tolerance / 100 if niveau else 0.0
+            bougies = self._bougies_du_signal
+            png = graphique_m1(bougies, niveau, marge, call)
+            heure = datetime.fromtimestamp(bougies[-1].ts_sec + 60,
+                                           timezone.utc)
+            zone = (f"zone {niveau:.5f} ({'support' if call else 'résistance'})"
+                    f" · " if niveau else "")
+            legende = (
+                f"📸 <b>{signal.pair}</b> {sens.upper()} {mise:.2f} $ · pas "
+                f"{pas}/{pas_max}\n{zone}entrée {bougies[-1].close:.5f} à "
+                f"{heure:%H:%M} UTC · échéance "
+                f"{self.strategie.p.expiry_sec // 60} min"
+                + (f"\nconfirmation M1 : {self.confirmation_m1}"
+                   if self.confirmation_m1 != "0" else ""))
+            self._envoyer_image(png, legende)
+        except Exception:                        # noqa: BLE001
+            log.warning("Image de l'ordre non envoyée", exc_info=True)
 
     def _cloturer_session(self) -> None:
         session = self.etat.session
@@ -2367,9 +2473,15 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
                    + (f" à {a['plafond_max']}"
                       if a.get("plafond_max", a["plafond_min"])
                       != a["plafond_min"] else "") + " ; ")
+    confirmation = ""
+    if a.get("confirmes") or a.get("non_confirmes"):
+        confirmation = (f"confirmation M1 : {a.get('confirmes', 0)} "
+                        f"confirmé(s), {a.get('non_confirmes', 0)} "
+                        f"abandonné(s) ; ")
     return (f"{heures} h : {plafond}{a.get('vues', 0)} bougies vues, "
-            f"{a.get('signaux', 0)} signal(aux) de la stratégie dont "
-            f"{a.get('payout', 0)} écarté(s) payout sous le maximum, "
+            f"{a.get('signaux', 0)} signal(aux) de la stratégie ; "
+            f"{confirmation}écartés : "
+            f"{a.get('payout', 0)} payout sous le maximum, "
             f"{a.get('contre_heure', 0)} contre l'heure en cours, "
             f"{a.get('lecon', 0)} par une leçon ; {a.get('retenus', 0)} "
             f"retenu(s), {a.get('independance', 0)} pas reporté(s) "

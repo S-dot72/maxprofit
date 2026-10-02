@@ -160,6 +160,25 @@ class ClientTelegram:
                 params["text"] = _sans_balises(morceau)
                 await self._appeler("sendMessage", **params)
 
+    async def envoyer_photo(self, chat_id: str, png: bytes,
+                            legende: str = "") -> None:
+        """Envoie une image PNG, avec sa légende en HTML."""
+        url = API.format(jeton=self._jeton, methode="sendPhoto")
+        formulaire = aiohttp.FormData()
+        formulaire.add_field("chat_id", str(chat_id))
+        if legende:
+            formulaire.add_field("caption", legende[:1024])
+            formulaire.add_field("parse_mode", "HTML")
+        formulaire.add_field("photo", png, filename="ordre.png",
+                             content_type="image/png")
+        delai = aiohttp.ClientTimeout(total=60)
+        async with self._session.post(url, data=formulaire,
+                                      timeout=delai) as reponse:
+            donnees = await reponse.json()
+        if not donnees.get("ok"):
+            raise RuntimeError(f"Telegram a refusé sendPhoto : "
+                               f"{donnees.get('description', donnees)}")
+
     async def effacer(self, chat_id: str, message_id: int) -> None:
         """Efface un message. Utilisé sur ceux qui portent un SSID.
 
@@ -373,6 +392,14 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             return
         for chat in destinataires:
             await self._alerter_un(chat, texte)
+
+    async def alerter_photo(self, png: bytes, legende: str) -> None:
+        """L'image d'un ordre, à tous les opérateurs. Jamais bloquante."""
+        for chat in self.annuaire.destinataires():
+            try:
+                await self.client.envoyer_photo(chat, png, legende)
+            except Exception as erreur:                  # noqa: BLE001
+                log.error("Image non envoyée à %s : %s", chat, erreur)
 
     def _deja_dit(self, texte: str) -> bool:
         """Taire une alerte identique répétée dans la fenêtre de silence.

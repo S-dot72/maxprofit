@@ -39,7 +39,7 @@ signaux sur 30 jours, trois points d'écart sont dans le bruit. D'où :
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.lecons import SEUIL, Exemple, wilson
@@ -180,6 +180,19 @@ def laboratoire(exemples: Sequence[Exemple],
         variantes.append((nom, description,
                           sorted((e for e in liste if en_direct(e)),
                                  key=lambda e: e.ts_sec)))
+    variantes += [
+        ("7. Confirmation M1, même bougie",
+         "la bougie du signal va dans le sens du trade et casse l'extrême "
+         "de la précédente",
+         [e for e in base if e.contexte.get("retournement_meme") == 1]),
+        ("8. Confirmation M1, bougie suivante",
+         "on attend la bougie suivante : entrée à sa clôture si elle casse "
+         "l'extrême de celle du signal (réglage par défaut de la course)",
+         [replace(e, ts_sec=e.ts_sec + 60,
+                  gagne=bool(e.contexte["gagne_suivant"]))
+          for e in base if e.contexte.get("retournement_suivant") == 1
+          and "gagne_suivant" in e.contexte]),
+    ]
 
     mesures = [_mesurer(nom, desc, liste, coupure, jours, echeance_sec)
                for nom, desc, liste in variantes]
@@ -226,7 +239,6 @@ def _mesurer(nom, description, liste, coupure, jours, echeance_sec) -> Mesure:
 
 
 def _juger(m: Mesure, ref: Mesure) -> Mesure:
-    from dataclasses import replace
     if not m.n_validation or not ref.n_validation:
         return replace(m, verdict="indécise — aucun signal récent")
     ecart_val = 100 * (m.taux_validation - ref.taux_validation)

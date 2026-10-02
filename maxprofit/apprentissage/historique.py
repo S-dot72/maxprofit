@@ -82,6 +82,8 @@ def exemples_historiques(
             if avec_contexte:
                 ctx.update(_au_dela_de_la_fenetre(
                     closes, bougie.ts_sec, call, signal.features))
+                ctx.update(_confirmation_m1(completes, i, call, closes,
+                                            echeance_sec))
             sortie.append(Exemple(
                 ts_sec=bougie.ts_sec + 60, pair=pair, contexte=ctx,
                 gagne=(sortie_prix > bougie.close) == call, issues=issues))
@@ -107,4 +109,38 @@ def _au_dela_de_la_fenetre(closes: Mapping[int, float], ts_sec: int,
                                       / (abs(ancien) or 1) * 1e4, 4)
     if features and "niveau" in features:
         sortie["niveau"] = float(features["niveau"])
+    return sortie
+
+
+def _retournement(call: bool, bougie, precedente) -> bool:
+    if call:
+        return bougie.close > bougie.open and bougie.close > precedente.high
+    return bougie.close < bougie.open and bougie.close < precedente.low
+
+
+def _confirmation_m1(completes, i: int, call: bool, closes,
+                     echeance_sec: int) -> dict[str, float]:
+    """Pour le laboratoire : le signal avait-il sa confirmation M1 ?
+
+    `retournement_meme` : la bougie du signal va dans le sens du trade et
+    casse l'extrême de la précédente. `retournement_suivant` : la bougie
+    SUIVANTE le fait par rapport à celle du signal — on n'entre alors qu'à
+    sa clôture, d'où `gagne_suivant`, l'issue d'une entrée une minute plus
+    tard. Lire la bougie suivante n'est pas regarder l'avenir : la décision
+    de cette variante se prend à sa clôture.
+    """
+    sortie: dict[str, float] = {}
+    bougie = completes[i]
+    if i >= 1 and completes[i - 1].ts_sec == bougie.ts_sec - 60:
+        sortie["retournement_meme"] = float(
+            _retournement(call, bougie, completes[i - 1]))
+    if i + 1 < len(completes) and \
+            completes[i + 1].ts_sec == bougie.ts_sec + 60:
+        suivante = completes[i + 1]
+        sortie["retournement_suivant"] = float(
+            _retournement(call, suivante, bougie))
+        sortie_prix = closes.get(suivante.ts_sec + echeance_sec)
+        if sortie_prix is not None and sortie_prix != suivante.close:
+            sortie["gagne_suivant"] = float(
+                (sortie_prix > suivante.close) == call)
     return sortie

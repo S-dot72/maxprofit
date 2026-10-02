@@ -128,3 +128,42 @@ def test_une_baisse_des_paires_d_origine_n_est_pas_mise_sur_les_nouvelles():
         {"A_otc": [342, 220, 108, 57], "C_otc": [0, 0, 40, 20]}, "30/09"))
     assert "ne vient PAS seulement" in sortie
     assert "NOUVELLES paires qui tirent" not in sortie
+
+
+def test_la_confirmation_m1_est_jugee_avec_son_entree_decalee():
+    exemples = []
+    for i in range(300):
+        confirme = i % 2 == 0
+        exemples.append(_ex(i, i % 2 == 0, retournement_meme=float(confirme),
+                            retournement_suivant=float(confirme),
+                            gagne_suivant=float(i % 5 != 0)))
+    m = _mesures(laboratoire(exemples, None, lambda e: True))
+    assert m["7. Confirmation M1, même bougie"].verdict.startswith("✅")
+    huit = m["8. Confirmation M1, bougie suivante"]
+    assert huit.n_etalonnage + huit.n_validation == 150
+    assert huit.verdict.startswith("✅")
+
+
+def test_le_rejeu_note_la_confirmation_de_la_bougie_suivante():
+    from maxprofit.apprentissage.historique import _confirmation_m1
+    from maxprofit.core.types import Candle
+
+    def b(i, o, c):
+        return Candle(pair="A", tf_sec=60, ts_sec=T0 // 60 * 60 + 60 * i,
+                      open=o,
+                      high=max(o, c), low=min(o, c), close=c, tick_count=1,
+                      complete=True)
+    serie = [b(0, 1.0002, 1.0001), b(1, 1.0001, 1.0003),
+             b(2, 1.0003, 1.0010)] + [b(i, 1.0010, 1.0012)
+                                      for i in range(3, 20)]
+    closes = {c.ts_sec: c.close for c in serie}
+    sortie = _confirmation_m1(serie, 1, True, closes, 900)
+    assert sortie["retournement_meme"] == 1.0
+    assert sortie["retournement_suivant"] == 1.0
+    # Entrée à 1,0010 (clôture de la bougie suivante), sortie 15 min plus
+    # tard à 1,0012 : gagné pour un achat.
+    assert sortie["gagne_suivant"] == 1.0
+    courte = serie[:10]
+    assert "gagne_suivant" not in _confirmation_m1(
+        courte, 1, True, {c.ts_sec: c.close for c in courte}, 900), \
+        "sans bougie à l'échéance, pas d'issue"
