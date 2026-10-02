@@ -198,6 +198,17 @@ def _alerte_synchrone(bot):
     return alerter
 
 
+def _image_synchrone(bot):
+    """Le même pont, pour l'image de chaque ordre (`bot.alerter_photo`)."""
+    boucle = asyncio.get_running_loop()
+
+    def envoyer(png: bytes, legende: str) -> None:
+        asyncio.run_coroutine_threadsafe(bot.alerter_photo(png, legende),
+                                         boucle)
+
+    return envoyer
+
+
 def proposer_les_paires(cfg, argument: str = "", ouvrir=None) -> str:
     """`/classement [N]` : les N meilleures paires, PROPOSÉES, jamais imposées.
 
@@ -365,7 +376,15 @@ async def _servir(args) -> int:
         # marteler le broker, et son thread est `daemon`. La collecte vaut
         # plus que la course — quatorze jours de série continue ne se
         # rattrapent pas, dix jours de course si.
+        envoyer_image = None if bot is None else _image_synchrone(bot)
+
         def _fabriquer_la_course(alerter):
+            course_construite = _construire_la_course(alerter)
+            # L'image M1 de chaque ordre, sur Telegram.
+            course_construite._envoyer_image = envoyer_image
+            return course_construite
+
+        def _construire_la_course(alerter):
             # Relue à CHAQUE construction : c'est ainsi qu'une relance
             # demandée sur Telegram prend le nouveau réglage.
             reglage = _configuration_qui_gouverne()

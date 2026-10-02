@@ -160,6 +160,9 @@ def _martingale_en_trois_pas(monkeypatch):
     de la course jusqu'au 2026-09-30, toujours disponible (PAS_MAX=3). Le
     défaut à deux pas a ses propres tests, qui retirent ce réglage."""
     monkeypatch.setenv("PAS_MAX", "3")
+    # La confirmation M1 a ses propres tests (test_confirmation_m1.py) : ici,
+    # les signaux scriptés doivent être joués dès qu'ils sont émis.
+    monkeypatch.setenv("CONFIRMATION_M1", "0")
 
 
 @pytest.fixture
