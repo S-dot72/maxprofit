@@ -93,3 +93,21 @@ def test_la_tendance_4h_est_lue_dans_le_sens_du_trade():
         "tendance_4h"] > 0
     assert _au_dela_de_la_fenetre(closes, heure - 60, False, {"niveau": 1.1}
                                   ) == {"tendance_4h": -2000.0, "niveau": 1.1}
+
+
+def test_la_baisse_recente_est_attribuee_aux_nouvelles_paires():
+    # Les paires A et B jouent tout le mois à 70 % ; C n'apparaît qu'à la
+    # fin, à 30 %.
+    exemples = []
+    for i in range(300):
+        paire = "A_otc" if i % 2 else "B_otc"
+        exemples.append(Exemple(T0 + i * 1800, paire, {"heure_utc": 1.0},
+                                i % 10 < 7))
+    for i in range(280, 300):
+        exemples.append(Exemple(T0 + i * 1800 + 60, "C_otc",
+                                {"heure_utc": 1.0}, i % 10 < 3))
+    resultat = laboratoire(exemples, None, lambda e: True)
+    assert resultat["paires"]["C_otc"][0] == 0
+    sortie = texte(resultat)
+    assert "NOUVELLES paires" in sortie
+    assert "C 🆕 : 30%" in sortie

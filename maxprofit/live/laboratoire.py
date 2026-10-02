@@ -180,7 +180,34 @@ def laboratoire(exemples: Sequence[Exemple],
     ref = mesures[0]
     jugees = [ref] + [_juger(m, ref) for m in mesures[1:]]
     return {"debut": debut, "fin": fin, "coupure": coupure,
-            "mesures": [m.to_dict() for m in jugees]}
+            "mesures": [m.to_dict() for m in jugees],
+            "paires": _par_paire(base, coupure)}
+
+
+def _par_paire(base: Sequence[Exemple], coupure: int) -> dict:
+    """{paire: [signaux anciens, gagnés, signaux récents, gagnés]}.
+
+    Sert à dire si une baisse récente vient de TOUTES les paires — le
+    marché a changé — ou de celles ajoutées récemment, qui n'ont aucun
+    signal dans la période ancienne et pèsent donc seulement sur la récente.
+    """
+    comptes: dict[str, list[int]] = {}
+    for e in base:
+        c = comptes.setdefault(e.pair, [0, 0, 0, 0])
+        i = 0 if e.ts_sec < coupure else 2
+        c[i] += 1
+        c[i + 1] += int(e.gagne)
+    return comptes
+
+
+def _groupe(paires: Mapping[str, Sequence[int]], nouvelles: bool
+            ) -> tuple[int, int, int, int]:
+    """Totaux des paires anciennes (`nouvelles=False`) ou nouvelles."""
+    total = [0, 0, 0, 0]
+    for c in paires.values():
+        if (c[0] == 0) == nouvelles:
+            total = [a + b for a, b in zip(total, c)]
+    return tuple(total)
 
 
 def _mesurer(nom, description, liste, coupure, jours, echeance_sec) -> Mesure:
@@ -249,7 +276,47 @@ def texte(resultat: Mapping | None) -> str:
     lignes.append(
         "\nUne variante « prometteuse » n'est pas adoptée d'office : elle "
         "passe d'abord en test démo.")
+    if resultat.get("paires"):
+        lignes += ["", *_texte_paires(resultat["paires"], coupe)]
     return "\n".join(lignes)
+
+
+def _texte_paires(paires: Mapping[str, Sequence[int]], coupe: str) -> list[str]:
+    """D'où vient l'écart entre la période ancienne et la récente."""
+    def taux(n, g):
+        return f"{g / n:.1%} sur {n}" if n else "—"
+
+    na, ga, nr, gr = _groupe(paires, nouvelles=False)
+    _, _, nr2, gr2 = _groupe(paires, nouvelles=True)
+    nouvelles = sorted(p.replace("_otc", "") for p, c in paires.items()
+                       if c[0] == 0)
+    lignes = [
+        "🔎 <b>D'où vient la baisse récente ?</b> (ZoneH1 en direct)",
+        f"Paires présentes avant le {coupe} : avant <b>{taux(na, ga)}</b> → "
+        f"depuis <b>{taux(nr, gr)}</b>",
+        f"Paires sans signal avant le {coupe} (nouvelles) : depuis "
+        f"<b>{taux(nr2, gr2)}</b>"
+        + (f" — {', '.join(nouvelles)}" if nouvelles else ""),
+    ]
+    if nr and nr2:
+        if gr / nr >= SEUIL and gr2 / nr2 < SEUIL:
+            lignes.append("→ Ce sont surtout les NOUVELLES paires qui tirent "
+                          "le taux vers le bas.")
+        elif gr / nr < SEUIL:
+            lignes.append("→ Les paires d'origine ont baissé elles aussi : "
+                          "ce n'est pas seulement l'ajout des paires.")
+    lignes.append("Par paire, depuis le " + coupe
+                  + " (avant entre parenthèses) :")
+    for p, (n0, g0, n1, g1) in sorted(
+            paires.items(), key=lambda x: (x[1][3] / x[1][2]) if x[1][2]
+            else 2.0):
+        if not n1:
+            continue
+        marque = " 🆕" if n0 == 0 else ""
+        avant = f" ({g0 / n0:.0%} sur {n0})" if n0 else ""
+        lignes.append(f"  {p.replace('_otc', '')}{marque} : {g1 / n1:.0%} "
+                      f"sur {n1}{avant}")
+    return lignes
 
 
 def _pct(v: float | None) -> str:
