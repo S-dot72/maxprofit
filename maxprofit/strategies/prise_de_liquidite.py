@@ -109,30 +109,37 @@ class PriseDeLiquidite(ZoneH1):
                           features={"niveau": float(niveau or 0.0)},
                           signal=signal)
 
+    def _liquidites(self, bougies) -> list[tuple[int, float, int]]:
+        """(confirmation, niveau, sens) de chaque liquidité : au-delà des
+        mèches des deux bougies opposées de chaque pique M1."""
+        w = self.p.fenetre_pique
+        sortie = []
+        for conf, _prix, s in self._zones(bougies):
+            a, b = bougies[conf - w], bougies[conf - w + 1]
+            niveau = max(a.high, b.high) if s < 0 else min(a.low, b.low)
+            sortie.append((conf, niveau, s))
+        return sortie
+
     def _prise(self, bougies, sens: int) -> float | None:
         """Le niveau de liquidité pris puis rendu, ou `None`.
 
         `sens` est celui du trade : -1 (vente) cherche une prise au-dessus
         d'un sommet, +1 (achat) une prise sous un creux.
         """
-        w = self.p.fenetre_pique
         i = len(bougies) - 1
         debut_manip = i - self.manipulation_max
         derniere = bougies[i]
         meilleur = None
-        for conf, _prix, s in self._zones(bougies):
+        for conf, niveau, s in self._liquidites(bougies):
             # Une résistance (s < 0) porte une liquidité d'acheteurs piégés
             # au-dessus : elle donne une VENTE. Un support, un achat.
             if s != sens or conf >= debut_manip or i - conf > self.p.memoire:
                 continue
-            a, b = bougies[conf - w], bougies[conf - w + 1]
             if s < 0:
-                niveau = max(a.high, b.high)
                 au_dela = lambda x: x.high > niveau          # noqa: E731
                 clos_au_dela = lambda x: x.close > niveau    # noqa: E731
                 rendu = derniere.close < niveau
             else:
-                niveau = min(a.low, b.low)
                 au_dela = lambda x: x.low < niveau           # noqa: E731
                 clos_au_dela = lambda x: x.close < niveau    # noqa: E731
                 rendu = derniere.close > niveau

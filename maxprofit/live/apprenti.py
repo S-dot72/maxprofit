@@ -135,9 +135,12 @@ class Apprenti:
         prises: list = []
         # La zone tracée en H1, l'entrée confirmée en M1 (demandée le
         # 2026-10-02) : une stratégie à part, jugée au laboratoire.
-        from maxprofit.strategies.zone_confirmee import ZoneConfirmee
-        confirmee = ZoneConfirmee()
-        confirmes: list = []
+        # La zone H1 confirmée en M1 (variante 6) a perdu nettement
+        # (44 % puis 54 %, −60 $) : son rejeu laisse la place au ZigZag,
+        # demandé le 2026-10-02 pour tracer les zones hautes et basses.
+        from maxprofit.strategies.zones_zigzag import PriseZigZag, ZoneZigZag
+        candidates = {"zigzag": ZoneZigZag(), "prise_zigzag": PriseZigZag()}
+        par_candidate: dict[str, list] = {n: [] for n in candidates}
         conn = self._ouvrir()
         try:
             lecteur = MarketReader(conn)
@@ -152,13 +155,14 @@ class Apprenti:
                     respirer=lambda: time.sleep(0.002))
                 # Sur les MÊMES bougies déjà en mémoire : c'est ce qui rend
                 # la comparaison juste.
-                confirmes += exemples_historiques(
-                    {paire: bougies}, confirmee,
-                    echeance_sec=confirmee.p.expiry_sec,
-                    echeances=(confirmee.p.expiry_sec,),
-                    garde=lambda p, f: dans_la_plage_de_calibration(
-                        tolerance, f),
-                    respirer=lambda: time.sleep(0.002))
+                for nom, candidate in candidates.items():
+                    par_candidate[nom] += exemples_historiques(
+                        {paire: bougies}, candidate,
+                        echeance_sec=candidate.p.expiry_sec,
+                        echeances=(candidate.p.expiry_sec,),
+                        garde=lambda p, f: dans_la_plage_de_calibration(
+                            tolerance, f),
+                        respirer=lambda: time.sleep(0.002))
                 if type(strategie) is not PriseDeLiquidite:
                     prises += exemples_historiques(
                         {paire: bougies}, liquidite,
@@ -184,10 +188,14 @@ class Apprenti:
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             strategie.p.expiry_sec,
-            {"6. Zone H1, confirmation M1": (
-                "zone tracée sur l'H1 ; entrée seulement si une bougie M1 "
-                "rejette la zone et casse l'extrême de la précédente",
-                confirmes),
+            {"10. ZoneH1, zones du ZigZag": (
+                "ZoneH1 à l'identique, mais ses zones sont les sommets et "
+                "creux confirmés du ZigZag (seuil : 4 × l'amplitude M1)",
+                par_candidate["zigzag"]),
+             "11. Prise de liquidité, sommets/creux du ZigZag": (
+                "prise de liquidité au-delà des mèches des sommets et creux "
+                "du ZigZag, retour, retournement, sens H1",
+                par_candidate["prise_zigzag"]),
              "9. Prise de liquidité M1, sens H1": (
                 "le prix va chercher les stops au-delà d'une pique M1 (mèche "
                 "ou 2 clôtures au plus), revient, et une bougie de "
@@ -204,7 +212,7 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant la variante 8 (confirmation
     M1) : il est alors refait au démarrage, pas dans vingt-quatre heures."""
     return "paires" in laboratoire and any(
-        str(m.get("nom", "")).startswith("9.")
+        str(m.get("nom", "")).startswith("11.")
         for m in laboratoire.get("mesures", ()))
 
 
