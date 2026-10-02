@@ -176,3 +176,13 @@ def test_les_vagues_trop_courtes_sont_ecartees():
     douze = m["12. ZoneH1, vagues de 15 min ou plus"]
     assert douze.n_etalonnage + douze.n_validation == 150
     assert douze.verdict.startswith("✅")
+
+
+def test_les_niveaux_inverses_sont_juges_a_part():
+    union = [_ex(i, i % 4 != 0 if i % 2 else i % 2 == 0,
+                 inversee=float(i % 2)) for i in range(300)]
+    base = [_ex(i, i % 2 == 0) for i in range(300)]
+    m = _mesures(laboratoire(base, None, lambda e: True, 900, {
+        "15. ZoneH1 + supports/résistances inversés": ("x", union)}))
+    seize = m["16. Supports/résistances inversés seulement"]
+    assert seize.n_etalonnage + seize.n_validation == 150
