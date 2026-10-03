@@ -155,6 +155,13 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
         if sortie_prix is not None and sortie_prix != suivante.close:
             sortie["gagne_suivant"] = float(
                 (sortie_prix > suivante.close) == call)
+        # La même entrée confirmée, jugée à d'autres échéances (3 et 5 min
+        # demandées le 2026-10-03) : seule la sortie change.
+        for sec in ECHEANCES_COMPAREES:
+            prix = closes.get(suivante.ts_sec + sec)
+            if prix is not None and prix != suivante.close:
+                sortie[f"gagne_suivant_{sec}"] = float(
+                    (prix > suivante.close) == call)
     # `attente_confirmation` : la première des ATTENTE_CONFIRMATION_MAX
     # bougies suivantes qui casse l'extrême de la bougie du signal dans le
     # sens du trade (1 = la suivante, comme `retournement_suivant`), 0 si

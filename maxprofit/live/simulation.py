@@ -95,8 +95,11 @@ def simuler(exemples: Sequence[Exemple], *, echeance_sec: int, pas_max: int,
 def comparer(exemples: Sequence[Exemple], echeance_sec: int,
              garder: Callable[[Exemple], bool] = lambda e: True
              ) -> list[Resultat]:
+    # L'indépendance entre deux pas suit l'échéance jouée : un pas suivant
+    # « au moins une échéance plus tard », comme en direct.
     return [simuler(exemples, echeance_sec=echeance_sec, pas_max=p,
-                    garder=garder) for p in PAS_COMPARES]
+                    independance_sec=echeance_sec, garder=garder)
+            for p in PAS_COMPARES]
 
 
 def texte(simulations: Mapping[str, Mapping], jours: int | None = None) -> str:
