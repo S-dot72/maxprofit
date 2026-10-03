@@ -148,3 +148,55 @@ def test_des_pertes_groupees_sont_dites_enchainees():
     texte = texte_du_bilan([_ordre(i, g) for i, g in enumerate(alternes)],
                            int(_t.time()))
     assert "pas d'enchaînement" in texte
+
+
+def test_l_ouverture_du_broker_est_lue_dans_le_sens_du_trade():
+    from types import SimpleNamespace
+    from maxprofit.live.plan_demo import texte_de_l_ouverture
+    # Le cas USDJPY du 03/10 : vente décidée à 155,512, ouverte à 155,500.
+    vente = texte_de_l_ouverture(155.512, False,
+                                 SimpleNamespace(prix_entree=155.500))
+    assert "155.50000 (-1.2 pip, en notre défaveur)" in vente
+    achat = texte_de_l_ouverture(1.10000, True,
+                                 SimpleNamespace(prix_entree=1.09990))
+    assert "(-1.0 pip, en notre faveur)" in achat
+    assert texte_de_l_ouverture(1.1, True, None) == ""
+
+
+def _place(i, resultat, profit, mise=1.64):
+    from maxprofit.execution.journal import Execution
+    return Execution(
+        pair="USDJPY_otc", sens="put", mise=mise,
+        signal_ts_ms=1_789_000_000_000 + i, prix_attendu=155.5,
+        payout_flux_pct=92.0, expiration_sec=900,
+        clic_ts_ms=1_789_000_000_000 + i * 1000, accepte=True,
+        accepte_ts_ms=1_789_000_000_000 + i * 1000, order_id=f"o{i}",
+        resultat=resultat, profit=profit)
+
+
+def test_un_ecart_present_des_le_lancement_n_est_pas_une_derive():
+    from maxprofit.live.plan_demo import texte_du_rapprochement
+    texte = texte_du_rapprochement([_place(1, "win", 1.51)], 250.0, 251.51,
+                                   249.95, 248.44)
+    assert "écart de départ -1.56 $" in texte
+    assert "l'écart date du lancement" in texte
+
+
+def test_un_profit_mal_relu_est_montre():
+    from maxprofit.live.plan_demo import texte_du_rapprochement
+    # Le RETOUR (mise + gain) noté comme gain net : le plan est trop riche.
+    ordres = [_place(1, "win", 3.15), _place(2, "loose", -1.64),
+              _place(3, None, None)]
+    texte = texte_du_rapprochement(ordres, 250.0, 251.51, 249.87, 250.0)
+    assert "dérive depuis le lancement : <b>-1.64 $" in texte
+    assert "gain noté +3.15 $ pour 1.64 $ misés à 92 % (attendu +1.51 $)" \
+        in texte
+    assert "non dénoué, compté -1.64 $" in texte
+    assert "perte notée" not in texte
+
+
+def test_une_derive_sans_ordre_suspect_vient_d_un_trade_a_la_main():
+    from maxprofit.live.plan_demo import texte_du_rapprochement
+    texte = texte_du_rapprochement([_place(1, "win", 1.51)], 250.0, 251.51,
+                                   250.51, 250.0)
+    assert "mouvement hors du bot" in texte
