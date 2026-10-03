@@ -1664,7 +1664,7 @@ class CoursePlanDemo:
         self.etat.dernier_refus_ts.pop(signal.pair, None)
         self._sauvegarder()
         self._envoyer_le_graphique(signal, sens, mise, session.pas_joues + 1,
-                                   session.echelle.pas_max, ctx)
+                                   session.echelle.pas_max, ctx, execution)
         execution = self.courtier.denouer(execution)
         self._pas_de_la_session.append(
             (signal.pair, sens, ctx, execution.resultat or "unknown"))
@@ -1708,7 +1708,10 @@ class CoursePlanDemo:
             f"{'pas ' + str(pas) + '/' + str(session.echelle.pas_max) + ' (MARTINGALE)' if pas > 1 else 'pas 1 (entrée)'}\n"
             f"résultat <b>{'WIN' if gagne else 'LOSS'}</b> "
             f"{execution.profit or 0:+.2f} $ · payout "
-            f"{execution.payout_broker_pct or 0:.0f} %")
+            f"{execution.payout_broker_pct or 0:.0f} %"
+            + (f"\nbroker : ouvert {execution.prix_entree:.5f} → fermé "
+               f"{execution.prix_sortie:.5f}"
+               if execution.prix_entree and execution.prix_sortie else ""))
         etat = session.enregistrer(gagne)
         log.info("pas %d/%d  %s %s  mise %.2f $  -> %s",
                  session.pas_joues, session.echelle.pas_max, signal.pair,
@@ -1717,7 +1720,8 @@ class CoursePlanDemo:
             self._cloturer_session()
 
     def _envoyer_le_graphique(self, signal, sens: str, mise: float, pas: int,
-                              pas_max: int, ctx: dict | None = None) -> None:
+                              pas_max: int, ctx: dict | None = None,
+                              execution=None) -> None:
         """L'image M1 de l'ordre : bougies, zone, entrée. Jamais bloquant."""
         if self._envoyer_image is None or not self._bougies_du_signal:
             return
@@ -1738,6 +1742,7 @@ class CoursePlanDemo:
                 f"{pas}/{pas_max}\n{zone}entrée {bougies[-1].close:.5f} à "
                 f"{heure:%H:%M} UTC · échéance "
                 f"{self.strategie.p.expiry_sec // 60} min"
+                + texte_de_l_ouverture(bougies[-1].close, call, execution)
                 + (f"\nconfirmation M1 : {self.confirmation_m1}"
                    if self.confirmation_m1 != "0" else "")
                 + texte_du_contexte(ctx or {}, signal))
@@ -2986,6 +2991,110 @@ def _lignes_series(ordres) -> list[str]:
     return sortie
 
 
+def _pip(prix: float) -> float:
+    return 0.01 if prix > 20 else 0.0001
+
+
+def texte_de_l_ouverture(prix_signal: float, call: bool, execution) -> str:
+    """Le prix auquel le broker a RÉELLEMENT ouvert l'ordre, face au signal.
+
+    Le graphique et la légende montrent la clôture de la bougie M1 qui a
+    décidé l'ordre. Le broker, lui, ouvre au prix du clic, quelques secondes
+    plus tard : c'est ce prix qu'affiche sa ligne d'ordre, et c'est lui qui
+    décide du gain. L'écart se lit en pips, dans le sens du trade : une
+    vente ouverte plus bas que le signal, ou un achat plus haut, part en
+    retard.
+    """
+    ouvert = getattr(execution, "prix_entree", None)
+    if not ouvert or not prix_signal:
+        return ""
+    ecart = (ouvert - prix_signal) / _pip(prix_signal)
+    defaveur = ecart > 0 if call else ecart < 0
+    sens = ("en notre défaveur" if defaveur and abs(ecart) >= 0.05
+            else "en notre faveur" if abs(ecart) >= 0.05 else "identique")
+    return (f"\nouvert par le broker à {ouvert:.5f} ({ecart:+.1f} pip, "
+            f"{sens})")
+
+
+def texte_du_rapprochement(ordres, capital: float, solde_plan: float,
+                           solde_broker: float | None,
+                           ancre: float | None) -> str:
+    """D'où vient l'écart entre le solde du plan et celui du broker.
+
+    Le plan vaut `capital + somme des profits du journal`. Le broker bouge
+    de tout ce qui passe sur le compte. Leur écart a donc deux parts :
+    - celle du LANCEMENT : le capital choisi n'était pas le solde du compte
+      à cet instant. Elle ne bouge jamais et ne signale rien ;
+    - la DÉRIVE depuis : de l'argent a bougé sans passer par notre journal
+      (trade à la main, ordre non journalisé) ou un profit a été mal relu.
+    Seule la dérive est un problème. Les ordres dont le profit noté ne
+    correspond pas à la mise et au payout sont listés pour la trouver.
+    """
+    if solde_broker is None:
+        return ""
+    ecart = solde_broker - solde_plan
+    lignes = ["\n<b>Rapprochement plan ↔ broker</b> (campagne en cours)",
+              f"Plan {solde_plan:.2f} $ · broker {solde_broker:.2f} $ · "
+              f"écart {ecart:+.2f} $"]
+    derive = ecart
+    if ancre is not None:
+        depart = ancre - capital
+        derive = ecart - depart
+        lignes.append(f"Au lancement : capital {capital:.2f} $, broker "
+                      f"{ancre:.2f} $ → écart de départ {depart:+.2f} $")
+    suspects = []
+    for e in ordres:
+        if not e.accepte:
+            continue
+        pct = e.payout_broker_pct or e.payout_flux_pct
+        quand = datetime.fromtimestamp(e.clic_ts_ms / 1000, timezone.utc)
+        nom = f"{e.pair.replace('_otc', '')} {quand:%d/%m %H:%M}"
+        if e.resultat not in ("win", "loose", "draw"):
+            suspects.append(f"• {nom} : non dénoué, compté {-e.mise:+.2f} $")
+        elif e.resultat == "win" and pct and e.profit is not None and \
+                abs(e.profit - e.mise * pct / 100) > 0.02:
+            suspects.append(f"• {nom} : gain noté {e.profit:+.2f} $ pour "
+                            f"{e.mise:.2f} $ misés à {pct:.0f} % (attendu "
+                            f"{e.mise * pct / 100:+.2f} $)")
+        elif e.resultat == "loose" and e.profit is not None and \
+                abs(e.profit + e.mise) > 0.02:
+            suspects.append(f"• {nom} : perte notée {e.profit:+.2f} $ pour "
+                            f"{e.mise:.2f} $ misés")
+    if ancre is not None and abs(derive) <= 0.02 and not suspects:
+        lignes.append("→ l'écart date du lancement : aucun ordre n'est mal "
+                      "compté, et rien n'a bougé sur le compte en dehors du "
+                      "bot")
+        return "\n".join(lignes)
+    if ancre is not None:
+        lignes.append(f"→ dérive depuis le lancement : <b>{derive:+.2f} $"
+                      f"</b> (positive : le compte a plus que le plan)")
+    if suspects:
+        lignes.append("Ordres dont le profit noté ne colle pas :")
+        lignes += suspects[-10:]
+    elif ancre is not None:
+        lignes.append("Aucun ordre du journal n'est mal compté : la dérive "
+                      "vient d'un mouvement hors du bot (trade à la main, "
+                      "ordre jamais journalisé)")
+    return "\n".join(lignes)
+
+
+def texte_des_ouvertures(ordres) -> list[str]:
+    """Le prix d'ouverture du broker face au prix attendu au clic."""
+    ecarts = []
+    for e in ordres:
+        if e.prix_entree and e.prix_attendu:
+            d = (e.prix_entree - e.prix_attendu) / _pip(e.prix_attendu)
+            ecarts.append(d if e.sens == "call" else -d)
+    if not ecarts:
+        return []
+    ecarts.sort()
+    contre = sum(1 for d in ecarts if d > 0.05)
+    return ["\n<b>Prix d'ouverture</b> (broker face au prix lu au clic)",
+            f"Écart médian {ecarts[len(ecarts) // 2]:+.1f} pip dans le sens "
+            f"du trade (positif = ouvert en notre défaveur) ; "
+            f"{contre}/{len(ecarts)} ordres ouverts en notre défaveur"]
+
+
 def texte_du_bilan(executions, maintenant_sec: int,
                    recent_h: int = 48) -> str:
     """Le taux de réussite RÉEL des ordres, et s'il a changé.
@@ -3040,6 +3149,7 @@ def texte_du_bilan(executions, maintenant_sec: int,
         lignes += [ligne(f"pas {k}", v) for k, v in sorted(par_pas.items())]
     lignes += _lignes_8e(ordres, ligne)
     lignes += _lignes_series(ordres)
+    lignes += texte_des_ouvertures(ordres)
     par_paire: dict[str, list] = {}
     for e in ordres:
         par_paire.setdefault(e.pair, []).append(e)
@@ -3071,9 +3181,15 @@ def bilan(course, ouvrir=None) -> str:
     conn = ouvrir() if ouvrir else open_read_only(Path("lecture"))
     try:
         journal = JournalExecution(conn, course.journal.campagne)
-        return texte_du_bilan(
+        texte = texte_du_bilan(
             journal.toutes(getattr(course, "campagnes_precedentes", ())),
             int(time.time()))
+        e = getattr(course, "etat", None)
+        if e is not None:
+            texte += texte_du_rapprochement(
+                journal.toutes(), e.plan.capital_initial, e.solde,
+                e.solde_broker, e.solde_broker_ancre)
+        return texte
     finally:
         try:
             conn.close()
