@@ -105,3 +105,46 @@ def test_la_legende_dit_si_8e_aurait_garde_l_ordre():
         {"obstacle_inverse": 1.5}, s)
     assert "8e ✅ aucun niveau cassé devant" in texte_du_contexte(
         {"obstacle_inverse": 99.0}, s)
+
+
+def _ordre(i, gagne):
+    from maxprofit.execution.journal import Execution
+    return Execution(
+        pair="EURUSD_otc", sens="call", mise=1.6,
+        signal_ts_ms=1_789_000_000_000 + i, prix_attendu=1.1,
+        payout_flux_pct=92.0, expiration_sec=900,
+        clic_ts_ms=1_789_000_000_000 + i * 1000, accepte=True,
+        accepte_ts_ms=1_789_000_000_000 + i * 1000, order_id=f"o{i}",
+        resultat="win" if gagne else "loose",
+        profit=1.47 if gagne else -1.6, brut={"contexte": {"pas": 1}})
+
+
+def test_le_bilan_compte_les_pertes_d_affilee():
+    import re
+    import time as _t
+    from maxprofit.live.plan_demo import texte_du_bilan
+    # G G P P P G P G : une série de 3, une de 1.
+    issues = [True, True, False, False, False, True, False, True]
+    texte = texte_du_bilan([_ordre(i, g) for i, g in enumerate(issues)],
+                           int(_t.time()))
+    assert "Juste après une perte : 2/4 perdus" in texte
+    assert "Séries de 2 pertes ou plus : 1" in texte
+    assert "Séries de 3 pertes ou plus : 1" in texte
+    assert "Plus longue série : 3 perte(s)" in texte
+    assert "trop peu d'ordres" in texte
+    assert not re.search(r"<(?!/?b>)", texte)
+
+
+def test_des_pertes_groupees_sont_dites_enchainees():
+    import time as _t
+    from maxprofit.live.plan_demo import texte_du_bilan
+    # Des blocs de 4 pertes puis 6 gains : les pertes s'enchaînent.
+    issues = [i % 10 >= 4 for i in range(100)]
+    texte = texte_du_bilan([_ordre(i, g) for i, g in enumerate(issues)],
+                           int(_t.time()))
+    assert "S'ENCHAÎNENT" in texte
+    # Alternées : aucune perte ne suit une perte.
+    alternes = [i % 2 == 0 for i in range(100)]
+    texte = texte_du_bilan([_ordre(i, g) for i, g in enumerate(alternes)],
+                           int(_t.time()))
+    assert "pas d'enchaînement" in texte

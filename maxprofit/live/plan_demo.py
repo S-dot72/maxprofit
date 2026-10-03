@@ -2916,6 +2916,76 @@ def _lignes_8e(ordres, ligne) -> list[str]:
     return sortie
 
 
+def _lignes_series(ordres) -> list[str]:
+    """Les pertes d'affilée : viennent-elles plus souvent que le hasard ?
+
+    Demandé le 2026-10-03 : « je ne veux pas de deux lost consécutives ».
+    Deux causes possibles, deux remèdes différents :
+    - les pertes sont INDÉPENDANTES : deux d'affilée arrivent avec la
+      probabilité q² (q = taux de perte), et seul un meilleur taux de
+      réussite les rend plus rares ;
+    - les pertes s'ENCHAÎNENT (un marché qui ne respecte plus les zones
+      pendant un moment) : la perte qui suit une perte est plus fréquente
+      que la moyenne, et une pause après une perte les éviterait.
+    Les ordres sont pris dans l'ordre des clics, toutes paires confondues.
+    """
+    n = len(ordres)
+    if n < 2:
+        return []
+    perdus = [e.resultat == "loose" for e in ordres]
+    q = sum(perdus) / n
+    apres_perte = [b for a, b in zip(perdus, perdus[1:]) if a]
+    apres_gain = [b for a, b in zip(perdus, perdus[1:]) if not a]
+    # Les séries maximales de pertes.
+    series, courante = [], 0
+    for x in perdus + [False]:
+        if x:
+            courante += 1
+        elif courante:
+            series.append(courante)
+            courante = 0
+
+    def attendu(k):
+        # Espérance exacte, pertes indépendantes de taux q, du nombre de
+        # séries d'au moins k pertes : une série commence au premier ordre,
+        # ou juste après un gain.
+        return 0.0 if n < k else q ** k + (n - k) * (1 - q) * q ** k
+
+    sortie = ["\n<b>Pertes d'affilée</b> (ordres dans l'ordre des clics)",
+              f"Taux de perte moyen : {q:.0%} sur {n} ordres"]
+    if apres_perte:
+        sortie.append(f"Juste après une perte : {sum(apres_perte)}/"
+                      f"{len(apres_perte)} perdus "
+                      f"(<b>{sum(apres_perte) / len(apres_perte):.0%}</b>)")
+    if apres_gain:
+        sortie.append(f"Juste après un gain : {sum(apres_gain)}/"
+                      f"{len(apres_gain)} perdus "
+                      f"({sum(apres_gain) / len(apres_gain):.0%})")
+    for k in (2, 3):
+        vues = sum(1 for s in series if s >= k)
+        sortie.append(f"Séries de {k} pertes ou plus : {vues} "
+                      f"(le hasard en donnerait {attendu(k):.1f})")
+    sortie.append(f"Plus longue série : {max(series, default=0)} perte(s)")
+    n1, n2 = len(apres_perte), len(apres_gain)
+    if n1 < 10 or n2 < 10:
+        sortie.append("→ trop peu d'ordres pour conclure (10 après une "
+                      "perte et 10 après un gain au minimum)")
+        return sortie
+    p1, p2 = sum(apres_perte) / n1, sum(apres_gain) / n2
+    p = (p1 * n1 + p2 * n2) / (n1 + n2)
+    ecart_type = (p * (1 - p) * (1 / n1 + 1 / n2)) ** 0.5
+    z = (p1 - p2) / ecart_type if ecart_type else 0.0
+    if z >= 1.96:
+        sortie.append(f"→ les pertes S'ENCHAÎNENT au-delà du hasard "
+                      f"(z = {z:.1f}) : une pause après une perte est à "
+                      f"étudier")
+    else:
+        sortie.append(f"→ pas d'enchaînement au-delà du hasard "
+                      f"(z = {z:.1f}, sous 2) : seules de meilleures "
+                      f"entrées rendront les doubles pertes plus rares")
+    return sortie
+
+
 def texte_du_bilan(executions, maintenant_sec: int,
                    recent_h: int = 48) -> str:
     """Le taux de réussite RÉEL des ordres, et s'il a changé.
@@ -2969,6 +3039,7 @@ def texte_du_bilan(executions, maintenant_sec: int,
         lignes.append("\n<b>Par pas</b> (ordres récents seulement)")
         lignes += [ligne(f"pas {k}", v) for k, v in sorted(par_pas.items())]
     lignes += _lignes_8e(ordres, ligne)
+    lignes += _lignes_series(ordres)
     par_paire: dict[str, list] = {}
     for e in ordres:
         par_paire.setdefault(e.pair, []).append(e)
