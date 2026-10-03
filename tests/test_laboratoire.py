@@ -186,3 +186,24 @@ def test_les_niveaux_inverses_sont_juges_a_part():
         "15. ZoneH1 + supports/résistances inversés": ("x", union)}))
     seize = m["16. Supports/résistances inversés seulement"]
     assert seize.n_etalonnage + seize.n_validation == 150
+
+
+def test_la_confirmation_elargie_et_les_paires_sous_8_sont_mesurees():
+    exemples = []
+    for i in range(300):
+        attente = (i % 3) + 1
+        exemples.append(_ex(i, i % 2 == 0, retournement_suivant=float(
+            attente == 1), gagne_suivant=float(i % 4 != 0),
+            attente_confirmation=float(attente), gagne_confirme=float(
+                i % 4 != 0)))
+    r = laboratoire(exemples, None, lambda e: True)
+    m = _mesures(r)
+    assert m["8. Confirmation M1, bougie suivante"].n_etalonnage \
+        + m["8. Confirmation M1, bougie suivante"].n_validation == 100
+    f2 = m["8f2. Confirmation M1 dans les 2 bougies suivantes"]
+    f3 = m["8f3. Confirmation M1 dans les 3 bougies suivantes"]
+    assert f2.n_etalonnage + f2.n_validation == 200
+    assert f3.n_etalonnage + f3.n_validation == 300
+    sortie = texte(r)
+    assert "Par paire sous la variante 8" in sortie
+    assert not re.search(r"<(?!/?b>)", sortie)

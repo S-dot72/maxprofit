@@ -193,6 +193,30 @@ def laboratoire(exemples: Sequence[Exemple],
           for e in base if e.contexte.get("retournement_suivant") == 1
           and "gagne_suivant" in e.contexte]),
     ]
+    # Le DÉBIT de la confirmation. Demandé le 2026-10-03 : 2,1 sessions par
+    # jour en direct, le plan n'avance plus. Trois façons d'en regagner, à
+    # juger contre ZoneH1 comme la variante 8, et à comparer à elle.
+    for k in (2, 3):
+        variantes.append((
+            f"8f{k}. Confirmation M1 dans les {k} bougies suivantes",
+            f"comme 8, mais la confirmation peut venir jusqu'à {k} bougies "
+            f"après le signal ; entrée à la clôture de la première qui casse "
+            f"l'extrême de la bougie du signal (CONFIRMATION_M1={k})",
+            [replace(e, ts_sec=e.ts_sec + 60 * int(
+                e.contexte["attente_confirmation"]),
+                gagne=bool(e.contexte["gagne_confirme"]))
+             for e in base
+             if 1 <= e.contexte.get("attente_confirmation", 0) <= k
+             and "gagne_confirme" in e.contexte]))
+    variantes.append((
+        "8h. Confirmation M1, sans la règle de l'heure en cours",
+        "la variante 8 sur TOUS les signaux de ZoneH1, même ceux que la "
+        "règle de l'heure en cours écarte",
+        [replace(e, ts_sec=e.ts_sec + 60,
+                 gagne=bool(e.contexte["gagne_suivant"]))
+         for e in sorted(exemples, key=lambda e: e.ts_sec)
+         if e.contexte.get("retournement_suivant") == 1
+         and "gagne_suivant" in e.contexte]))
     # L'élan des 30 dernières minutes, en plus de l'heure en cours : une
     # montée partie juste avant le début de l'heure échappe à la règle
     # actuelle (vente EUR/CHF du 02/10).
@@ -268,7 +292,8 @@ def laboratoire(exemples: Sequence[Exemple],
                              else ref) for m in mesures[1:]]
     return {"debut": debut, "fin": fin, "coupure": coupure,
             "mesures": [m.to_dict() for m in jugees],
-            "paires": _par_paire(base, coupure)}
+            "paires": _par_paire(base, coupure),
+            "paires_huit": _par_paire(huit, coupure)}
 
 
 def _par_paire(base: Sequence[Exemple], coupure: int) -> dict:
@@ -364,7 +389,31 @@ def texte(resultat: Mapping | None) -> str:
         "passe d'abord en test démo.")
     if resultat.get("paires"):
         lignes += ["", *_texte_paires(resultat["paires"], coupe)]
+    if resultat.get("paires_huit"):
+        lignes += ["", *_texte_paires_huit(resultat["paires_huit"])]
     return "\n".join(lignes)
+
+
+def _texte_paires_huit(paires: Mapping[str, Sequence[int]]) -> list[str]:
+    """Chaque paire sous la variante 8, ce que la course joue.
+
+    Les paires exclues (PAIRES_EXCLUES, et celles au taux perdant) l'ont été
+    sur ZoneH1 SANS confirmation. Sous confirmation, leur taux peut avoir
+    changé : c'est ici qu'on voit si elles méritent toujours de l'être.
+    """
+    lignes = ["🔎 <b>Par paire sous la variante 8</b> (tout le mois ; ⚠ = "
+              "perdante PROUVÉE à 95 %, ✅ = gagnante prouvée)"]
+    totaux = {p: (c[0] + c[2], c[1] + c[3]) for p, c in paires.items()}
+    for p, (n, g) in sorted(totaux.items(),
+                            key=lambda x: -(x[1][1] / x[1][0]) if x[1][0]
+                            else 0.0):
+        if not n:
+            continue
+        bas, haut = wilson(g, n, 1.96)
+        marque = " ⚠" if haut < SEUIL else " ✅" if bas > SEUIL else ""
+        lignes.append(f"  {p.replace('_otc', '')} : {g / n:.0%} sur {n} "
+                      f"(entre {bas:.0%} et {haut:.0%}){marque}")
+    return lignes
 
 
 def _texte_paires(paires: Mapping[str, Sequence[int]], coupe: str) -> list[str]:

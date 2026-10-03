@@ -127,6 +127,9 @@ def _retournement(call: bool, bougie, precedente) -> bool:
     return bougie.close < bougie.open and bougie.close < precedente.low
 
 
+#: Bougies M1 pendant lesquelles le rejeu cherche la confirmation.
+ATTENTE_CONFIRMATION_MAX = 3
+
 def _confirmation_m1(completes, i: int, call: bool, closes,
                      echeance_sec: int) -> dict[str, float]:
     """Pour le laboratoire : le signal avait-il sa confirmation M1 ?
@@ -152,4 +155,23 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
         if sortie_prix is not None and sortie_prix != suivante.close:
             sortie["gagne_suivant"] = float(
                 (sortie_prix > suivante.close) == call)
+    # `attente_confirmation` : la première des ATTENTE_CONFIRMATION_MAX
+    # bougies suivantes qui casse l'extrême de la bougie du signal dans le
+    # sens du trade (1 = la suivante, comme `retournement_suivant`), 0 si
+    # aucune ; `gagne_confirme`, l'issue d'une entrée à sa clôture. Mesure
+    # le débit qu'on regagnerait en attendant la confirmation plus longtemps.
+    for k in range(1, ATTENTE_CONFIRMATION_MAX + 1):
+        j = i + k
+        if j >= len(completes) or \
+                completes[j].ts_sec != bougie.ts_sec + 60 * k:
+            break
+        if _retournement(call, completes[j], bougie):
+            sortie["attente_confirmation"] = float(k)
+            prix = closes.get(completes[j].ts_sec + echeance_sec)
+            if prix is not None and prix != completes[j].close:
+                sortie["gagne_confirme"] = float(
+                    (prix > completes[j].close) == call)
+            break
+        if k == ATTENTE_CONFIRMATION_MAX:
+            sortie["attente_confirmation"] = 0.0
     return sortie

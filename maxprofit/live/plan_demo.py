@@ -697,7 +697,12 @@ def paires_exclues() -> frozenset[str]:
 
 
 def mode_confirmation_m1() -> str:
-    """`CONFIRMATION_M1` : « suivante » (défaut), « meme » ou « 0 ».
+    """`CONFIRMATION_M1` : « suivante » (défaut), « 2 », « 3 », « meme »
+    ou « 0 ».
+
+    « 2 » et « 3 » : la confirmation peut venir jusqu'à 2 ou 3 bougies
+    après le signal (variantes 8f2 et 8f3 du laboratoire), pour regagner du
+    débit. À n'activer que sur leur verdict.
 
     ACTIVE PAR DÉFAUT depuis le 2026-10-03 : seule variante jugée
     « prometteuse » au laboratoire — 64,7 % sur les jours jamais vus contre
@@ -713,6 +718,8 @@ def mode_confirmation_m1() -> str:
         return "0"
     if mode in ("meme", "même"):
         return "meme"
+    if mode in ("2", "3"):
+        return mode
     return "suivante"
 
 
@@ -1290,15 +1297,22 @@ class CoursePlanDemo:
             return None
         sortie = None
         attente = self._en_attente.pop(paire, None)
+        fenetre = 1 if self.confirmation_m1 == "suivante" \
+            else int(self.confirmation_m1)
         if attente is not None:
             initial, bougie_du_signal = attente
-            if der.ts_sec == bougie_du_signal.ts_sec + 60 and retournement_m1(
+            ecart = (der.ts_sec - bougie_du_signal.ts_sec) // 60
+            if 1 <= ecart <= fenetre and retournement_m1(
                     initial.direction is Direction.CALL, der,
                     bougie_du_signal):
                 sortie = replace(initial, decided_at_ms=vue.now_ms,
                                  reason=initial.reason
-                                 + " ; confirmé par la bougie M1 suivante")
+                                 + f" ; confirmé par la bougie M1 n°{ecart}"
+                                   f" après le signal")
                 self.etat.noter("confirmes")
+            elif 1 <= ecart < fenetre and signal is None:
+                # Encore dans la fenêtre : on attend la bougie suivante.
+                self._en_attente[paire] = attente
             else:
                 self.etat.noter("non_confirmes")
         if signal is not None and sortie is None:

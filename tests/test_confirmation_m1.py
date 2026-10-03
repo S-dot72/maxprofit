@@ -180,3 +180,45 @@ def test_la_legende_dit_ce_que_le_bot_a_mesure():
     assert "élan 30 min -6.4" in texte and "heure en cours -2.9" in texte
     assert "2 passage(s)" in texte
     assert "<" not in texte
+
+
+def test_fenetre_de_3_la_confirmation_peut_venir_plus_tard(course):
+    c = course("3")
+    signal_ = _b(0, 1.1003, 1.1001, haut=1.1004, bas=1.0999)
+    c._confirmer_en_m1("EURUSD_otc", _signal(0), [signal_], _vue(0))
+    hesite = _b(1, 1.1001, 1.1002)          # monte, sous le plus haut
+    assert c._confirmer_en_m1("EURUSD_otc", None, [signal_, hesite],
+                              _vue(1)) is None
+    assert "EURUSD_otc" in c._en_attente, "toujours dans la fenêtre"
+    casse = _b(2, 1.1002, 1.1008)
+    joue = c._confirmer_en_m1("EURUSD_otc", None, [signal_, hesite, casse],
+                              _vue(2))
+    assert joue is not None and "n°2" in joue.reason
+
+
+def test_fenetre_de_2_abandonne_apres_deux_bougies(course):
+    c = course("2")
+    signal_ = _b(0, 1.1003, 1.1001, haut=1.1004, bas=1.0999)
+    c._confirmer_en_m1("EURUSD_otc", _signal(0), [signal_], _vue(0))
+    bougies = [signal_]
+    for i in (1, 2):
+        bougies.append(_b(i, 1.1001, 1.1000))
+        assert c._confirmer_en_m1("EURUSD_otc", None, list(bougies),
+                                  _vue(i)) is None
+    assert c._en_attente == {}
+    assert c.etat.activite_depuis(48)["non_confirmes"] == 1
+
+
+def test_le_rejeu_note_quand_la_confirmation_arrive():
+    from maxprofit.apprentissage.historique import _confirmation_m1
+    serie = [_b(0, 1.1003, 1.1001, haut=1.1004, bas=1.0999),
+             _b(1, 1.1001, 1.1002), _b(2, 1.1002, 1.1008)] + \
+        [_b(i, 1.1008, 1.1010) for i in range(3, 20)]
+    closes = {b.ts_sec: b.close for b in serie}
+    sortie = _confirmation_m1(serie, 0, True, closes, 900)
+    assert sortie["retournement_suivant"] == 0.0
+    assert sortie["attente_confirmation"] == 2.0
+    assert sortie["gagne_confirme"] == 1.0
+    plate = [_b(i, 1.1001, 1.1000) for i in range(20)]
+    assert _confirmation_m1(plate, 0, True, {b.ts_sec: b.close for b in plate},
+                            900)["attente_confirmation"] == 0.0
