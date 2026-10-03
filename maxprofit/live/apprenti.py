@@ -154,6 +154,19 @@ class Apprenti:
         ancien = course.etat.apprentissage
         nouveau = apprendre(exemples)
         nouveau.jours = jours
+        # ⚠ LES PAIRES SONT JUGÉES SUR CE QUE LA COURSE JOUE.
+        #
+        # Le taux par paire décide des paires écartées « au taux perdant ».
+        # Il était mesuré sur ZoneH1 SANS confirmation, alors que la course
+        # joue ZoneH1 PLUS la confirmation M1 : le 03/10, 41 % des bougies
+        # tombaient sur des paires écartées d'après des signaux que la
+        # course ne prend plus, et la course a passé 9,9 h sans un ordre.
+        mode = getattr(course, "confirmation_m1", "0")
+        if mode in ("suivante", "2", "3"):
+            from maxprofit.apprentissage.lecons import _par_paire
+            from maxprofit.live.laboratoire import confirmes
+            nouveau.par_paire = _par_paire(confirmes(
+                exemples, 1 if mode == "suivante" else int(mode)))
         nouveau.simulations = _simulations(
             exemples, strategie.p.expiry_sec, course.seuil_contre_heure, {})
         from maxprofit.live.laboratoire import laboratoire
@@ -163,6 +176,7 @@ class Apprenti:
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             strategie.p.expiry_sec)
+        nouveau.laboratoire["paires_jugees_sur"] = mode
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -171,11 +185,10 @@ class Apprenti:
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:
-    """Faux pour un laboratoire calculé avant la variante 8 (confirmation
-    M1) : il est alors refait au démarrage, pas dans vingt-quatre heures."""
-    return "paires" in laboratoire and any(
-        str(m.get("nom", "")).startswith("8f3")
-        for m in laboratoire.get("mesures", ()))
+    """Faux pour un laboratoire calculé avant que les paires soient jugées
+    sur ce que la course joue (confirmation M1 comprise) : il est alors
+    refait au démarrage, pas dans vingt-quatre heures."""
+    return "paires_jugees_sur" in laboratoire
 
 
 def _simulations(exemples, echeance_sec, seuil_contre_heure, autres) -> dict:

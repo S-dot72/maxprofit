@@ -380,7 +380,9 @@ class Apprentissage:
         que les ordres réels, qui n'en comptent qu'une dizaine par paire."""
         if not self.par_paire:
             return ""
-        lignes = ["<b>Par paire</b> (rejeu, de la meilleure à la moins bonne ; "
+        lignes = ["<b>Par paire</b> (rejeu de ce que la course joue, "
+                  "confirmation M1 comprise, de la meilleure à la moins "
+                  "bonne ; "
                   "la course y ajoute les ordres réels de /bilan pour choisir "
                   "entre des signaux simultanés ; ⚠ = perdante prouvée à "
                   "95 %)"]

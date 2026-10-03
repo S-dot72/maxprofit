@@ -218,6 +218,45 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_les_paires_sont_jugees_sur_les_signaux_confirmes(tmp_path,
+                                                         monkeypatch):
+    import time as _t
+
+    from maxprofit.live import apprenti as mod
+    from maxprofit.store.db import open_read_write
+    from maxprofit.store.market import MarketWriter
+
+    class Strategie(_StrategieToujoursCall):
+        def __init__(self, p=None):
+            pass
+
+    maintenant = int(_t.time()) // 60 * 60
+    conn = open_read_write(tmp_path / "m.db")
+    MarketWriter(conn).upsert_candles([
+        Candle(pair="EURUSD_otc", tf_sec=60, ts_sec=maintenant - 60 * (200 - i),
+               open=1.1, high=max(1.1, c), low=min(1.1, c), close=c,
+               tick_count=10, complete=True)
+        for i, c in ((i, round(1.1 + 0.0004 * ((i * 7) % 5 - 2), 5))
+                     for i in range(200))])
+    conn.close()
+    course = SimpleNamespace(
+        strategie=Strategie(), etat=SimpleNamespace(apprentissage=None),
+        _prevenir=lambda m: None, seuil_contre_heure=None,
+        confirmation_m1="suivante")
+    course.strategie.p = SimpleNamespace(lookback=25, expiry_sec=120,
+                                         tolerance_pct=0.02)
+    monkeypatch.setattr(
+        "maxprofit.live.plan_demo.dans_la_plage_de_calibration",
+        lambda tol, f: True)
+    mod.Apprenti(course, lambda: open_read_write(tmp_path / "m.db"),
+                 ("EURUSD_otc",)).apprendre_une_fois()
+    a = course.etat.apprentissage
+    n_confirmes = a.par_paire.get("EURUSD_otc", (0, 0))[0]
+    assert 0 < n_confirmes < a.n, "seuls les signaux confirmés comptent"
+    assert a.laboratoire["paires_jugees_sur"] == "suivante"
+    assert mod._avec_zone_confirmee(a.laboratoire)
+
+
 def test_aucune_lecon_ne_se_fait_PAS_passer_pour_une_absence_de_lien():
     """276 signaux : seul un contexte perdant deux fois sur trois pouvait
     être établi, et le message disait « c'est ce qu'il a mesuré »."""
