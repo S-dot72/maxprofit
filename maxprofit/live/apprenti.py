@@ -168,7 +168,8 @@ class Apprenti:
             nouveau.par_paire = _par_paire(confirmes(
                 exemples, 1 if mode == "suivante" else int(mode)))
         nouveau.simulations = _simulations(
-            exemples, strategie.p.expiry_sec, course.seuil_contre_heure, {})
+            exemples, strategie.p.expiry_sec, course.seuil_contre_heure,
+            _echeances_courtes(exemples, course.seuil_contre_heure))
         from maxprofit.live.laboratoire import laboratoire
         seuil = course.seuil_contre_heure
         nouveau.laboratoire = laboratoire(
@@ -188,7 +189,28 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant que les paires soient jugées
     sur ce que la course joue (confirmation M1 comprise) : il est alors
     refait au démarrage, pas dans vingt-quatre heures."""
-    return "paires_jugees_sur" in laboratoire
+    return "paires_jugees_sur" in laboratoire and any(
+        str(m.get("nom", "")).startswith("E3.")
+        for m in laboratoire.get("mesures", ()))
+
+
+def _echeances_courtes(exemples, seuil_contre_heure) -> dict:
+    """Le plan à 3 et 5 min, demandé le 2026-10-03 : ZoneH1 et la
+    confirmation M1, comme en direct (règle de l'heure en cours comprise),
+    mêmes entrées, seule la sortie change. La confirmation à 15 min sert de
+    repère."""
+    from maxprofit.live.laboratoire import a_l_echeance, confirmes
+    joues = [e for e in exemples if seuil_contre_heure is None
+             or e.contexte.get("mouvement_heure", 0.0) >= -seuil_contre_heure]
+    sortie = {"Confirmation M1 (15 min), comme en direct":
+              (confirmes(joues), 900)}
+    for sec in (180, 300):
+        m = sec // 60
+        sortie[f"ZoneH1 ({m} min), comme en direct"] = (
+            a_l_echeance(joues, sec), sec)
+        sortie[f"Confirmation M1 ({m} min), comme en direct"] = (
+            confirmes(joues, echeance_sec=sec), sec)
+    return sortie
 
 
 def _simulations(exemples, echeance_sec, seuil_contre_heure, autres) -> dict:

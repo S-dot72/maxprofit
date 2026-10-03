@@ -207,3 +207,38 @@ def test_la_confirmation_elargie_et_les_paires_sous_8_sont_mesurees():
     sortie = texte(r)
     assert "Par paire sous la variante 8" in sortie
     assert not re.search(r"<(?!/?b>)", sortie)
+
+
+def test_les_echeances_courtes_sont_jugees_sur_les_memes_entrees():
+    exemples = []
+    for i in range(300):
+        e = _ex(i, i % 2 == 0, retournement_suivant=float(i % 3 == 0),
+                gagne_suivant=1.0, gagne_suivant_180=float(i % 4 != 0),
+                gagne_suivant_300=0.0)
+        e.issues.update({180: i % 5 != 0, 300: False})
+        exemples.append(e)
+    m = _mesures(laboratoire(exemples, None, lambda e: True))
+    e3 = m["E3. ZoneH1 en direct, échéance 3 min"]
+    assert e3.n_etalonnage + e3.n_validation == 300
+    assert e3.verdict.startswith("✅"), "80 % contre 50 % à 15 min"
+    c3 = m["E3c. Confirmation M1 (8), échéance 3 min"]
+    assert c3.n_etalonnage + c3.n_validation == 100
+    c5 = m["E5c. Confirmation M1 (8), échéance 5 min"]
+    assert c5.gagnes_validation == 0
+
+
+def test_le_rejeu_juge_l_entree_confirmee_a_3_et_5_min():
+    from maxprofit.apprentissage.historique import _confirmation_m1
+    from maxprofit.core.types import Candle
+
+    def b(i, o, c):
+        return Candle(pair="A", tf_sec=60, ts_sec=T0 // 60 * 60 + 60 * i,
+                      open=o, high=max(o, c), low=min(o, c), close=c,
+                      tick_count=1, complete=True)
+    serie = [b(0, 1.0002, 1.0001), b(1, 1.0001, 1.0003),
+             b(2, 1.0003, 1.0010)] + [b(i, 1.0010, 1.0012 if i < 6 else
+                                         1.0005) for i in range(3, 20)]
+    closes = {c.ts_sec: c.close for c in serie}
+    sortie = _confirmation_m1(serie, 1, True, closes, 900)
+    assert sortie["gagne_suivant_180"] == 1.0, "1,0012 à 3 min"
+    assert sortie["gagne_suivant_300"] == 0.0, "1,0005 à 5 min"

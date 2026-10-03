@@ -131,14 +131,28 @@ def _seconde_chance(etendus: Sequence[Exemple]) -> list[Exemple]:
     return gardes
 
 
-def confirmes(exemples: Sequence[Exemple], fenetre: int = 1
-              ) -> list[Exemple]:
+def a_l_echeance(exemples: Sequence[Exemple], sec: int) -> list[Exemple]:
+    """Les mêmes signaux de ZoneH1, jugés à l'échéance `sec`."""
+    return [replace(e, gagne=bool(e.issues[sec]))
+            for e in exemples if sec in e.issues]
+
+
+def confirmes(exemples: Sequence[Exemple], fenetre: int = 1,
+              echeance_sec: int | None = None) -> list[Exemple]:
     """Les signaux que la confirmation M1 laisse passer, datés et jugés à
     leur entrée : la clôture de la bougie qui confirme.
 
     `fenetre` : 1 pour la bougie suivante seulement (CONFIRMATION_M1=
     suivante), 2 ou 3 pour une confirmation qui peut venir plus tard.
+    `echeance_sec` : jugés à une autre échéance que celle jouée (bougie
+    suivante seulement).
     """
+    if echeance_sec is not None:
+        cle = f"gagne_suivant_{echeance_sec}"
+        return [replace(e, ts_sec=e.ts_sec + 60, gagne=bool(e.contexte[cle]))
+                for e in exemples
+                if e.contexte.get("retournement_suivant") == 1
+                and cle in e.contexte]
     if fenetre == 1:
         return [replace(e, ts_sec=e.ts_sec + 60,
                         gagne=bool(e.contexte["gagne_suivant"]))
@@ -293,7 +307,24 @@ def laboratoire(exemples: Sequence[Exemple],
                 f"dernières vagues du ZigZag durent au moins "
                 f"{minutes:.0f} min", vagues_longues(source)))
 
-    mesures = [_mesurer(nom, desc, liste, coupure, jours, echeance_sec)
+    # Les échéances COURTES, demandées le 2026-10-03 : mêmes entrées, seule
+    # la sortie change. Le plan simulé espace ses pas de l'échéance jouée.
+    # ⚠ Le seuil de rentabilité suppose le même payout (92 %) qu'à 15 min.
+    echeance_de: dict[str, int] = {}
+    for sec in (180, 300):
+        m = sec // 60
+        for nom, description, liste in (
+                (f"E{m}. ZoneH1 en direct, échéance {m} min",
+                 f"les mêmes signaux, sortie {m} min après l'entrée",
+                 a_l_echeance(base, sec)),
+                (f"E{m}c. Confirmation M1 (8), échéance {m} min",
+                 f"la variante 8, sortie {m} min après l'entrée",
+                 confirmes(base, echeance_sec=sec))):
+            variantes.append((nom, description, liste))
+            echeance_de[nom] = sec
+
+    mesures = [_mesurer(nom, desc, liste, coupure, jours,
+                        echeance_de.get(nom, echeance_sec))
                for nom, desc, liste in variantes]
     ref = mesures[0]
     ref_huit = next((m for m in mesures if m.nom.startswith("8. ")), ref)

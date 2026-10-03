@@ -57,7 +57,7 @@ TENDANCES: tuple[str, ...] = ("mouvement_heure", "elan_30m", "tendance_h1")
 POIDS_PRIORITE = 20
 
 #: Échéances comparées sur les mêmes signaux (secondes).
-ECHEANCES_COMPAREES: tuple[int, ...] = (300, 600, 900)
+ECHEANCES_COMPAREES: tuple[int, ...] = (180, 300, 600, 900)
 
 #: Taux de réussite par pas mesuré sur l'historique de la stratégie (221
 #: signaux, 12 jours) : sert à l'autopsie tant que rien n'a été appris.
