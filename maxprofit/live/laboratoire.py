@@ -131,6 +131,28 @@ def _seconde_chance(etendus: Sequence[Exemple]) -> list[Exemple]:
     return gardes
 
 
+def confirmes(exemples: Sequence[Exemple], fenetre: int = 1
+              ) -> list[Exemple]:
+    """Les signaux que la confirmation M1 laisse passer, datés et jugés à
+    leur entrée : la clôture de la bougie qui confirme.
+
+    `fenetre` : 1 pour la bougie suivante seulement (CONFIRMATION_M1=
+    suivante), 2 ou 3 pour une confirmation qui peut venir plus tard.
+    """
+    if fenetre == 1:
+        return [replace(e, ts_sec=e.ts_sec + 60,
+                        gagne=bool(e.contexte["gagne_suivant"]))
+                for e in exemples
+                if e.contexte.get("retournement_suivant") == 1
+                and "gagne_suivant" in e.contexte]
+    return [replace(e, ts_sec=e.ts_sec + 60 * int(
+                e.contexte["attente_confirmation"]),
+                gagne=bool(e.contexte["gagne_confirme"]))
+            for e in exemples
+            if 1 <= e.contexte.get("attente_confirmation", 0) <= fenetre
+            and "gagne_confirme" in e.contexte]
+
+
 def laboratoire(exemples: Sequence[Exemple],
                 etendus: Sequence[Exemple] | None,
                 en_direct: Callable[[Exemple], bool],
@@ -188,10 +210,7 @@ def laboratoire(exemples: Sequence[Exemple],
         ("8. Confirmation M1, bougie suivante",
          "on attend la bougie suivante : entrée à sa clôture si elle casse "
          "l'extrême de celle du signal (CONFIRMATION_M1=suivante)",
-         [replace(e, ts_sec=e.ts_sec + 60,
-                  gagne=bool(e.contexte["gagne_suivant"]))
-          for e in base if e.contexte.get("retournement_suivant") == 1
-          and "gagne_suivant" in e.contexte]),
+         confirmes(base)),
     ]
     # Le DÉBIT de la confirmation. Demandé le 2026-10-03 : 2,1 sessions par
     # jour en direct, le plan n'avance plus. Trois façons d'en regagner, à
@@ -202,21 +221,12 @@ def laboratoire(exemples: Sequence[Exemple],
             f"comme 8, mais la confirmation peut venir jusqu'à {k} bougies "
             f"après le signal ; entrée à la clôture de la première qui casse "
             f"l'extrême de la bougie du signal (CONFIRMATION_M1={k})",
-            [replace(e, ts_sec=e.ts_sec + 60 * int(
-                e.contexte["attente_confirmation"]),
-                gagne=bool(e.contexte["gagne_confirme"]))
-             for e in base
-             if 1 <= e.contexte.get("attente_confirmation", 0) <= k
-             and "gagne_confirme" in e.contexte]))
+            confirmes(base, k)))
     variantes.append((
         "8h. Confirmation M1, sans la règle de l'heure en cours",
         "la variante 8 sur TOUS les signaux de ZoneH1, même ceux que la "
         "règle de l'heure en cours écarte",
-        [replace(e, ts_sec=e.ts_sec + 60,
-                 gagne=bool(e.contexte["gagne_suivant"]))
-         for e in sorted(exemples, key=lambda e: e.ts_sec)
-         if e.contexte.get("retournement_suivant") == 1
-         and "gagne_suivant" in e.contexte]))
+        confirmes(sorted(exemples, key=lambda e: e.ts_sec))))
     # L'élan des 30 dernières minutes, en plus de l'heure en cours : une
     # montée partie juste avant le début de l'heure échappe à la règle
     # actuelle (vente EUR/CHF du 02/10).
