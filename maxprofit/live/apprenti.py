@@ -174,7 +174,7 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant la variante 8 (confirmation
     M1) : il est alors refait au démarrage, pas dans vingt-quatre heures."""
     return "paires" in laboratoire and any(
-        str(m.get("nom", "")).startswith("8e")
+        str(m.get("nom", "")).startswith("8f3")
         for m in laboratoire.get("mesures", ()))
 
 
