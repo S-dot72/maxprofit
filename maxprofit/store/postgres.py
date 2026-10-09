@@ -239,9 +239,13 @@ class Connexion:
             log.debug("Fermeture sans effet : %s", erreur)
 
 
-def ouvrir() -> Connexion:
-    """Ouvre la connexion à PostgreSQL. Lève `PostgresIndisponible`."""
-    url = os.environ.get(ENV_URL, "").strip()
+def ouvrir(url: str | None = None) -> Connexion:
+    """Ouvre la connexion à PostgreSQL. Lève `PostgresIndisponible`.
+
+    `url` sert aux outils qui ouvrent DEUX bases à la fois — une fusion lit
+    l'une et écrit l'autre. Sans lui, c'est `DATABASE_URL`, comme toujours.
+    """
+    url = (url or os.environ.get(ENV_URL, "")).strip()
     try:
         import psycopg
     except ImportError as erreur:

@@ -310,6 +310,29 @@ def open_read_write(
     return conn
 
 
+def open_postgres(url: str, *, ecriture: bool):
+    """Ouvre une base PostgreSQL désignée par son URL, indépendamment de
+    `DATABASE_URL`.
+
+    Pour les outils qui manipulent DEUX bases à la fois — une fusion lit l'une
+    et écrit l'autre. En écriture, la base suit exactement le chemin de
+    `open_read_write` : réglages, migrations, réparation du schéma. Une base
+    réimportée depuis un dump a perdu ses types et ses clés ; sans cette
+    réparation, la fusion y écrirait des doublons que les clés auraient
+    refusés.
+
+    En lecture, rien n'est touché : on n'écrit pas dans une base qu'on exporte.
+    """
+    conn = postgres.ouvrir(url)
+    if not ecriture:
+        return conn
+    _configure(conn)
+    apply_migrations(conn)
+    from maxprofit.store.reparation import reparer_le_schema
+    reparer_le_schema(conn)
+    return conn
+
+
 def open_read_only(path: Path | str) -> sqlite3.Connection:
     """Ouvre la base en LECTURE SEULE, sans migrer.
 

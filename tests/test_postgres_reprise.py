@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-import psycopg
 import pytest
+
+# Ignoré, plutôt qu'en échec, là où le pilote n'est pas installé : un
+# ImportError à la collecte interrompait TOUTE la suite, pas ce seul
+# fichier — l'environnement de test local n'a pas psycopg.
+psycopg = pytest.importorskip("psycopg")
 
 from maxprofit.store.postgres import Connexion
 
