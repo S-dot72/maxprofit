@@ -210,7 +210,8 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant que les paires soient jugées
     sur ce que la course joue (confirmation M1 comprise) : il est alors
     refait au démarrage, pas dans vingt-quatre heures."""
-    return "paires_jugees_sur" in laboratoire and "experiences" in laboratoire
+    return "paires_jugees_sur" in laboratoire and "persistance" in (
+        laboratoire.get("experiences") or {})
 
 
 def _echeances_courtes(exemples, seuil_contre_heure) -> dict:
