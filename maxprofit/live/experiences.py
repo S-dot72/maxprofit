@@ -65,7 +65,18 @@ VARIABLES: tuple[tuple[str, str], ...] = (
                             "habituelle"),
     ("entrees_deja_offertes", "entrées déjà offertes par la zone"),
     ("rythme_zigzag", "durée des vagues du ZigZag (min)"),
+    # Les séquences de bougies à l'entrée (séquence × zone vierge).
+    ("serie_sens", "séquence — bougies consécutives de même couleur à "
+                   "l'entrée (+ dans le sens du trade)"),
+    ("amplitude_serie", "séquence — chemin parcouru par la série"),
+    ("rythme_bougies", "séquence — taille des 3 dernières bougies / des 3 "
+                       "précédentes (plus de 1 = accélère)"),
+    ("alternances_10", "séquence — changements de couleur sur 10 bougies"),
 )
+
+#: Les variables dont chaque tiers est aussi jugé à chaque échéance : la
+#: « matrice des expirations » (une échéance par contexte ?).
+MATRICES: tuple[str, ...] = ("serie_sens", "volatilite_relative", "elan_30m")
 
 #: Les seuils d'élan sur 30 minutes demandés (B1 à B4) : on écarte les
 #: entrées dont l'élan va contre le trade de plus de |seuil| amplitudes.
@@ -204,8 +215,17 @@ def experiences(exemples: Sequence[Exemple],
         # plus qu'un écart isolé : c'est ce qui distingue un effet du bruit.
         taux_a = [_taux(t["compte"][0], t["compte"][1]) for t in tiers]
         taux_r = [_taux(t["compte"][2], t["compte"][3]) for t in tiers]
+        par_echeance = None
+        if cle in MATRICES:
+            par_echeance = [
+                {str(sec): _compte([e for e in avec if dedans(e.contexte[cle])
+                                    and sec in e.issues], coupure,
+                                   lambda e, sec=sec: e.issues[sec])
+                 for sec in ECHEANCES}
+                for _nom, dedans in groupes]
         sortie["variables"].append({
             "cle": cle, "libelle": libelle, "coupes": coupes,
+            "par_echeance": par_echeance,
             "valeurs": valeurs_tiers,
             "tiers": tiers, "pire": pire, "sans_pire": compte_sans,
             "gradient": coupes is not None and _monotone(taux_a)
@@ -255,6 +275,59 @@ def _ligne(c: Sequence[int], jours: float) -> str:
     return (f"récents <b>{_pct(tr)}</b> sur {c[2]} (au moins {bas:.0%}) · "
             f"anciens {_pct(ta)} sur {c[0]} · {par_jour:.1f}/jour · "
             f"espérance {ev:+.3f}/ordre, {ev * par_jour:+.2f} mise/jour")
+
+
+def _cellules(par_sec: Mapping[str, Sequence[int]]) -> str:
+    """« 1m 55% · 2m 57% · … » sur les deux périodes réunies."""
+    morceaux = []
+    for sec, c in par_sec.items():
+        n, g = c[0] + c[2], c[1] + c[3]
+        if n:
+            morceaux.append(f"{int(sec) // 60}m {g / n:.0%}")
+    return " · ".join(morceaux) or "—"
+
+
+def texte_persistance(resultat: Mapping | None) -> str:
+    """La persistance des bougies, toutes paires, hors zones."""
+    if not resultat:
+        return ""
+    lignes = ["<b>Persistance des bougies</b> — toutes les bougies M1 "
+              "rejouées, hors zones : après N bougies de même couleur, "
+              "position dans le sens de la série. ✅ = au-dessus de 52,1 % "
+              "sur les DEUX périodes (suivre la série) ; 🔁 = sous 47,9 % sur "
+              "les deux (la contrer)."]
+    rentables = []
+    for nom in ("verte", "rouge"):
+        table = resultat.get(nom) or {}
+        for n, par_sec in table.items():
+            morceaux = []
+            for sec, c in par_sec.items():
+                if not (c[0] and c[2]):
+                    continue
+                ta, tr = c[1] / c[0], c[3] / c[2]
+                tout = (c[1] + c[3]) / (c[0] + c[2])
+                marque = ("✅" if min(ta, tr) > SEUIL else
+                          "🔁" if max(ta, tr) < 1 - SEUIL else "")
+                if marque:
+                    rentables.append(f"{n} {nom}s, {int(sec) // 60} min : "
+                                     f"{tout:.1%} ({marque}, anciens "
+                                     f"{ta:.1%}, récents {tr:.1%}, "
+                                     f"{c[0] + c[2]} cas)")
+                morceaux.append(f"{int(sec) // 60}m {tout:.1%}{marque}")
+            total = sum(c[0] + c[2] for c in par_sec.values()) // max(
+                1, len(par_sec))
+            plus = "+" if int(n) == resultat.get("n_max") else ""
+            pluriel = "s" if int(n) > 1 else ""
+            lignes.append(f"  {n}{plus} {nom}{pluriel} ({total} cas) : "
+                          + " · ".join(morceaux))
+    if rentables:
+        lignes.append("Au-delà du seuil sur les deux périodes :")
+        lignes += [f"  • {r}" for r in rentables[:12]]
+    else:
+        lignes.append("→ Aucune longueur de série ne donne un avantage "
+                      "au-delà du seuil sur les deux périodes : la couleur "
+                      "des bougies passées ne prédit pas la suite, seule.")
+    return "\n".join(lignes)
 
 
 def _pct(v: float | None) -> str:
@@ -307,6 +380,8 @@ def texte(resultat: Mapping | None) -> str:
                           f"{marque}")
         lignes.append(f"  sans le pire tiers : {_ligne(v['sans_pire'], jours)}")
         lignes.append(f"  {v['verdict']}")
+        for t, par_sec in zip(v["tiers"], v.get("par_echeance") or ()):
+            lignes.append(f"  ⏱ {t['libelle']} : {_cellules(par_sec)}")
     if resultat.get("elan"):
         lignes += ["", "<b>Seuils d'élan sur 30 min</b> (on écarte les "
                        "entrées dont l'élan va plus loin contre le trade) :"]
@@ -314,6 +389,9 @@ def texte(resultat: Mapping | None) -> str:
             lignes.append(f"  élan au moins {x['seuil']:+.1f} : "
                           f"{_ligne(x['compte'], jours)}")
             lignes.append(f"    {x['verdict']}")
+    persistance = texte_persistance(resultat.get("persistance"))
+    if persistance:
+        lignes += ["", persistance]
     lignes.append(
         "\n⚠ Plus de vingt comparaisons : une sur vingt passe par hasard. "
         "Un ✅ désigne une candidate pour la démo, pas une découverte.")
