@@ -152,21 +152,28 @@ class Apprenti:
             except Exception:                    # noqa: BLE001
                 pass
         ancien = course.etat.apprentissage
-        nouveau = apprendre(exemples)
-        nouveau.jours = jours
-        # ⚠ LES PAIRES SONT JUGÉES SUR CE QUE LA COURSE JOUE.
+        # ⚠ L'APPRENTISSAGE PORTE SUR CE QUE LA COURSE JOUE.
         #
-        # Le taux par paire décide des paires écartées « au taux perdant ».
-        # Il était mesuré sur ZoneH1 SANS confirmation, alors que la course
-        # joue ZoneH1 PLUS la confirmation M1 : le 03/10, 41 % des bougies
-        # tombaient sur des paires écartées d'après des signaux que la
-        # course ne prend plus, et la course a passé 9,9 h sans un ordre.
+        # Le taux par paire décide des paires écartées « au taux perdant »,
+        # les leçons des contextes écartés, l'autopsie de ce qui est
+        # « défavorable ». Tout cela était mesuré sur ZoneH1 SANS
+        # confirmation, et sur la bougie du SIGNAL, alors que la course joue
+        # ZoneH1 PLUS la confirmation M1 et décide sur la bougie d'ENTRÉE :
+        # - le 03/10, 41 % des bougies tombaient sur des paires écartées
+        #   d'après des signaux que la course ne prend plus ;
+        # - le 08/10, un CALL GBPUSD pris 5 amplitudes au-dessus de son
+        #   support recevait « aucun contexte connu pour perdre » : au
+        #   rejeu, la distance était mesurée au contact de la zone.
+        # Les entrées confirmées, décrites à l'entrée, sont la population
+        # jouée : c'est sur elle qu'on apprend.
         mode = getattr(course, "confirmation_m1", "0")
-        if mode in ("suivante", "2", "3"):
-            from maxprofit.apprentissage.lecons import _par_paire
+        fenetre = {"suivante": 1, "2": 2, "3": 3}.get(mode)
+        if fenetre is not None:
             from maxprofit.live.laboratoire import confirmes
-            nouveau.par_paire = _par_paire(confirmes(
-                exemples, 1 if mode == "suivante" else int(mode)))
+            nouveau = apprendre(confirmes(exemples, fenetre))
+        else:
+            nouveau = apprendre(exemples)
+        nouveau.jours = jours
         nouveau.simulations = _simulations(
             exemples, strategie.p.expiry_sec, course.seuil_contre_heure,
             _echeances_courtes(exemples, course.seuil_contre_heure))
@@ -178,6 +185,12 @@ class Apprenti:
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             strategie.p.expiry_sec)
         nouveau.laboratoire["paires_jugees_sur"] = mode
+        from maxprofit.live.experiences import experiences
+        nouveau.laboratoire["experiences"] = experiences(
+            exemples,
+            (lambda e: True) if seuil is None else
+            (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
+            fenetre or 3, strategie.p.expiry_sec)
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -189,9 +202,7 @@ def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant que les paires soient jugées
     sur ce que la course joue (confirmation M1 comprise) : il est alors
     refait au démarrage, pas dans vingt-quatre heures."""
-    return "paires_jugees_sur" in laboratoire and any(
-        str(m.get("nom", "")).startswith("E3.")
-        for m in laboratoire.get("mesures", ()))
+    return "paires_jugees_sur" in laboratoire and "experiences" in laboratoire
 
 
 def _echeances_courtes(exemples, seuil_contre_heure) -> dict:

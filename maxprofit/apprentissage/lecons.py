@@ -57,7 +57,7 @@ TENDANCES: tuple[str, ...] = ("mouvement_heure", "elan_30m", "tendance_h1")
 POIDS_PRIORITE = 20
 
 #: Échéances comparées sur les mêmes signaux (secondes).
-ECHEANCES_COMPAREES: tuple[int, ...] = (180, 300, 600, 900)
+ECHEANCES_COMPAREES: tuple[int, ...] = (60, 120, 180, 240, 300, 600, 900)
 
 #: Taux de réussite par pas mesuré sur l'historique de la stratégie (221
 #: signaux, 12 jours) : sert à l'autopsie tant que rien n'a été appris.
@@ -289,8 +289,12 @@ class Apprentissage:
                     + (self.note or "Premier apprentissage en cours."))
         jour = lambda ts: datetime.fromtimestamp(ts, timezone.utc).strftime(
             "%d/%m %H:%M")
+        confirmes = (self.laboratoire or {}).get("paires_jugees_sur") in (
+            "suivante", "2", "3")
+        quoi = ("entrées confirmées (ce que la course joue) rejouées"
+                if confirmes else "signaux rejoués")
         lignes = [
-            f"🧠 <b>Apprentissage</b> — {self.n} signaux rejoués du "
+            f"🧠 <b>Apprentissage</b> — {self.n} {quoi} du "
             f"{jour(self.debut_sec)} au {jour(self.fin_sec)} UTC, "
             f"{self.taux:.1%} gagnants (seuil {SEUIL:.1%}).",
             f"appris le {jour(self.cree_ts)} UTC",
@@ -559,6 +563,14 @@ def autopsie(pas: Sequence[tuple[str, str, Mapping[str, float]]],
     lignes = [f"🧠 <b>Autopsie</b> — session perdue en {len(pas)} pas"]
     communs: dict[str, int] = {}
     couverts = 0
+    # Les expériences de la référence (ce que la course joue, décrit à
+    # l'entrée) : elles situent chaque pas dans les tiers mesurés, au lieu
+    # de ne citer que les tranches PROUVÉES perdantes. Le CALL GBPUSD du
+    # 08/10, pris 5 amplitudes au-dessus du support, recevait « aucun
+    # contexte connu pour perdre » parce que rien ne le situait.
+    labo = (apprentissage.laboratoire or {}) if apprentissage else {}
+    exp = labo.get("experiences") if isinstance(labo, Mapping) else None
+    mesures_defavorables: list[str] = []
     for i, (paire, sens, ctx) in enumerate(pas, start=1):
         if not ctx:
             lignes.append(f"Pas {i} {paire} {sens.upper()} : contexte non "
@@ -579,18 +591,45 @@ def autopsie(pas: Sequence[tuple[str, str, Mapping[str, float]]],
             f"{nom} {ctx[c]:+.1f}" for c, nom in (
                 ("mouvement_heure", "heure en cours"), ("elan_30m", "30 min"),
                 ("tendance_h1", "3 h closes")) if c in ctx)
+        entree = ", ".join(
+            f"{nom} {fmt.format(ctx[c])}" for c, nom, fmt in (
+                ("distance_niveau", "distance à la zone", "{:+.1f} ampl."),
+                ("rebond_15", "rebond précédent", "{:.1f} ampl."),
+                ("favorables_15", "bougies dans le sens du trade",
+                 "{:.0%} sur 15")) if c in ctx)
         lignes.append(f"Pas {i} {paire} {sens.upper()} : {detail}"
                       + (f"\n   mouvements (amplitudes, − = contre) : "
-                         f"{valeurs}" if valeurs else ""))
+                         f"{valeurs}" if valeurs else "")
+                      + (f"\n   à l'entrée : {entree}" if entree else ""))
+        for cle, tiers, taux, taux_ref, pire in situer(ctx, exp):
+            if not pire or taux_ref - taux < 0.05:
+                continue
+            nom = LIBELLES.get(cle, cle)
+            lignes.append(f"   ⚠ {nom} : {tiers}, le tiers qui gagne le "
+                          f"moins — {taux:.0%} contre {taux_ref:.0%} pour la "
+                          f"référence")
+            mesures_defavorables.append(nom)
 
     p = (apprentissage.taux if apprentissage and apprentissage.taux
          else TAUX_DE_REFERENCE)
+    if exp and "reference" in exp:
+        r = exp["reference"]
+        if r[0] + r[2]:
+            p = (r[1] + r[3]) / (r[0] + r[2])
     hasard = (1 - p) ** len(pas)
     recurrents = [c for c, k in communs.items() if k >= 2]
     if couverts:
         lignes.append(
             f"\n⚠ Verdict : {couverts} pas relevaient d'une leçon ACTIVE — "
             f"ces contextes sont écartés désormais.")
+    elif mesures_defavorables:
+        noms = ", ".join(dict.fromkeys(mesures_defavorables))
+        lignes.append(
+            f"\nVerdict : contexte DÉFAVORABLE MESURÉ — {noms}. Ce n'est "
+            f"pas de la malchance pure : ce tiers gagne nettement moins que "
+            f"la référence au rejeu. Il n'est pas encore écarté : "
+            f"/experiences dit si l'écarter améliore les deux périodes, "
+            f"condition pour le tester en démo.")
     elif recurrents:
         noms = ", ".join(LIBELLES.get(c, c) for c in recurrents)
         lignes.append(
@@ -605,3 +644,37 @@ def autopsie(pas: Sequence[tuple[str, str, Mapping[str, float]]],
             f"{hasard:.1%} du temps (environ 1 session sur "
             f"{round(1 / hasard) if hasard else '∞'}).")
     return "\n".join(lignes)
+
+
+def situer(ctx: Mapping[str, float], resultat: Mapping | None
+           ) -> list[tuple[str, str, float, float, bool]]:
+    """Où tombe un ordre réel dans les terciles de la référence.
+
+    [(variable, tiers, taux du tiers, taux de la référence, est le pire)]
+    pour chaque variable mesurée. Sert à l'autopsie : « entrée à 5,2
+    amplitudes de la zone — le tiers des entrées les plus tardives, qui
+    gagne 54 % contre 63 % ».
+    """
+    if not resultat or "variables" not in resultat:
+        return []
+    ref = resultat["reference"]
+    taux_ref = (ref[1] + ref[3]) / max(1, ref[0] + ref[2])
+    sortie = []
+    for v in resultat["variables"]:
+        if v["cle"] not in ctx:
+            continue
+        x = ctx[v["cle"]]
+        if v.get("coupes"):
+            c1, c2 = v["coupes"]
+            i = 0 if x < c1 else (1 if x < c2 else 2)
+        elif v.get("valeurs") and x in v["valeurs"]:
+            i = v["valeurs"].index(x)
+        else:
+            continue
+        c = v["tiers"][i]["compte"]
+        n, g = c[0] + c[2], c[1] + c[3]
+        if not n:
+            continue
+        sortie.append((v["cle"], v["tiers"][i]["libelle"], g / n, taux_ref,
+                       i == v["pire"]))
+    return sortie

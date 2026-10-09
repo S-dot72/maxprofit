@@ -137,10 +137,28 @@ def a_l_echeance(exemples: Sequence[Exemple], sec: int) -> list[Exemple]:
             for e in exemples if sec in e.issues]
 
 
+def _a_l_entree(e: Exemple, k: int, gagne: bool) -> Exemple:
+    """Le signal `e` daté, jugé et décrit à son entrée confirmée, `k`
+    bougies après le signal.
+
+    Le contexte mesuré à l'entrée (clés « e_ » du rejeu) remplace celui de
+    la bougie du signal : c'est celui que la course voit en direct, et
+    l'« entrée tardive » n'existe qu'à cet instant-là. Les issues aux autres
+    échéances sont celles de la même entrée.
+    """
+    ctx = dict(e.contexte)
+    ctx.update({c[2:]: v for c, v in e.contexte.items() if c.startswith("e_")})
+    issues = {int(c.rsplit("_", 1)[1]): bool(v)
+              for c, v in e.contexte.items()
+              if c.startswith("gagne_confirme_")}
+    return replace(e, ts_sec=e.ts_sec + 60 * k, gagne=gagne, contexte=ctx,
+                   issues=issues)
+
+
 def confirmes(exemples: Sequence[Exemple], fenetre: int = 1,
               echeance_sec: int | None = None) -> list[Exemple]:
-    """Les signaux que la confirmation M1 laisse passer, datés et jugés à
-    leur entrée : la clôture de la bougie qui confirme.
+    """Les signaux que la confirmation M1 laisse passer, datés, jugés et
+    décrits à leur entrée : la clôture de la bougie qui confirme.
 
     `fenetre` : 1 pour la bougie suivante seulement (CONFIRMATION_M1=
     suivante), 2 ou 3 pour une confirmation qui peut venir plus tard.
@@ -149,19 +167,17 @@ def confirmes(exemples: Sequence[Exemple], fenetre: int = 1,
     """
     if echeance_sec is not None:
         cle = f"gagne_suivant_{echeance_sec}"
-        return [replace(e, ts_sec=e.ts_sec + 60, gagne=bool(e.contexte[cle]))
+        return [_a_l_entree(e, 1, bool(e.contexte[cle]))
                 for e in exemples
                 if e.contexte.get("retournement_suivant") == 1
                 and cle in e.contexte]
     if fenetre == 1:
-        return [replace(e, ts_sec=e.ts_sec + 60,
-                        gagne=bool(e.contexte["gagne_suivant"]))
+        return [_a_l_entree(e, 1, bool(e.contexte["gagne_suivant"]))
                 for e in exemples
                 if e.contexte.get("retournement_suivant") == 1
                 and "gagne_suivant" in e.contexte]
-    return [replace(e, ts_sec=e.ts_sec + 60 * int(
-                e.contexte["attente_confirmation"]),
-                gagne=bool(e.contexte["gagne_confirme"]))
+    return [_a_l_entree(e, int(e.contexte["attente_confirmation"]),
+                        bool(e.contexte["gagne_confirme"]))
             for e in exemples
             if 1 <= e.contexte.get("attente_confirmation", 0) <= fenetre
             and "gagne_confirme" in e.contexte]
