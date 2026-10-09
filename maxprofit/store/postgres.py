@@ -35,6 +35,16 @@ jusqu'au `rollback()`. Une écriture ratée — un tick malformé, une contraint
 rendrait donc la connexion inutilisable pour tout le reste de la collecte. Le
 curseur fait donc le `rollback()` lui-même avant de laisser remonter l'erreur :
 l'appelant retrouve une connexion en état de marche, et voit la vraie cause.
+
+**Neon coupe les connexions inactives.** Sa base se met en veille, et la
+connexion ouverte par la course se retrouve fermée côté serveur sans que le
+client le sache. La première instruction suivante échouait avec « server
+closed the connection unexpectedly », et la course tombait (« en échec
+1/5 ») — puis retombait à chaque relance, puisqu'elle gardait le même objet
+de connexion mort. La connexion se rouvre donc d'elle-même et rejoue
+l'instruction une fois — sauf au milieu d'un `BEGIN` explicite, dont le
+début est perdu avec l'ancienne connexion : là, elle se rouvre mais laisse
+remonter l'erreur, pour que la migration recommence proprement.
 """
 
 from __future__ import annotations
@@ -121,8 +131,14 @@ class _CurseurVide:
 class Connexion:
     """Ce que le reste du code croit être une `sqlite3.Connection`."""
 
-    def __init__(self, brute):
+    def __init__(self, brute, rouvrir=None):
         self._conn = brute
+        #: Rouvre une connexion neuve (voir l'en-tête : Neon coupe les
+        #: connexions inactives). `None` : pas de reprise.
+        self._rouvrir = rouvrir
+        #: Un `BEGIN` explicite est-il en cours ? Tenu ici et non lu sur la
+        #: connexion : une connexion coupée ne sait plus rien dire d'elle.
+        self._bloc = False
 
     def execute(self, sql: str, params=()):
         if dialecte.est_pragma(sql):
@@ -130,6 +146,28 @@ class Connexion:
             # règlent le journal et les délais d'attente de SQLite.
             return _CurseurVide()
         traduit = dialecte.vers_postgres(sql)
+        mot = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+        try:
+            curseur = self._executer(traduit, params)
+        except Exception as erreur:
+            if not self._coupee(erreur):
+                raise
+            dans_un_bloc = self._bloc and mot != "BEGIN"
+            self._reprendre()
+            if dans_un_bloc:
+                raise
+            log.warning("Connexion PostgreSQL coupée par le serveur (%s) : "
+                        "rouverte, instruction rejouée.",
+                        str(erreur).splitlines()[0] if str(erreur) else
+                        type(erreur).__name__)
+            curseur = self._executer(traduit, params)
+        if mot == "BEGIN":
+            self._bloc = True
+        elif mot in ("COMMIT", "ROLLBACK", "END"):
+            self._bloc = False
+        return _Curseur(curseur)
+
+    def _executer(self, traduit: str, params):
         curseur = self._conn.cursor()
         try:
             curseur.execute(traduit, tuple(params) if params else None)
@@ -143,7 +181,33 @@ class Connexion:
             except Exception:                            # noqa: BLE001
                 pass
             raise
-        return _Curseur(curseur)
+        return curseur
+
+    def _coupee(self, erreur: Exception) -> bool:
+        """L'erreur vient-elle d'une connexion morte, et peut-on rouvrir ?
+
+        Seulement une erreur OPÉRATIONNELLE sur une connexion que psycopg
+        déclare fermée ou cassée : une erreur SQL ordinaire ne doit jamais
+        être rejouée.
+        """
+        if self._rouvrir is None:
+            return False
+        try:
+            import psycopg
+            operationnelle = isinstance(erreur, psycopg.OperationalError)
+        except ImportError:
+            operationnelle = False
+        return operationnelle and bool(
+            getattr(self._conn, "closed", False)
+            or getattr(self._conn, "broken", False))
+
+    def _reprendre(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:                                # noqa: BLE001
+            pass
+        self._conn = self._rouvrir()
+        self._bloc = False
 
     @property
     def in_transaction(self) -> bool:
@@ -161,9 +225,11 @@ class Connexion:
             return False
 
     def commit(self) -> None:
+        self._bloc = False
         self._conn.commit()
 
     def rollback(self) -> None:
+        self._bloc = False
         self._conn.rollback()
 
     def close(self) -> None:
@@ -185,9 +251,12 @@ def ouvrir() -> Connexion:
             f"revenir au stockage local."
         ) from None
 
+    def connecter():
+        return psycopg.connect(url, connect_timeout=DELAI_CONNEXION_SEC,
+                               autocommit=True)
+
     try:
-        brute = psycopg.connect(url, connect_timeout=DELAI_CONNEXION_SEC,
-                                autocommit=True)
+        brute = connecter()
     except Exception as erreur:                          # noqa: BLE001
         raise PostgresIndisponible(
             f"Connexion à PostgreSQL impossible : {erreur}. Vérifiez "
@@ -196,7 +265,7 @@ def ouvrir() -> Connexion:
         ) from None
 
     log.info("PostgreSQL ouvert (%s)", _sans_secret(url))
-    return Connexion(brute)
+    return Connexion(brute, rouvrir=connecter)
 
 
 def _sans_secret(url: str) -> str:
