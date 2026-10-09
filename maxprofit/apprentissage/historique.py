@@ -139,7 +139,8 @@ ATTENTE_CONFIRMATION_MAX = 3
 CONTEXTE_A_L_ENTREE: tuple[str, ...] = (
     "distance_niveau", "elan_15m", "elan_30m", "mouvement_heure",
     "volatilite_relative", "bougies_contre", "corps_signal", "meche_rejet",
-    "position_bande", "favorables_15", "rebond_15")
+    "position_bande", "favorables_15", "rebond_15", "serie_sens",
+    "amplitude_serie", "rythme_bougies", "alternances_10")
 
 
 def _confirmation_m1(completes, i: int, call: bool, closes,

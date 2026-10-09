@@ -138,8 +138,14 @@ class Apprenti:
         try:
             lecteur = MarketReader(conn)
             exemples = []
+            # La persistance des bougies se mesure sur les mêmes bougies,
+            # pendant qu'elles sont en mémoire : aucune lecture de plus.
+            from maxprofit.apprentissage.persistance import Persistance
+            persistance = Persistance(debut + int(0.7 * (fin - debut)))
             for paire in self.paires:
                 bougies = lecteur.candles(paire, 60, debut, fin)
+                persistance.ajouter(
+                    bougies, respirer=lambda: time.sleep(RESPIRATION_SEC))
                 exemples += exemples_historiques(
                     {paire: bougies}, strategie,
                     echeance_sec=strategie.p.expiry_sec,
@@ -191,6 +197,8 @@ class Apprenti:
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             fenetre or 3, strategie.p.expiry_sec)
+        nouveau.laboratoire["experiences"]["persistance"] = \
+            persistance.resultat()
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,

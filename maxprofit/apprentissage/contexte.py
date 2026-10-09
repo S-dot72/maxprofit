@@ -46,6 +46,15 @@ LIBELLES: dict[str, str] = {
     "favorables_15": "part des 15 dernières bougies dans le sens du trade",
     "rebond_15": "plus fort rebond depuis la zone sur les 15 bougies "
                  "précédentes",
+    # Les SÉQUENCES de bougies, demandées le 08/10 comme dimension à part
+    # entière : la persistance (« après 5 vertes, la 6e ? »), l'amplitude de
+    # la série, son rythme (accélère ou s'essouffle), et l'alternance.
+    "serie_sens": "bougies consécutives de même couleur jusqu'à l'entrée "
+                  "(+ dans le sens du trade, − contre)",
+    "amplitude_serie": "chemin parcouru par cette série dans le sens du "
+                       "trade",
+    "rythme_bougies": "taille des 3 dernières bougies / des 3 précédentes",
+    "alternances_10": "changements de couleur sur les 10 dernières bougies",
     "touches": "touches de la zone",
     "entrees_deja_offertes": "entrées déjà offertes par la zone",
 }
@@ -124,6 +133,26 @@ def contexte(bougies: Sequence[Candle], call: bool,
         "meche_rejet": meche,
         "position_bande": bande,
     }
+    # La série en cours : bougies consécutives de même couleur, la dernière
+    # comprise. Une bougie sans corps l'interrompt.
+    couleur = (der.close > der.open) - (der.close < der.open)
+    serie, debut = 0, der
+    if couleur:
+        for c in reversed(bougies):
+            if (c.close > c.open) - (c.close < c.open) != couleur:
+                break
+            serie += 1
+            debut = c
+    ctx["serie_sens"] = float(serie * couleur * (1 if call else -1))
+    ctx["amplitude_serie"] = ((der.close - debut.open) * sens / amplitude
+                              if serie else 0.0)
+    if len(bougies) >= 6:
+        recentes = _moyenne([c.high - c.low for c in bougies[-3:]])
+        avant = _moyenne([c.high - c.low for c in bougies[-6:-3]])
+        ctx["rythme_bougies"] = recentes / avant if avant > 0 else 1.0
+    dix = [(c.close > c.open) - (c.close < c.open) for c in bougies[-10:]]
+    ctx["alternances_10"] = float(sum(
+        1 for a, b in zip(dix, dix[1:]) if a and b and a != b))
     quinze = bougies[-15:]
     ctx["favorables_15"] = sum(
         1 for c in quinze if (c.close - c.open) * sens > 0) / len(quinze)

@@ -132,3 +132,58 @@ def test_le_filtre_d_entree_tardive_est_coupe_par_defaut(monkeypatch):
     assert distance_entree_max() is None
     monkeypatch.setenv("DISTANCE_ENTREE_MAX", "3.5")
     assert distance_entree_max() == 3.5
+
+
+def test_la_serie_de_bougies_est_lue_dans_le_sens_du_trade():
+    bougies = [_b(i, 1.1000, 1.0999) for i in range(20)]       # rouges
+    bougies += [_b(20 + k, 1.1000 + 0.0001 * k, 1.1001 + 0.0001 * k)
+                for k in range(5)]                               # 5 vertes
+    achat = contexte(bougies, True)
+    vente = contexte(bougies, False)
+    assert achat["serie_sens"] == 5.0
+    assert vente["serie_sens"] == -5.0
+    assert achat["amplitude_serie"] > 0 > vente["amplitude_serie"]
+    assert achat["alternances_10"] == 1.0, "une seule bascule rouge → verte"
+
+
+def test_la_persistance_compte_ce_qui_suit_une_serie():
+    from maxprofit.apprentissage.persistance import Persistance
+    from maxprofit.live.experiences import texte_persistance
+    # Motif répété : 3 vertes puis 1 rouge. Après 1 ou 2 vertes, la suivante
+    # est verte ; après 3, elle est rouge.
+    bougies, prix = [], 1.1
+    for i in range(400):
+        verte = i % 4 != 3
+        o, c = prix, prix + (0.0002 if verte else -0.0001)
+        bougies.append(_b(i, o, c))
+        prix = c
+    p = Persistance(T0 + 280 * 60, echeances=(60,))
+    p.ajouter(bougies)
+    r = p.resultat()
+    deux = r["verte"]["2"]["60"]
+    assert deux[1] == deux[0] and deux[3] == deux[2], "toujours continuée"
+    trois = r["verte"]["3"]["60"]
+    assert trois[1] == 0 and trois[0] > 0, "toujours retournée"
+    sortie = texte_persistance(r)
+    assert "✅" in sortie and "🔁" in sortie
+    assert not re.search(r"<(?!/?b>)", sortie)
+
+
+def test_un_trou_de_collecte_interrompt_la_serie():
+    from maxprofit.apprentissage.persistance import Persistance
+    bougies = [_b(0, 1.1, 1.1001), _b(1, 1.1001, 1.1002),
+               _b(5, 1.1002, 1.1003), _b(6, 1.1003, 1.1004)]
+    p = Persistance(T0 + 10_000, echeances=(60,))
+    p.ajouter(bougies)
+    r = p.resultat()
+    assert "3" not in r["verte"], "la série repart à 1 après le trou"
+
+
+def test_la_sequence_est_jugee_a_chaque_echeance():
+    exemples = _reference()
+    for i, e in enumerate(exemples):
+        e.contexte["e_serie_sens"] = float(1 + i % 5)
+    r = experiences(exemples, lambda e: True, fenetre=3)
+    v = next(x for x in r["variables"] if x["cle"] == "serie_sens")
+    assert v["par_echeance"] and "60" in v["par_echeance"][0]
+    assert "⏱" in texte(r)
