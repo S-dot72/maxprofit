@@ -252,9 +252,15 @@ def test_les_paires_sont_jugees_sur_les_signaux_confirmes(tmp_path,
                  ("EURUSD_otc",)).apprendre_une_fois()
     a = course.etat.apprentissage
     n_confirmes = a.par_paire.get("EURUSD_otc", (0, 0))[0]
-    assert 0 < n_confirmes < a.n, "seuls les signaux confirmés comptent"
+    assert 0 < n_confirmes == a.n, "on apprend sur les entrées confirmées"
     assert a.laboratoire["paires_jugees_sur"] == "suivante"
+    assert "experiences" in a.laboratoire
     assert mod._avec_zone_confirmee(a.laboratoire)
+    # Sans confirmation, tous les signaux de ZoneH1 comptent : davantage.
+    course.confirmation_m1 = "0"
+    mod.Apprenti(course, lambda: open_read_write(tmp_path / "m.db"),
+                 ("EURUSD_otc",)).apprendre_une_fois()
+    assert course.etat.apprentissage.n > n_confirmes
 
 
 def test_aucune_lecon_ne_se_fait_PAS_passer_pour_une_absence_de_lien():

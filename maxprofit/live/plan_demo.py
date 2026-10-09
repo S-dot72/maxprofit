@@ -634,6 +634,26 @@ def elan_30m_max() -> float | None:
         return None
 
 
+def distance_entree_max() -> float | None:
+    """`DISTANCE_ENTREE_MAX` : distance maximale de l'entrée à la zone, en
+    amplitudes M1, ou `None` (pas de filtre, par défaut).
+
+    L'« entrée tardive » du 08/10 : un CALL GBPUSD confirmé par une grande
+    bougie verte, pris 5 amplitudes au-dessus de son support — le rebond
+    déjà consommé, la résistance juste au-dessus. La confirmation M1 attend
+    que le marché se retourne ; quand il se retourne d'un coup, l'entrée
+    arrive loin de la zone. Coupé par défaut : le seuil se lit dans
+    /experiences (« entrée tardive », coupe du tiers le plus lointain), et
+    ne s'active que si écarter ce tiers améliore les deux périodes.
+    """
+    import os
+    brut = os.environ.get("DISTANCE_ENTREE_MAX", "").strip()
+    try:
+        return float(brut) if brut else None
+    except ValueError:
+        return None
+
+
 def vagues_min_minutes() -> float:
     """`VAGUES_MIN` : durée minimale des vagues du ZigZag, en minutes.
 
@@ -845,6 +865,9 @@ class CoursePlanDemo:
         #: `ELAN_30M_MAX` : pas d'entrée quand l'élan des 30 dernières
         #: minutes va contre le trade au-delà de ce nombre d'amplitudes M1.
         self.elan_30m_max = elan_30m_max()
+        #: `DISTANCE_ENTREE_MAX` : pas d'entrée plus loin de la zone que ce
+        #: nombre d'amplitudes M1 (entrée tardive).
+        self.distance_entree_max = distance_entree_max()
         #: `VAGUES_MIN` : n'entrer que si les dernières vagues du ZigZag
         #: durent au moins ce nombre de minutes (0 = pas de filtre).
         self.vagues_min_minutes = vagues_min_minutes()
@@ -1242,6 +1265,10 @@ class CoursePlanDemo:
         if self.elan_30m_max is not None and \
                 ctx.get("elan_30m", 0.0) < -self.elan_30m_max:
             self.etat.noter("elan_contre")
+            return None
+        if self.distance_entree_max is not None and \
+                ctx.get("distance_niveau", 0.0) > self.distance_entree_max:
+            self.etat.noter("entree_tardive")
             return None
         # Les critères de validation sont MESURÉS sur chaque signal, exigés
         # ou non : ils partent avec l'ordre dans son contexte, et /bilan
@@ -2688,6 +2715,20 @@ def texte_du_contexte(ctx: dict, signal) -> str:
         if cle in ctx:
             morceaux.append(f"{libelle} {ctx[cle]:+.1f}")
     lignes = ["\n📏 " + " · ".join(morceaux) if morceaux else ""]
+    # L'entrée elle-même : à quelle distance de la zone, après quel rebond,
+    # dans quel momentum (demandé le 08/10 : entrée tardive, zone qui
+    # fatigue, « seulement 4 bougies vertes sur 15 »).
+    entree = []
+    if "distance_niveau" in ctx:
+        entree.append(f"entrée à {ctx['distance_niveau']:+.1f} ampl. de la "
+                      f"zone")
+    if "rebond_15" in ctx:
+        entree.append(f"rebond précédent {ctx['rebond_15']:.1f} ampl.")
+    if "favorables_15" in ctx:
+        entree.append(f"{round(ctx['favorables_15'] * 15)}/15 bougies dans "
+                      f"le sens du trade")
+    if entree:
+        lignes.append("\n🎯 " + " · ".join(entree))
     zone = []
     if "entrees_deja_offertes" in ctx:
         zone.append(f"{ctx['entrees_deja_offertes']:.0f} passage(s) déjà "
@@ -2738,6 +2779,8 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
                if a.get("vagues_courtes") else "")
             + (f", {a['elan_contre']} élan 30 min contre"
                if a.get("elan_contre") else "")
+            + (f", {a['entree_tardive']} entrée(s) trop loin de la zone"
+               if a.get("entree_tardive") else "")
             + f" ; {a.get('retenus', 0)} "
             f"retenu(s), {a.get('independance', 0)} pas reporté(s) "
             f"(indépendance), {a.get('ordres', 0)} ordre(s).")
@@ -3326,6 +3369,15 @@ def laboratoire(course) -> str:
         return "Course indisponible."
     a = course.etat.apprentissage
     return texte(a.laboratoire if a else None)
+
+
+def experiences(course) -> str:
+    """`/experiences` : la référence jouée face à une variable à la fois."""
+    from maxprofit.live.experiences import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("experiences") if a else None)
 
 
 def lecons(course) -> str:

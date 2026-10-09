@@ -35,7 +35,17 @@ LIBELLES: dict[str, str] = {
     "corps_signal": "corps de la bougie de signal (part de son amplitude)",
     "meche_rejet": "mèche de rejet de la bougie de signal",
     "position_bande": "position dans la bande de Bollinger (sens du trade)",
-    "distance_niveau": "distance au niveau de la zone",
+    # Mesurée À L'ENTRÉE (en direct, et au rejeu de la confirmation M1) :
+    # c'est l'« entrée tardive » — CALL GBPUSD du 08/10 pris 5 amplitudes
+    # au-dessus du support, une fois le rebond déjà consommé.
+    "distance_niveau": "distance de l'entrée à la zone",
+    # La fatigue de la zone, demandée le 08/10 (GBPAUD, 3e touche d'un
+    # ancien plafond) : « sur les 15 dernières bougies, seulement 4 vertes,
+    # les vendeurs ont le momentum » et « la précédente impulsion est
+    # faible, celle qui suit sera encore plus faible ».
+    "favorables_15": "part des 15 dernières bougies dans le sens du trade",
+    "rebond_15": "plus fort rebond depuis la zone sur les 15 bougies "
+                 "précédentes",
     "touches": "touches de la zone",
     "entrees_deja_offertes": "entrées déjà offertes par la zone",
 }
@@ -114,9 +124,21 @@ def contexte(bougies: Sequence[Candle], call: bool,
         "meche_rejet": meche,
         "position_bande": bande,
     }
+    quinze = bougies[-15:]
+    ctx["favorables_15"] = sum(
+        1 for c in quinze if (c.close - c.open) * sens > 0) / len(quinze)
     f = features_signal or {}
     if "niveau" in f:
-        ctx["distance_niveau"] = (der.close - float(f["niveau"])) * sens / amplitude
+        niveau = float(f["niveau"])
+        ctx["distance_niveau"] = (der.close - niveau) * sens / amplitude
+        # Jusqu'où le prix s'est éloigné de la zone, dans le sens du trade,
+        # AVANT la bougie d'entrée : un rebond qui ne décolle pas est une
+        # zone qui fatigue.
+        avant = bougies[-16:-1]
+        if avant:
+            loin = (max(c.high for c in avant) - niveau if call
+                    else niveau - min(c.low for c in avant))
+            ctx["rebond_15"] = max(0.0, loin) / amplitude
     for nom in ("touches", "entrees_deja_offertes"):
         if nom in f:
             ctx[nom] = float(f[nom])

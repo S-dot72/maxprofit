@@ -14,7 +14,7 @@ import bisect
 import math
 from typing import Callable, Mapping, Sequence
 
-from maxprofit.apprentissage.contexte import contexte
+from maxprofit.apprentissage.contexte import FENETRE, contexte
 from maxprofit.apprentissage.lecons import ECHEANCES_COMPAREES, Exemple
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.types import Candle, Direction
@@ -85,7 +85,7 @@ def exemples_historiques(
                 ctx.update(_au_dela_de_la_fenetre(
                     closes, bougie.ts_sec, call, signal.features))
                 ctx.update(_confirmation_m1(completes, i, call, closes,
-                                            echeance_sec))
+                                            echeance_sec, signal.features))
                 ctx.update(criteres(fenetre, call,
                                     (signal.features or {}).get("niveau")))
                 rythme = rythme_minutes(fenetre)
@@ -130,8 +130,20 @@ def _retournement(call: bool, bougie, precedente) -> bool:
 #: Bougies M1 pendant lesquelles le rejeu cherche la confirmation.
 ATTENTE_CONFIRMATION_MAX = 3
 
+#: Le contexte remesuré À L'ENTRÉE confirmée, préfixé « e_ ». En direct, la
+#: course mesure son contexte après la confirmation, sur la bougie
+#: d'entrée ; le rejeu le mesurait sur la bougie du signal, une à trois
+#: minutes plus tôt. L'« entrée tardive » (distance à la zone) n'existait
+#: donc pas au rejeu : le CALL GBPUSD du 08/10, pris 5 amplitudes au-dessus
+#: de son support, y aurait été noté au contact.
+CONTEXTE_A_L_ENTREE: tuple[str, ...] = (
+    "distance_niveau", "elan_15m", "elan_30m", "mouvement_heure",
+    "volatilite_relative", "bougies_contre", "corps_signal", "meche_rejet",
+    "position_bande", "favorables_15", "rebond_15")
+
+
 def _confirmation_m1(completes, i: int, call: bool, closes,
-                     echeance_sec: int) -> dict[str, float]:
+                     echeance_sec: int, features=None) -> dict[str, float]:
     """Pour le laboratoire : le signal avait-il sa confirmation M1 ?
 
     `retournement_meme` : la bougie du signal va dans le sens du trade et
@@ -173,11 +185,21 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
                 completes[j].ts_sec != bougie.ts_sec + 60 * k:
             break
         if _retournement(call, completes[j], bougie):
+            entree = completes[j]
             sortie["attente_confirmation"] = float(k)
-            prix = closes.get(completes[j].ts_sec + echeance_sec)
-            if prix is not None and prix != completes[j].close:
-                sortie["gagne_confirme"] = float(
-                    (prix > completes[j].close) == call)
+            prix = closes.get(entree.ts_sec + echeance_sec)
+            if prix is not None and prix != entree.close:
+                sortie["gagne_confirme"] = float((prix > entree.close) == call)
+            for sec in ECHEANCES_COMPAREES:
+                prix = closes.get(entree.ts_sec + sec)
+                if prix is not None and prix != entree.close:
+                    sortie[f"gagne_confirme_{sec}"] = float(
+                        (prix > entree.close) == call)
+            a_l_entree = contexte(completes[max(0, j + 1 - FENETRE):j + 1],
+                                  call, features)
+            for cle in CONTEXTE_A_L_ENTREE:
+                if cle in a_l_entree:
+                    sortie[f"e_{cle}"] = a_l_entree[cle]
             break
         if k == ATTENTE_CONFIRMATION_MAX:
             sortie["attente_confirmation"] = 0.0
