@@ -52,6 +52,11 @@ class Persistance:
         #: {couleur: {N: {échéance: [anciens, gagnés, récents, gagnés]}}}
         self.comptes: dict[str, dict[int, dict[int, list[int]]]] = {
             "verte": {}, "rouge": {}}
+        #: Ce que le rejeu a réellement lu, paire par paire : bougies,
+        #: dont closes, première et dernière bougie close. Sans cela, un
+        #: rejeu qui ne voit plus les données récentes passe inaperçu — le
+        #: 10/10, la période récente n'avait qu'un cas sur 318.
+        self.donnees: dict[str, list[int]] = {}
 
     def ajouter(self, bougies: Sequence[Candle],
                 respirer: Callable[[], None] | None = None) -> None:
@@ -59,6 +64,12 @@ class Persistance:
         ce calcul tourne dans le même processus qu'elle."""
         completes = sorted((b for b in bougies if b.complete),
                            key=lambda b: b.ts_sec)
+        if bougies:
+            self.donnees[bougies[0].pair] = [
+                len(bougies), len(completes),
+                completes[0].ts_sec if completes else 0,
+                completes[-1].ts_sec if completes else 0,
+                sum(1 for b in completes if b.ts_sec >= self.coupure)]
         closes = {b.ts_sec: b.close for b in completes}
         serie, couleur, precedent = 0, 0, None
         for i, c in enumerate(completes):
@@ -89,6 +100,7 @@ class Persistance:
         """En JSON : les clés sont du texte."""
         return {"coupure": self.coupure, "n_max": self.n_max,
                 "echeances": list(self.echeances),
+                "donnees": {p: list(d) for p, d in self.donnees.items()},
                 **{nom: {str(n): {str(sec): list(c)
                                   for sec, c in sorted(par_sec.items())}
                          for n, par_sec in sorted(table.items())}

@@ -87,6 +87,11 @@ ECHEANCES: tuple[int, ...] = (60, 120, 180, 240, 300, 600, 900)
 #: Effectif minimal d'un tiers, sur l'étalonnage, pour être désigné « pire ».
 N_MIN_TIERS = 10
 
+#: Cas minimaux sur CHAQUE période pour qu'une case de persistance soit
+#: marquée : le 10/10, « 7 vertes, 2 min » était marquée ✅ avec un seul
+#: cas récent (100 %).
+N_MIN_PERSISTANCE = 30
+
 
 def esperance(p: float) -> float:
     """Ce que rapporte un ordre en moyenne, en mises, au payout de 92 %."""
@@ -170,6 +175,7 @@ def experiences(exemples: Sequence[Exemple],
         "jours": round(jours, 1), "reference": ref,
         "plan": [round(plan.solde - CAPITAL, 2), plan.creux],
         "series": _series(base), "variables": [], "elan": [],
+        "periode": [base[0].ts_sec, base[-1].ts_sec],
         "delai": {}, "echeances": {},
     }
     etalonnage = [e for e in base if e.ts_sec < coupure]
@@ -306,13 +312,14 @@ def texte_persistance(resultat: Mapping | None) -> str:
                     continue
                 ta, tr = c[1] / c[0], c[3] / c[2]
                 tout = (c[1] + c[3]) / (c[0] + c[2])
-                marque = ("✅" if min(ta, tr) > SEUIL else
-                          "🔁" if max(ta, tr) < 1 - SEUIL else "")
+                assez = min(c[0], c[2]) >= N_MIN_PERSISTANCE
+                marque = ("✅" if assez and min(ta, tr) > SEUIL else
+                          "🔁" if assez and max(ta, tr) < 1 - SEUIL else "")
                 if marque:
                     rentables.append(f"{n} {nom}s, {int(sec) // 60} min : "
                                      f"{tout:.1%} ({marque}, anciens "
-                                     f"{ta:.1%}, récents {tr:.1%}, "
-                                     f"{c[0] + c[2]} cas)")
+                                     f"{ta:.1%} sur {c[0]}, récents "
+                                     f"{tr:.1%} sur {c[2]})")
                 morceaux.append(f"{int(sec) // 60}m {tout:.1%}{marque}")
             total = sum(c[0] + c[2] for c in par_sec.values()) // max(
                 1, len(par_sec))
@@ -334,24 +341,74 @@ def _pct(v: float | None) -> str:
     return "—" if v is None else f"{v:.1%}"
 
 
+def texte_donnees(persistance: Mapping | None) -> str:
+    """Ce que le rejeu a réellement lu : de quoi voir qu'il manque des
+    données avant de croire un résultat."""
+    import time
+    donnees = (persistance or {}).get("donnees")
+    if not donnees:
+        return ""
+    jour = lambda ts: time.strftime("%d/%m %H:%M", time.gmtime(ts))  # noqa
+    lues = sum(d[0] for d in donnees.values())
+    closes = sum(d[1] for d in donnees.values())
+    recentes = sum(d[4] for d in donnees.values())
+    debuts = [d[2] for d in donnees.values() if d[2]]
+    fins = [d[3] for d in donnees.values() if d[3]]
+    lignes = [f"<b>Données rejouées</b> : {closes} bougies closes sur "
+              f"{lues} lues, {len(donnees)} paires"
+              + (f", du {jour(min(debuts))} au {jour(max(fins))} UTC"
+                 if debuts else "")
+              + f" ; depuis le {jour(persistance['coupure'])} : {recentes} "
+                f"bougies closes ({recentes / closes:.0%})" if closes else
+              "<b>Données rejouées</b> : aucune bougie close."]
+    if fins:
+        derniere = max(fins)
+        fin = persistance.get("fin")
+        if fin and fin - derniere > 3 * 3600:
+            lignes.append(f"  ⚠ la dernière bougie close lue date de "
+                          f"{(fin - derniere) / 3600:.0f} h avant le rejeu : "
+                          f"il ne voit pas les données récentes.")
+        en_retard = sorted(p.replace("_otc", "") for p, d in donnees.items()
+                           if d[3] and derniere - d[3] > 6 * 3600)
+        non_closes = lues - closes
+        if non_closes > 0.05 * max(1, lues):
+            lignes.append(f"  ⚠ {non_closes} bougies lues mais NON closes "
+                          f"({non_closes / lues:.0%}) : le rejeu les ignore.")
+        if en_retard:
+            lignes.append(f"  ⚠ sans bougie close depuis plus de 6 h avant "
+                          f"la dernière : {', '.join(en_retard)}")
+    return "\n".join(lignes)
+
+
 def texte(resultat: Mapping | None) -> str:
     """`/experiences`."""
     if not resultat:
         return ("🔬 Expériences pas encore calculées : elles accompagnent le "
                 "rejeu quotidien (quelques minutes après un redémarrage).")
     if "note" in resultat:
-        return f"🔬 {resultat['note']}"
+        donnees = texte_donnees(resultat.get("persistance"))
+        return f"🔬 {resultat['note']}" + (f"\n{donnees}" if donnees else "")
     import time
     coupe = time.strftime("%d/%m", time.gmtime(resultat["coupure"]))
     jours = resultat["jours"]
     ref = resultat["reference"]
     gain, creux = resultat["plan"]
     s = resultat["series"]
+    periode = resultat.get("periode")
     lignes = [
         f"🔬 <b>Expériences — référence {resultat['nom']}</b> (ce que la "
         f"course joue, décrit à l'entrée)",
         f"Étalonnage jusqu'au {coupe}, <b>jugement depuis le {coupe}</b>. "
         f"Seuil de rentabilité {SEUIL:.1%}, espérance = p × 0,92 − (1 − p).",
+    ]
+    if periode:
+        jour = lambda ts: time.strftime("%d/%m", time.gmtime(ts))  # noqa
+        lignes.append(f"Entrées rejouées du {jour(periode[0])} au "
+                      f"{jour(periode[1])}.")
+    donnees = texte_donnees(resultat.get("persistance"))
+    if donnees:
+        lignes.append(donnees)
+    lignes += [
         "",
         f"<b>Référence</b> : {_ligne(ref, jours)}",
         f"  plan 2 pas : {gain:+.2f} $, creux −{creux:.2f} $",

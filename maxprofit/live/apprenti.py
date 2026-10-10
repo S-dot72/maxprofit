@@ -197,8 +197,8 @@ class Apprenti:
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             fenetre or 3, strategie.p.expiry_sec)
-        nouveau.laboratoire["experiences"]["persistance"] = \
-            persistance.resultat()
+        nouveau.laboratoire["experiences"]["persistance"] = {
+            **persistance.resultat(), "fin": fin}
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,

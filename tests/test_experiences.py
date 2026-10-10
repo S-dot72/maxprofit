@@ -187,3 +187,26 @@ def test_la_sequence_est_jugee_a_chaque_echeance():
     v = next(x for x in r["variables"] if x["cle"] == "serie_sens")
     assert v["par_echeance"] and "60" in v["par_echeance"][0]
     assert "⏱" in texte(r)
+
+
+def test_une_case_de_persistance_sur_un_seul_cas_recent_n_est_pas_marquee():
+    from maxprofit.live.experiences import texte_persistance
+    r = {"coupure": T0, "n_max": 8, "verte": {"7": {"120": [317, 169, 1, 1]}},
+         "rouge": {}}
+    assert "Au-delà du seuil" not in texte_persistance(r)
+    r["verte"]["7"]["120"] = [317, 169, 40, 25]
+    assert "Au-delà du seuil" in texte_persistance(r)
+
+
+def test_le_diagnostic_dit_quand_le_rejeu_ne_voit_pas_le_recent():
+    from maxprofit.live.experiences import texte_donnees
+    persistance = {"coupure": T0 + 20 * 86400, "fin": T0 + 30 * 86400,
+                   "donnees": {"EURUSD_otc": [40000, 39000, T0,
+                                              T0 + 21 * 86400, 1440],
+                               "GBPUSD_otc": [30000, 29000, T0,
+                                              T0 + 12 * 86400, 0]}}
+    sortie = texte_donnees(persistance)
+    assert "68000 bougies closes" in sortie
+    assert "il ne voit pas les données récentes" in sortie
+    assert "GBPUSD" in sortie and "EURUSD" not in sortie.split("6 h")[-1]
+    assert not re.search(r"<(?!/?b>)", sortie)
