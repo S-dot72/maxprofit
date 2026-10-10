@@ -2727,6 +2727,13 @@ def texte_du_contexte(ctx: dict, signal) -> str:
     if "favorables_15" in ctx:
         entree.append(f"{round(ctx['favorables_15'] * 15)}/15 bougies dans "
                       f"le sens du trade")
+    if "taille_bougie" in ctx:
+        entree.append(f"bougie d'entrée ×{ctx['taille_bougie']:.1f}")
+    if "part_parcourue" in ctx:
+        entree.append(f"{ctx['part_parcourue']:.0%} du chemin vers le "
+                      f"prochain sommet/creux déjà fait")
+    if ctx.get("espace_obstacle", 99.0) < 99.0:
+        entree.append(f"place restante {ctx['espace_obstacle']:.1f} ampl.")
     if entree:
         lignes.append("\n🎯 " + " · ".join(entree))
     zone = []
