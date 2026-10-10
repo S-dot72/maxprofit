@@ -18,6 +18,10 @@ from typing import Mapping, Sequence
 
 from maxprofit.core.types import Candle
 
+#: `espace_obstacle` quand aucun sommet (achat) ou creux (vente) confirmé ne
+#: barre la route : le champ est libre.
+CHAMP_LIBRE = 99.0
+
 #: Ce qui est mesuré, et comment le dire à un humain.
 LIBELLES: dict[str, str] = {
     "heure_utc": "heure (UTC)",
@@ -55,6 +59,17 @@ LIBELLES: dict[str, str] = {
                        "trade",
     "rythme_bougies": "taille des 3 dernières bougies / des 3 précédentes",
     "alternances_10": "changements de couleur sur les 10 dernières bougies",
+    # EXP-020, demandée le 10/10 (CALL CADJPY pris à 117,239 sur un
+    # support à 117,019, près des sommets précédents) : la QUALITÉ DU PRIX
+    # D'ENTRÉE, au-delà de la seule distance à la zone.
+    "taille_bougie": "taille de la bougie d'entrée / médiane des 15 "
+                     "précédentes",
+    "espace_obstacle": "place jusqu'au prochain sommet (achat) ou creux "
+                       "(vente) confirmé du ZigZag",
+    "part_parcourue": "part du chemin zone → prochain sommet/creux déjà "
+                      "parcourue à l'entrée",
+    "depuis_contact": "bougies écoulées depuis le dernier contact avec la "
+                      "zone",
     "touches": "touches de la zone",
     "entrees_deja_offertes": "entrées déjà offertes par la zone",
 }
@@ -153,6 +168,14 @@ def contexte(bougies: Sequence[Candle], call: bool,
     dix = [(c.close > c.open) - (c.close < c.open) for c in bougies[-10:]]
     ctx["alternances_10"] = float(sum(
         1 for a, b in zip(dix, dix[1:]) if a and b and a != b))
+    precedentes = sorted(c.high - c.low for c in bougies[-16:-1])
+    if precedentes:
+        mediane = precedentes[len(precedentes) // 2]
+        ctx["taille_bougie"] = ((der.high - der.low) / mediane
+                                if mediane > 0 else 1.0)
+    obstacle = _prochain_pivot(bougies, call, der.close)
+    ctx["espace_obstacle"] = (abs(obstacle - der.close) / amplitude
+                              if obstacle is not None else CHAMP_LIBRE)
     quinze = bougies[-15:]
     ctx["favorables_15"] = sum(
         1 for c in quinze if (c.close - c.open) * sens > 0) / len(quinze)
@@ -168,7 +191,40 @@ def contexte(bougies: Sequence[Candle], call: bool,
             loin = (max(c.high for c in avant) - niveau if call
                     else niveau - min(c.low for c in avant))
             ctx["rebond_15"] = max(0.0, loin) / amplitude
+        if obstacle is not None and (obstacle - niveau) * sens > 0:
+            ctx["part_parcourue"] = ((der.close - niveau) * sens
+                                     / ((obstacle - niveau) * sens))
+        # Le dernier contact : une bougie venue à moins d'un quart
+        # d'amplitude de la zone (par le bas pour un support, par le haut
+        # pour une résistance). 60 si aucune dans l'heure.
+        contact = 60
+        for k, c in enumerate(reversed(bougies[-61:])):
+            if (call and c.low <= niveau + 0.25 * amplitude) or \
+                    (not call and c.high >= niveau - 0.25 * amplitude):
+                contact = k
+                break
+        ctx["depuis_contact"] = float(contact)
     for nom in ("touches", "entrees_deja_offertes"):
         if nom in f:
             ctx[nom] = float(f[nom])
     return {k: round(v, 4) for k, v in ctx.items()}
+
+
+def _prochain_pivot(bougies: Sequence[Candle], call: bool,
+                    prix: float) -> float | None:
+    """Le sommet (achat) ou le creux (vente) CONFIRMÉ du ZigZag le plus
+    proche, au-delà du prix d'entrée : l'obstacle que le trade doit
+    franchir. `None` si aucun ne barre la route. Causal : un pivot n'existe
+    qu'une fois confirmé par les bougies vues."""
+    from maxprofit.strategies.zones_zigzag import pivots
+    try:
+        liste = pivots(list(bougies))
+    except Exception:                             # noqa: BLE001
+        return None
+    if call:
+        devant = [p.price for p in liste
+                  if p.kind.name == "HAUT" and p.price > prix]
+        return min(devant) if devant else None
+    devant = [p.price for p in liste
+              if p.kind.name != "HAUT" and p.price < prix]
+    return max(devant) if devant else None

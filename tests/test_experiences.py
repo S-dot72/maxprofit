@@ -210,3 +210,63 @@ def test_le_diagnostic_dit_quand_le_rejeu_ne_voit_pas_le_recent():
     assert "il ne voit pas les données récentes" in sortie
     assert "GBPUSD" in sortie and "EURUSD" not in sortie.split("6 h")[-1]
     assert not re.search(r"<(?!/?b>)", sortie)
+
+
+def _rebond_sous_un_sommet():
+    """Plat, montée jusqu'à 1,1015 (sommet), redescente sur le support
+    1,0995, puis une grande bougie verte d'entrée à 1,1004."""
+    bougies, prix, i = [], 1.1000, 0
+    for _ in range(20):
+        bougies.append(_b(i, prix, prix + 0.00005)); i += 1
+    for _ in range(15):
+        bougies.append(_b(i, prix, prix + 0.0001)); prix += 0.0001; i += 1
+    for _ in range(20):
+        bougies.append(_b(i, prix, prix - 0.0001)); prix -= 0.0001; i += 1
+    bougies.append(_b(i, prix, prix + 0.0001, bas=1.0995)); i += 1
+    bougies.append(_b(i, prix + 0.0001, 1.1004)); i += 1
+    return bougies
+
+
+def test_la_qualite_du_prix_d_entree_se_mesure():
+    from maxprofit.apprentissage.contexte import CHAMP_LIBRE
+    bougies = _rebond_sous_un_sommet()
+    ctx = contexte(bougies, True, {"niveau": 1.0995})
+    assert ctx["taille_bougie"] > 3, "grande bougie d'entrée"
+    assert 0 < ctx["espace_obstacle"] < CHAMP_LIBRE, "un sommet barre la route"
+    assert 0.2 < ctx["part_parcourue"] < 0.8
+    assert ctx["depuis_contact"] <= 1
+    # Au sommet d'une montée, aucun sommet confirmé ne barre la route.
+    assert contexte(bougies[:35], True)["espace_obstacle"] == CHAMP_LIBRE
+
+
+def test_le_temps_du_mouvement_apres_l_entree():
+    from maxprofit.apprentissage.historique import _excursions
+    serie = [_b(i, 1.1000, 1.1001, haut=1.1001, bas=1.1000)
+             for i in range(60)]
+    # Après l'entrée (bougie 59, clôture 1,1001) : monte 4 minutes, puis
+    # redescend sous l'entrée.
+    for k in range(1, 16):
+        haut = 1.1001 + 0.0001 * min(k, 4)
+        serie.append(_b(59 + k, 1.1001, 1.1001, haut=haut,
+                        bas=1.0999 if k > 8 else 1.1001))
+    sortie = _excursions(serie, 59, True)
+    assert sortie["t_mfe"] == 4.0
+    assert sortie["mfe_15"] > sortie["mae_15"] > 0
+    assert _excursions(serie[:70], 59, True) == {}, "suivi incomplet"
+
+
+def test_le_filtre_combine_et_le_mouvement_sont_rapportes():
+    exemples = _reference()
+    for i, e in enumerate(exemples):
+        e.contexte.update({"e_taille_bougie": 1.0 + (i % 7) * 0.3,
+                           "e_part_parcourue": (i % 3) * 0.3 + 0.01 * (i % 5),
+                           "e_espace_obstacle": 1.0 + (i % 11) * 0.5,
+                           "mfe_15": 2.0, "mae_15": 1.0,
+                           "t_mfe": float(1 + i % 15)})
+    r = experiences(exemples, lambda e: True, fenetre=3)
+    assert set(r["combine"]["cles"]) == {"taille_bougie", "part_parcourue",
+                                         "espace_obstacle"}
+    assert r["mouvement"]["tous"]["n"] == 300
+    sortie = texte(r)
+    assert "EXP-020 E" in sortie and "Temps du mouvement" in sortie
+    assert not re.search(r"<(?!/?b>)", sortie)

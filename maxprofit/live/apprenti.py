@@ -191,6 +191,7 @@ class Apprenti:
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
             strategie.p.expiry_sec)
         nouveau.laboratoire["paires_jugees_sur"] = mode
+        nouveau.laboratoire["version_experiences"] = VERSION_EXPERIENCES
         from maxprofit.live.experiences import experiences
         nouveau.laboratoire["experiences"] = experiences(
             exemples,
@@ -206,13 +207,16 @@ class Apprenti:
         course._prevenir(_annonce(ancien, nouveau))
 
 
+#: Version du contenu des expériences. La changer force un rejeu au
+#: démarrage suivant, au lieu d'attendre le rejeu quotidien.
+VERSION_EXPERIENCES = 3
+
+
 def _avec_zone_confirmee(laboratoire) -> bool:
     """Faux pour un laboratoire calculé avant que les paires soient jugées
     sur ce que la course joue (confirmation M1 comprise) : il est alors
     refait au démarrage, pas dans vingt-quatre heures."""
-    persistance = (laboratoire.get("experiences") or {}).get("persistance")
-    return "paires_jugees_sur" in laboratoire and "donnees" in (
-        persistance or {})
+    return laboratoire.get("version_experiences") == VERSION_EXPERIENCES
 
 
 def _echeances_courtes(exemples, seuil_contre_heure) -> dict:

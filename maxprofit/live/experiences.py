@@ -72,7 +72,21 @@ VARIABLES: tuple[tuple[str, str], ...] = (
     ("rythme_bougies", "séquence — taille des 3 dernières bougies / des 3 "
                        "précédentes (plus de 1 = accélère)"),
     ("alternances_10", "séquence — changements de couleur sur 10 bougies"),
+    # EXP-020 : la qualité du prix d'entrée.
+    ("taille_bougie", "EXP-020 B — taille de la bougie d'entrée / médiane "
+                      "des 15 précédentes"),
+    ("part_parcourue", "EXP-020 C — part du chemin zone → prochain "
+                       "sommet/creux déjà parcourue"),
+    ("espace_obstacle", "EXP-020 D — place jusqu'au prochain sommet/creux "
+                        "confirmé (99 = champ libre)"),
+    ("depuis_contact", "EXP-020 — bougies depuis le dernier contact avec "
+                       "la zone"),
 )
+
+#: Le filtre combiné d'EXP-020 (variante E) : sans le pire tiers, désigné
+#: sur l'étalonnage, de chacune de ces variables.
+COMBINE_EXP020: tuple[str, ...] = ("taille_bougie", "part_parcourue",
+                                   "espace_obstacle")
 
 #: Les variables dont chaque tiers est aussi jugé à chaque échéance : la
 #: « matrice des expirations » (une échéance par contexte ?).
@@ -238,6 +252,28 @@ def experiences(exemples: Sequence[Exemple],
             and _monotone(taux_r) and _sens(taux_a) == _sens(taux_r),
             "verdict": _juger(compte_sans, ref)})
 
+    # EXP-020 E : les trois refus réunis, chacun avec SON pire tiers figé à
+    # l'étalonnage.
+    refus = []
+    for v in sortie["variables"]:
+        if v["cle"] in COMBINE_EXP020 and v.get("coupes"):
+            c1, c2 = v["coupes"]
+            refus.append((v["cle"], v["pire"], c1, c2))
+    if refus:
+        def refuse(e):
+            for cle, pire, c1, c2 in refus:
+                if cle in e.contexte:
+                    x = e.contexte[cle]
+                    i = 0 if x < c1 else (1 if x < c2 else 2)
+                    if i == pire:
+                        return True
+            return False
+        garde = [e for e in base if not refuse(e)]
+        c = _compte(garde, coupure)
+        sortie["combine"] = {"cles": [r[0] for r in refus], "compte": c,
+                             "verdict": _juger(c, ref)}
+    sortie["mouvement"] = _mouvement(base)
+
     for seuil in SEUILS_ELAN:
         garde = [e for e in base if e.contexte.get("elan_30m", 0.0) >= seuil]
         c = _compte(garde, coupure)
@@ -256,6 +292,33 @@ def experiences(exemples: Sequence[Exemple],
         if sous:
             sortie["echeances"][str(sec)] = _compte(
                 sous, coupure, lambda e, sec=sec: e.issues[sec])
+    return sortie
+
+
+def _mouvement(base: Sequence[Exemple]) -> dict:
+    """Le temps du mouvement après l'entrée (MFE/MAE, minute du meilleur
+    moment), gagnants et perdants à part. Décrit, ne filtre pas."""
+    def mediane(valeurs):
+        v = sorted(valeurs)
+        return round(v[len(v) // 2], 2) if v else None
+
+    sortie = {}
+    for nom, liste in (("tous", base),
+                       ("gagnants", [e for e in base if e.gagne]),
+                       ("perdants", [e for e in base if not e.gagne])):
+        suivis = [e for e in liste if "mfe_15" in e.contexte]
+        if not suivis:
+            continue
+        t = [e.contexte["t_mfe"] for e in suivis]
+        sortie[nom] = {
+            "n": len(suivis),
+            "mfe": mediane(e.contexte["mfe_15"] for e in suivis),
+            "mae": mediane(e.contexte["mae_15"] for e in suivis),
+            "t_mfe": mediane(t),
+            # Quand arrive le meilleur moment : 1-3, 4-6, 7-10, 11-15 min.
+            "quand": [sum(1 for x in t if a <= x <= b)
+                      for a, b in ((1, 3), (4, 6), (7, 10), (11, 15))],
+        }
     return sortie
 
 
@@ -439,6 +502,24 @@ def texte(resultat: Mapping | None) -> str:
         lignes.append(f"  {v['verdict']}")
         for t, par_sec in zip(v["tiers"], v.get("par_echeance") or ()):
             lignes.append(f"  ⏱ {t['libelle']} : {_cellules(par_sec)}")
+    if resultat.get("combine"):
+        c = resultat["combine"]
+        noms = ", ".join(dict(VARIABLES).get(k, k).split(" — ")[0]
+                         for k in c["cles"])
+        lignes += ["", f"<b>EXP-020 E — filtre combiné</b> (sans le pire "
+                       f"tiers de chacune : {noms})",
+                   f"  {_ligne(c['compte'], jours)}", f"  {c['verdict']}"]
+    if resultat.get("mouvement"):
+        lignes += ["", "<b>Temps du mouvement après l'entrée</b> (15 min "
+                       "suivies, en amplitudes M1 ; médianes)"]
+        for nom, m in resultat["mouvement"].items():
+            q = m["quand"]
+            total = max(1, sum(q))
+            lignes.append(
+                f"  {nom} ({m['n']}) : meilleur point +{m['mfe']} à la "
+                f"{m['t_mfe']:.0f}e minute, pire −{m['mae']} ; meilleur "
+                f"moment à 1-3 min {q[0] / total:.0%}, 4-6 {q[1] / total:.0%}"
+                f", 7-10 {q[2] / total:.0%}, 11-15 {q[3] / total:.0%}")
     if resultat.get("elan"):
         lignes += ["", "<b>Seuils d'élan sur 30 min</b> (on écarte les "
                        "entrées dont l'élan va plus loin contre le trade) :"]
