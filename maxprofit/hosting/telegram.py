@@ -179,6 +179,24 @@ class ClientTelegram:
             raise RuntimeError(f"Telegram a refusé sendPhoto : "
                                f"{donnees.get('description', donnees)}")
 
+    async def envoyer_document(self, chat_id: str, contenu: bytes, nom: str,
+                               legende: str = "") -> None:
+        """Envoie un fichier (la fiche CSV de /audit)."""
+        url = API.format(jeton=self._jeton, methode="sendDocument")
+        formulaire = aiohttp.FormData()
+        formulaire.add_field("chat_id", str(chat_id))
+        if legende:
+            formulaire.add_field("caption", legende[:1024])
+        formulaire.add_field("document", contenu, filename=nom,
+                             content_type="text/csv")
+        delai = aiohttp.ClientTimeout(total=120)
+        async with self._session.post(url, data=formulaire,
+                                      timeout=delai) as reponse:
+            donnees = await reponse.json()
+        if not donnees.get("ok"):
+            raise RuntimeError(f"Telegram a refusé sendDocument : "
+                               f"{donnees.get('description', donnees)}")
+
     async def effacer(self, chat_id: str, message_id: int) -> None:
         """Efface un message. Utilisé sur ceux qui portent un SSID.
 
@@ -254,6 +272,7 @@ COMMANDES = [
     ("echeances", "Taux de réussite à 5, 10 et 15 min comparés"),
     ("laboratoire", "Variantes de la stratégie jugées sur des jours jamais vus"),
     ("experiences", "La référence jouée face à une variable à la fois"),
+    ("audit", "Fiche de chaque signal rejoué, et d'où viennent les pertes"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -368,6 +387,8 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._echeances: Callable[[], Awaitable[str]] | None = None
         self._laboratoire: Callable[[], Awaitable[str]] | None = None
         self._experiences: Callable[[], Awaitable[str]] | None = None
+        self._audit: Callable[[], Awaitable[tuple[str, bytes | None]]] \
+            | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
         self._piloter: Callable[[str, str], Awaitable[str]] | None = None
@@ -565,6 +586,21 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(
                     chat, await self._classement(
                         texte[len("/classement"):].strip()), CLAVIER)
+        elif texte.startswith("/audit"):
+            if self._audit is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                resume, fichier = await self._audit()
+                await self.client.envoyer(chat, resume, CLAVIER)
+                if fichier:
+                    try:
+                        await self.client.envoyer_document(
+                            chat, fichier, "audit_signaux.csv",
+                            "Une ligne par signal rejoué")
+                    except Exception as erreur:          # noqa: BLE001
+                        log.error("Fiche d'audit non envoyée : %s", erreur)
+                        await self.client.envoyer(
+                            chat, f"Fiche non envoyée : {erreur}", CLAVIER)
         elif texte.startswith("/experiences") or \
                 texte.startswith("/expériences"):
             if self._experiences is None:

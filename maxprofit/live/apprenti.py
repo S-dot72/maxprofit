@@ -200,6 +200,18 @@ class Apprenti:
             fenetre or 3, strategie.p.expiry_sec)
         nouveau.laboratoire["experiences"]["persistance"] = {
             **persistance.resultat(), "fin": fin}
+        # L'audit : son résumé est gardé avec le laboratoire ; les signaux
+        # eux-mêmes restent en MÉMOIRE seulement (la fiche CSV de /audit) —
+        # les sauver avec l'état toutes les dix minutes pèserait des
+        # centaines de kilo-octets pour rien.
+        from maxprofit.live.audit import audit, version_des_regles
+        en_direct = ((lambda e: True) if seuil is None else
+                     (lambda e: e.contexte.get("mouvement_heure", 0.0)
+                      >= -seuil))
+        nouveau.laboratoire["audit"] = audit(exemples, en_direct,
+                                             fenetre or 1)
+        course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
+                                   version_des_regles(strategie))
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -209,7 +221,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 3
+VERSION_EXPERIENCES = 4
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

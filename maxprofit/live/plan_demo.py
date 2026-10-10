@@ -3378,6 +3378,22 @@ def laboratoire(course) -> str:
     return texte(a.laboratoire if a else None)
 
 
+def audit(course) -> tuple[str, bytes | None]:
+    """`/audit` : le résumé, et la fiche CSV de chaque signal rejoué si le
+    rejeu a tourné depuis le démarrage."""
+    from maxprofit.live.audit import csv_du_rejeu, texte
+    if course is None:
+        return "Course indisponible.", None
+    a = course.etat.apprentissage
+    fichier = None
+    memoire = getattr(course, "rejeu_en_memoire", None)
+    if memoire:
+        exemples, en_direct, fenetre, version = memoire
+        fichier = csv_du_rejeu(exemples, en_direct, version, fenetre)
+    return texte((a.laboratoire or {}).get("audit") if a else None,
+                 fichier is not None), fichier
+
+
 def experiences(course) -> str:
     """`/experiences` : la référence jouée face à une variable à la fois."""
     from maxprofit.live.experiences import texte
