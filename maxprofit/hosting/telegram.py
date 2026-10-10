@@ -235,6 +235,7 @@ COMMANDES = [
     ("capital", "Capital de départ, ex. /capital 250 (admin)"),
     ("risque", "N gagnants sur M trades, ex. /risque 1/7 (admin)"),
     ("sessions", "Sessions par jour, ex. /sessions 6 (admin)"),
+    ("pas", "Pas de martingale par session, ex. /pas 3 (admin)"),
     ("demarrer", "Lancer la course sur le réglage (admin)"),
     ("arreter", "Arrêter la course, la collecte continue (admin)"),
     ("paires", "Paires actuellement suivies"),
@@ -325,7 +326,7 @@ INSTRUCTIONS_JETON = (
 
 #: Les commandes de réglage, servies par `hosting.pilotage`.
 COMMANDES_DE_PILOTAGE = ("configuration", "configurer", "mode", "compte",
-                         "capital", "risque", "sessions", "demarrer",
+                         "capital", "risque", "sessions", "pas", "demarrer",
                          "arreter")
 
 

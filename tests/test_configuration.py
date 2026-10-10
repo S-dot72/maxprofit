@@ -413,3 +413,50 @@ def test_la_journee_utc_survit_au_redemarrage(tmp_path):
     sauver_etat(conn, "x", c.etat, 123)
     etat, _ = charger_etat(conn, "x", c.etat.plan)
     assert etat.journee_utc == 123
+
+
+def test_pas_regle_le_nombre_de_pas_de_martingale():
+    """Le nombre de pas existait dans la configuration (2 par défaut) sans
+    qu'aucune commande ne permette de le changer."""
+    from maxprofit.live.configuration import Configuration
+    base = Configuration(capital=200, gagnants=1, trades=6)
+    for n, nb_mises in ((1, 1), (2, 2), (3, 3)):
+        c = base.modifiee("pas", str(n))
+        assert c.pas_max == n
+        assert len(c.mises()) == nb_mises, "une mise par pas"
+
+
+def test_plus_de_pas_coute_plus_cher_par_session_perdue():
+    from maxprofit.live.configuration import Configuration
+    base = Configuration(capital=200, gagnants=1, trades=6)
+    pertes = [base.modifiee("pas", str(n)).perte_session_pct()
+              for n in (1, 2, 3)]
+    assert pertes == sorted(pertes) and pertes[0] < pertes[-1]
+
+
+def test_pas_refuse_une_valeur_illisible_ou_hors_bornes():
+    import pytest
+
+    from maxprofit.core.errors import BotError
+    from maxprofit.live.configuration import Configuration
+    for faux in ("zero", "0", "11", "-2"):
+        with pytest.raises(BotError):
+            Configuration().modifiee("pas", faux)
+
+
+def test_le_nombre_de_pas_fait_partie_de_la_SIGNATURE():
+    """Changer le nombre de pas doit être vu comme un nouveau réglage, sinon
+    `/demarrer` répondrait « déjà lancé avec ce réglage » et la course
+    garderait l'ancien."""
+    from maxprofit.hosting.pilotage import signature
+    from maxprofit.live.configuration import Configuration
+    a = Configuration(pas_max=2)
+    assert signature(a) != signature(a.modifiee("pas", "3"))
+
+
+def test_pas_est_une_commande_de_pilotage():
+    from maxprofit.hosting.pilotage import REGLAGES
+    from maxprofit.hosting.telegram import COMMANDES, COMMANDES_DE_PILOTAGE
+    assert "pas" in REGLAGES
+    assert "pas" in COMMANDES_DE_PILOTAGE
+    assert "pas" in {nom for nom, _ in COMMANDES}, "visible dans le menu"

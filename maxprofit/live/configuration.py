@@ -248,6 +248,24 @@ class Configuration:
             if not 1 <= n <= 30:
                 raise BotError("Entre 1 et 30 sessions par jour.")
             return replace(self, sessions_par_jour=n)
+        if reglage == "pas":
+            # Le nombre de pas de la martingale : combien de mises d'affilée
+            # une session engage avant d'être déclarée perdue. 1 = pas de
+            # martingale, une seule mise par session.
+            #
+            # Une valeur lisible mais trop haute pour le capital est ACCEPTÉE
+            # ici, comme partout dans ce fichier : le plan refuse un nombre de
+            # pas qui atteindrait le pas où l'on engage tout le capital, et le
+            # résumé le dit. `/demarrer` refuse ensuite de lancer.
+            try:
+                n = int(brut.replace("pas", "").strip())
+            except ValueError:
+                raise BotError("Indiquez un nombre de pas de martingale, par "
+                               "exemple /pas 3.") from None
+            if not 1 <= n <= 10:
+                raise BotError("Entre 1 et 10 pas. 1 = une seule mise par "
+                               "session, sans martingale.")
+            return replace(self, pas_max=n)
         raise BotError(f"réglage inconnu : {reglage}")
 
     def erreur(self) -> str | None:
@@ -281,7 +299,7 @@ class Configuration:
                 f"<b>{self.gagnants}/{self.trades}</b> · "
                 f"{self.sessions_par_jour} sessions par jour"]
             aide = ("Modifier : /capital 300 · /risque 1/7 · /sessions 6 · "
-                    "/compte demo ou reel · /mode trading")
+                    "/pas 3 · /compte demo ou reel · /mode trading")
         lignes = [self._entete(), *corps]
         if erreur is not None:
             lignes.append(f"⛔ <b>Ce réglage ne peut pas être lancé</b> : "

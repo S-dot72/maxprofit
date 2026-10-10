@@ -34,7 +34,7 @@ from maxprofit.live.configuration import Configuration
 
 log = logging.getLogger(__name__)
 
-REGLAGES = ("mode", "compte", "capital", "risque", "sessions")
+REGLAGES = ("mode", "compte", "capital", "risque", "sessions", "pas")
 COMMANDES = ("configuration", "configurer", *REGLAGES, "demarrer", "arreter")
 #: Commandes qui ne modifient rien : ouvertes à tout opérateur approuvé.
 LECTURE = ("configuration", "configurer")
@@ -45,7 +45,8 @@ GUIDE = (
     "2. /compte demo ou /compte reel\n"
     "3. /capital 250\n"
     "4. En plan : /risque N/M (N trades gagnants sur M trades, 1/7 par "
-    "défaut) puis /sessions 6 (sessions par jour)\n"
+    "défaut), /sessions 6 (sessions par jour) et /pas 3 (pas de "
+    "martingale par session)\n"
     "Chaque changement réaffiche la projection. Quand elle vous convient : "
     "/demarrer.\n\n")
 
@@ -197,6 +198,7 @@ _EXEMPLES = {
     "capital": "/capital 250",
     "risque": "/risque 1/7 (N trades gagnants sur M trades)",
     "sessions": "/sessions 6",
+    "pas": "/pas 3 (pas de martingale par session ; 1 = sans martingale)",
 }
 
 
