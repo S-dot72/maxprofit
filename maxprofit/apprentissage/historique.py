@@ -82,6 +82,9 @@ def exemples_historiques(
             ctx = (contexte(fenetre, call, signal.features)
                    if avec_contexte else {})
             if avec_contexte:
+                ctx["prix_signal"] = bougie.close
+                ctx["sens_call"] = float(call)
+            if avec_contexte:
                 ctx.update(_au_dela_de_la_fenetre(
                     closes, bougie.ts_sec, call, signal.features))
                 ctx.update(_confirmation_m1(completes, i, call, closes,
@@ -202,7 +205,8 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
                         (prix > entree.close) == call)
             a_l_entree = contexte(completes[max(0, j + 1 - FENETRE):j + 1],
                                   call, features)
-            sortie.update(_excursions(completes, j, call))
+            sortie.update(_excursions(completes, j, call,
+                                      (features or {}).get("niveau")))
             for cle in CONTEXTE_A_L_ENTREE:
                 if cle in a_l_entree:
                     sortie[f"e_{cle}"] = a_l_entree[cle]
@@ -212,13 +216,17 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
     return sortie
 
 
-def _excursions(completes, j: int, call: bool) -> dict[str, float]:
+def _excursions(completes, j: int, call: bool,
+                niveau: float | None = None) -> dict[str, float]:
     """Le TEMPS DU MOUVEMENT après une entrée à la clôture de `completes[j]`.
 
     `mfe_15` : le plus loin que le prix soit allé DANS le sens du trade
     pendant les `SUIVI_MIN` minutes suivantes ; `mae_15` : le plus loin
     CONTRE ; `t_mfe` : au bout de combien de minutes le meilleur moment est
     arrivé. En amplitudes M1 moyennes (les 60 bougies avant l'entrée).
+    `zone_cassee` : une clôture est passée de l'autre côté de la zone,
+    contre le trade, pendant ce suivi. `prix_entree`, `prix_15` : le prix
+    d'entrée et celui du règlement à 15 minutes, pour la fiche du signal.
 
     ⚠ Ce sont des ISSUES, lues après l'entrée : elles décrivent ce qui
     s'est passé, elles ne doivent jamais servir à filtrer une entrée.
@@ -228,6 +236,7 @@ def _excursions(completes, j: int, call: bool) -> dict[str, float]:
     amplitude = sum(c.high - c.low for c in recul) / len(recul) or 1e-12
     mfe = mae = 0.0
     t_mfe = 0
+    cassee = False
     for k in range(1, SUIVI_MIN + 1):
         if j + k >= len(completes) or \
                 completes[j + k].ts_sec != entree.ts_sec + 60 * k:
@@ -238,5 +247,13 @@ def _excursions(completes, j: int, call: bool) -> dict[str, float]:
         if pour > mfe:
             mfe, t_mfe = pour, k
         mae = max(mae, contre)
-    return {"mfe_15": round(mfe / amplitude, 3),
-            "mae_15": round(mae / amplitude, 3), "t_mfe": float(t_mfe)}
+        if niveau is not None and ((call and c.close < niveau)
+                                   or (not call and c.close > niveau)):
+            cassee = True
+    sortie = {"mfe_15": round(mfe / amplitude, 3),
+              "mae_15": round(mae / amplitude, 3), "t_mfe": float(t_mfe),
+              "prix_entree": entree.close,
+              "prix_15": completes[j + SUIVI_MIN].close}
+    if niveau is not None:
+        sortie["zone_cassee"] = float(cassee)
+    return sortie

@@ -461,6 +461,9 @@ def texte(resultat: Mapping | None) -> str:
     lignes = [
         f"🔬 <b>Expériences — référence {resultat['nom']}</b> (ce que la "
         f"course joue, décrit à l'entrée)",
+        f"Population : <b>entrées confirmées {resultat['nom']}</b> (ZoneH1 "
+        f"+ confirmation M1, règle de l'heure comprise). Ce n'est pas la "
+        f"population de /laboratoire (ZoneH1 sans confirmation).",
         f"Étalonnage jusqu'au {coupe}, <b>jugement depuis le {coupe}</b>. "
         f"Seuil de rentabilité {SEUIL:.1%}, espérance = p × 0,92 − (1 − p).",
     ]

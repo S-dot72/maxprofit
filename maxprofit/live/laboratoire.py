@@ -419,6 +419,10 @@ def texte(resultat: Mapping | None) -> str:
     coupe = time.strftime("%d/%m", time.gmtime(resultat["coupure"]))
     lignes = [
         "🧪 <b>Laboratoire — variantes de ZoneH1</b>",
+        "Population : <b>ZoneH1 en direct, SANS confirmation M1</b> (règle "
+        "de l'heure comprise). Ce n'est pas la référence de /experiences, "
+        "qui juge ce que la course joue (ZoneH1 + confirmation) : les "
+        "effectifs diffèrent, ne pas les comparer ligne à ligne.",
         f"Étalonnage : signaux jusqu'au {coupe} · <b>jugement : signaux "
         f"depuis le {coupe}</b>, jamais vus par les variantes.",
         f"Seuil de rentabilité : {SEUIL:.1%}.",
@@ -430,14 +434,20 @@ def texte(resultat: Mapping | None) -> str:
         bas = wilson(m.gagnes_validation, m.n_validation, 1.96)[0] \
             if m.n_validation else 0.0
         par_jour = (m.n_etalonnage + m.n_validation) / m.jours
+        n_tout = m.n_etalonnage + m.n_validation
+        p_tout = ((m.gagnes_etalonnage + m.gagnes_validation) / n_tout
+                  if n_tout else 0.0)
+        esperance = p_tout * 0.92 - (1 - p_tout)
         lignes += [
             "",
             f"<b>{m.nom}</b> — {m.description}",
             f"  récents : <b>{_pct(tv)}</b> sur {m.n_validation} "
             f"(au moins {bas:.0%} à 95 %) · anciens : {_pct(tc)} sur "
             f"{m.n_etalonnage}",
-            f"  {par_jour:.1f} signaux/jour · plan 2 pas : "
-            f"{m.gain_plan:+.2f} $, creux −{m.creux_plan:.2f} $",
+            f"  {par_jour:.1f} signaux/jour · espérance à mise fixe "
+            f"{esperance:+.3f}/ordre, {esperance * par_jour:+.2f} mise/jour",
+            f"  (secondaire) plan 2 pas : {m.gain_plan:+.2f} $, creux "
+            f"−{m.creux_plan:.2f} $",
         ]
         if m.verdict:
             lignes.append(f"  {m.verdict}")
