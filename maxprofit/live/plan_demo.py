@@ -1624,6 +1624,18 @@ class CoursePlanDemo:
             self.etat.solde_ouverture_session = self.etat.solde
             self._pas_de_la_session = []
         session = self.etat.session
+        if session.pas_joues >= session.echelle.pas_max:
+            # Garde-fou : une session qui a déjà joué — et perdu — tous les
+            # pas de son échelle ne demande plus de mise. La clore plutôt
+            # que lever : une exception ici faisait tomber la course à
+            # chaque relance, sans jamais résoudre la session.
+            log.error("Session au pas %d sur %d : close comme perdue au lieu "
+                      "de jouer un pas inexistant.", session.pas_joues,
+                      session.echelle.pas_max)
+            session.etat = EtatSession.PERDUE
+            self._cloturer_session()
+            self._sauvegarder()
+            return
         mise = session.mise_courante()
 
         # Une paire qu'on n'a pas pu souscrire au démarrage était peut-être
@@ -2149,7 +2161,8 @@ class CoursePlanDemo:
         un pas déjà joué ou d'abandonner la session.
         """
         session = self.etat.session
-        if (session is None
+        if (session is None or session.etat.terminee
+                or session.pas_joues >= session.echelle.pas_max
                 or abs(retrouve.mise - session.mise_courante()) >= 0.005):
             return
         self.etat.dernier_trade = (retrouve.pair, instant_ms // 1000)
@@ -2427,9 +2440,24 @@ class CoursePlanDemo:
         que l'utilisateur vient de choisir de ne plus faire.
         """
         session = self.etat.session
-        if session is None or session.etat.terminee \
-                or session.pas_joues < self.pas_max:
+        if session is None or session.etat.terminee:
             return False
+        if session.pas_joues < self.pas_max:
+            # ⚠ L'ÉCHELLE RESTAURÉE SUIT LE RÉGLAGE DE LA COURSE.
+            #
+            # L'état sauvé reconstruit la session avec `PAS_MAX` (variable
+            # d'environnement), mais la course applique le réglage choisi
+            # sur Telegram. Le 11/10, les deux différaient : une session à
+            # 1 pas perdu, reconstruite sur une échelle de 1 pas alors que
+            # la course en jouait 2, demandait la mise d'un pas qui
+            # n'existait pas — IndexError, et la course retombait à chaque
+            # relance.
+            if session.echelle.pas_max == self.pas_max:
+                return False
+            session.echelle = replace(session.echelle, pas_max=self.pas_max)
+            log.warning("Session restaurée réalignée sur %d pas (réglage de "
+                        "la course).", self.pas_max)
+            return True
         log.warning("Session restaurée à %d pas perdus, au-delà des %d du "
                     "réglage : close comme perdue.", session.pas_joues,
                     self.pas_max)
@@ -3739,6 +3767,10 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
         sauver_etat(ecriture, campagne, course.etat, jour_utc())
 
     course._sauver = sauver
+    # L'échelle de la session restaurée d'abord, sur le réglage de la
+    # course : un pas rattrapé chez le broker doit tomber sur la bonne.
+    if course.clore_une_session_trop_longue():
+        sauver()
     chrono("rattrapage des ordres en vol")
     # Seulement les ordres ÉCHUS : un ordre qui vit encore est attendu par
     # `tour()`, avec son compte à rebours dans /etat, pas ici.
