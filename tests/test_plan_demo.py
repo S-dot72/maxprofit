@@ -2683,3 +2683,41 @@ def test_PAS_MAX_reglable(monkeypatch):
     for valeur, attendu in (("1", 1), ("3", 3), ("9", 2), ("x", 2)):
         monkeypatch.setenv("PAS_MAX", valeur)
         assert pas_max_de_la_martingale() == attendu
+
+
+def test_une_session_restauree_suit_le_reglage_de_la_course(course,
+                                                           monkeypatch):
+    """Le 11/10 : session à 1 pas perdu, reconstruite sur PAS_MAX=1 alors
+    que la course jouait 2 pas — IndexError à chaque relance."""
+    from maxprofit.plan import Echelle, Session
+
+    monkeypatch.setenv("PAS_MAX", "1")
+    c = course([])
+    c.pas_max = 2
+    session = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46,
+                                      pas_max=1))
+    session.pas_joues = 1
+    session.engagees = [session.echelle.mises()[0]]
+    c.etat.session = session
+    c.etat.solde_ouverture_session = c.etat.solde
+    assert c.clore_une_session_trop_longue() is True
+    assert c.etat.session is session and session.echelle.pas_max == 2
+    assert session.mise_courante() > session.engagees[0]
+
+
+def test_une_session_au_bout_de_son_echelle_est_close_pas_plantee(course):
+    from maxprofit.core.types import Direction, Signal
+    from maxprofit.plan import Echelle, EtatSession, Session
+
+    c = course(["win"])
+    session = Session(echelle=Echelle(payout_pct=92, gain_vise=1.46,
+                                      pas_max=1))
+    session.pas_joues = 1
+    session.engagees = [session.echelle.mises()[0]]
+    c.etat.session = session
+    c.etat.solde_ouverture_session = c.etat.solde
+    c.jouer_un_pas(Signal(pair="EURUSD_otc", direction=Direction.CALL,
+                          decided_at_ms=1_789_000_000_000, expiry_sec=900))
+    assert session.etat is EtatSession.PERDUE
+    assert c.etat.session is None
+    assert c.courtier.mises_recues == [], "aucun ordre pour un pas inexistant"
