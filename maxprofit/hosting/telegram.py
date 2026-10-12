@@ -273,6 +273,7 @@ COMMANDES = [
     ("laboratoire", "Variantes de la stratégie jugées sur des jours jamais vus"),
     ("experiences", "La référence jouée face à une variable à la fois"),
     ("audit", "Fiche de chaque signal rejoué, et d'où viennent les pertes"),
+    ("stabilite", "La référence semaine par semaine, et le premier pas"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -389,6 +390,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._experiences: Callable[[], Awaitable[str]] | None = None
         self._audit: Callable[[], Awaitable[tuple[str, bytes | None]]] \
             | None = None
+        self._stabilite: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
         self._piloter: Callable[[str, str], Awaitable[str]] | None = None
@@ -586,6 +588,13 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(
                     chat, await self._classement(
                         texte[len("/classement"):].strip()), CLAVIER)
+        elif texte.startswith("/stabilite") or \
+                texte.startswith("/stabilité"):
+            if self._stabilite is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._stabilite(),
+                                          CLAVIER)
         elif texte.startswith("/audit"):
             if self._audit is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
