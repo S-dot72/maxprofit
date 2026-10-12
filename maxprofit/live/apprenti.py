@@ -212,16 +212,25 @@ class Apprenti:
                                              fenetre or 1)
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
+        # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
+        # Une alerte de dégradation PRÉVIENT ; elle ne change aucune règle.
+        from maxprofit.live.stabilite import stabilite, texte_alerte
+        nouveau.laboratoire["stabilite"] = stabilite(
+            exemples, en_direct, fenetre or 1,
+            int(getattr(course, "pas_max", 2) or 2), strategie.p.expiry_sec)
+        alerte = texte_alerte(nouveau.laboratoire["stabilite"])
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
                  time.monotonic() - debut_calcul, len(nouveau.regles))
         course._prevenir(_annonce(ancien, nouveau))
+        if alerte:
+            course._prevenir(alerte)
 
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 4
+VERSION_EXPERIENCES = 5
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

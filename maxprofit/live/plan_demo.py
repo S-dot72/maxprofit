@@ -3422,6 +3422,16 @@ def audit(course) -> tuple[str, bytes | None]:
                  fichier is not None), fichier
 
 
+def stabilite(course) -> str:
+    """`/stabilite` : EXP-021 (stabilité dans le temps) et EXP-022 (le
+    premier pas)."""
+    from maxprofit.live.stabilite import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("stabilite") if a else None)
+
+
 def experiences(course) -> str:
     """`/experiences` : la référence jouée face à une variable à la fois."""
     from maxprofit.live.experiences import texte
