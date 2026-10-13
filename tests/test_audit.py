@@ -58,7 +58,12 @@ def test_la_fiche_csv_a_une_ligne_par_signal():
     assert len(rangs) == 13
     assert {"id", "version_regles", "gagne_entree_15m", "mfe_15",
             "cause_perte", "entree_distance_niveau"} <= set(entetes)
+    # Le schéma du protocole OTC : source, qualité, indicateurs à l'entrée.
+    assert {"source_donnees", "donnees_douteuses", "entree_rsi_14",
+            "entree_macd_ligne", "entree_macd_signal",
+            "entree_atr_14"} <= set(entetes)
     premier = dict(zip(entetes, rangs[0]))
+    assert premier["source_donnees"].startswith("Pocket Option")
     assert premier["version_regles"] == "zone_h1:abcd1234"
     assert premier["sens"] == "CALL" and premier["confirme_8"] == "1"
     non_confirme = dict(zip(entetes, rangs[-1]))

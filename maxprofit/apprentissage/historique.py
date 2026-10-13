@@ -15,6 +15,7 @@ import math
 from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.contexte import FENETRE, contexte
+from maxprofit.apprentissage.indicateurs import indicateurs_a_l_entree
 from maxprofit.apprentissage.lecons import ECHEANCES_COMPAREES, Exemple
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.types import Candle, Direction
@@ -28,12 +29,19 @@ def exemples_historiques(
         garde: Callable[[str, Sequence[Candle]], bool] = lambda p, f: True,
         respirer: Callable[[], None] | None = None,
         echeances: Sequence[int] = ECHEANCES_COMPAREES,
-        avec_contexte: bool = True) -> list[Exemple]:
+        avec_contexte: bool = True,
+        exclusions: dict[str, int] | None = None) -> list[Exemple]:
     """Chaque signal que la stratégie aurait émis, avec son contexte.
 
     `respirer`, appelée régulièrement, laisse la main aux autres fils du
     processus : le rejeu tourne à côté de la collecte et de la course.
+    `exclusions`, si fourni, reçoit le compte de ce qui a été écarté et
+    pourquoi (protocole OTC : « observations exclues, avec les motifs »).
     """
+    def exclure(motif: str) -> None:
+        if exclusions is not None:
+            exclusions[motif] = exclusions.get(motif, 0) + 1
+
     lookback = strategie.p.lookback
     # Une stratégie à long recul (zones H1) tolère les trous de collecte ;
     # ZoneH1, elle, exige sa fenêtre entière, comme en direct.
@@ -56,9 +64,11 @@ def exemples_historiques(
         for i, bougie in enumerate(completes):
             j = bisect.bisect_left(debuts, bougie.ts_sec - lookback * 60)
             if i + 1 - j < requis:
+                exclure("minutes sans fenêtre entière")
                 continue                  # la stratégie refuserait de trancher
             fenetre = completes[j:i + 1]
             if not garde(pair, fenetre):
+                exclure("minutes hors plage de calibration")
                 continue
             evaluees += 1
             if respirer is not None and evaluees % 200 == 0:
@@ -70,6 +80,9 @@ def exemples_historiques(
                 continue
             sortie_prix = closes.get(bougie.ts_sec + echeance_sec)
             if sortie_prix is None or sortie_prix == bougie.close:
+                exclure("signaux sans bougie à l'échéance"
+                        if sortie_prix is None else
+                        "signaux à égalité à l'échéance")
                 continue
             call = signal.direction is Direction.CALL
             # Le MÊME signal jugé à d'autres échéances : c'est ce qui rend
@@ -210,6 +223,11 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
             for cle in CONTEXTE_A_L_ENTREE:
                 if cle in a_l_entree:
                     sortie[f"e_{cle}"] = a_l_entree[cle]
+            # Protocole OTC, EXP-002 : RSI, MACD et ATR à l'entrée. Hors de
+            # `CARACTERISTIQUES` — décrits et mesurés, jamais appliqués.
+            for cle, valeur in indicateurs_a_l_entree(completes, j,
+                                                      call).items():
+                sortie[f"e_{cle}"] = valeur
             break
         if k == ATTENTE_CONFIRMATION_MAX:
             sortie["attente_confirmation"] = 0.0

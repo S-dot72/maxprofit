@@ -18,18 +18,22 @@ from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle
 from maxprofit.indicators import (
     atr,
+    besoin_macd,
     bollinger_percent_b,
     corps_pct,
     derniere_fractale,
     distance_ma_pct,
     fractales,
+    macd,
     meche_basse_pct,
     meche_haute_pct,
+    rsi,
     sma,
     stochastique,
     zigzag,
 )
 from maxprofit.indicators.base import PivotKind
+from maxprofit.indicators.oscillators import poids_expo
 
 T0_SEC = 1_704_067_200
 TF_SEC = 60
@@ -158,6 +162,58 @@ def test_atr_a_besoin_d_une_bougie_de_plus_que_sa_periode():
     serie = plates([1, 2, 3])
     assert atr(serie, periode=3) is None      # il faudrait 4 bougies
     assert atr(serie, periode=2) is not None
+
+
+def test_rsi_calcul_a_la_main():
+    # Clôtures 10, 12, 11, 14 : hausses 2 + 3 = 5, baisse 1.
+    # RSI(3) = 100 × 5 / (5 + 1)
+    assert rsi(plates([10, 12, 11, 14]), 3) == pytest.approx(100 * 5 / 6)
+
+
+def test_rsi_aux_bornes_et_indefini():
+    assert rsi(plates([1, 2, 3, 4]), 3) == pytest.approx(100.0)
+    assert rsi(plates([4, 3, 2, 1]), 3) == pytest.approx(0.0)
+    assert rsi(plates([5, 5, 5, 5]), 3) is None   # aucun mouvement
+    assert rsi(plates([1, 2, 3]), 3) is None      # il faut 4 bougies
+
+
+def test_poids_expo_normalises_et_decroissants():
+    poids = poids_expo(9)
+    assert len(poids) == 27
+    assert sum(poids) == pytest.approx(1.0)
+    assert all(a > b for a, b in zip(poids, poids[1:]))
+
+
+def test_macd_prix_constant_est_nul():
+    serie = plates([1.25] * besoin_macd())
+    m = macd(serie)
+    assert m.ligne == pytest.approx(0.0, abs=1e-12)
+    assert m.histogramme == pytest.approx(0.0, abs=1e-12)
+
+
+def test_macd_tendance_haussiere_ligne_positive():
+    """Sur une hausse régulière, la moyenne rapide est au-dessus de la
+    lente : ligne positive. Le signal la suit avec retard, et sur une pente
+    constante l'histogramme tend vers zéro."""
+    serie = plates([1.0 + 0.001 * i for i in range(besoin_macd() + 20)])
+    m = macd(serie)
+    assert m.ligne > 0
+    assert m.ligne == pytest.approx(m.signal + m.histogramme)
+
+
+def test_macd_retournement_histogramme_negatif():
+    """Une hausse puis une baisse franche : la ligne passe sous son
+    signal avant de changer de signe — l'histogramme le dit le premier."""
+    n = besoin_macd()
+    prix = [1.0 + 0.001 * i for i in range(n)]
+    prix += [prix[-1] - 0.002 * k for k in range(1, 6)]
+    assert macd(plates(prix)).histogramme < 0
+
+
+def test_macd_historique_insuffisant_et_periodes_invalides():
+    assert macd(plates([1.0] * (besoin_macd() - 1))) is None
+    with pytest.raises(BotError):
+        macd(plates([1.0] * 200), rapide=26, lente=12)
 
 
 # --------------------------------------------------------------------------- #

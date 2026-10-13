@@ -29,9 +29,10 @@ et lui opposer une variable à la fois.
    périodes, d'au moins `ECART_MIN_POINTS` sur la récente, avec au moins
    `N_MIN_VALIDATION` signaux récents. Comme au laboratoire.
 
-⚠ Huit variables, quatre seuils d'élan, sept échéances : plus de vingt
-comparaisons. Une sur vingt passe le seuil de 95 % par pur hasard. Un
-verdict positif désigne un candidat pour la démo, pas une découverte.
+⚠ Dix-neuf variables, quatre seuils d'élan, sept échéances : des dizaines
+de comparaisons. Une sur vingt passe le seuil de 95 % par pur hasard. Un
+verdict positif désigne un candidat pour la démo, pas une découverte — le
+journal de /protocole tient le compte de toutes les hypothèses examinées.
 
 Les grandeurs : le taux de réussite, et l'ESPÉRANCE par ordre en mises,
 p × 0,92 − (1 − p), qui dit ce qu'un ordre rapporte en moyenne. Une
@@ -81,6 +82,13 @@ VARIABLES: tuple[tuple[str, str], ...] = (
                         "confirmé (99 = champ libre)"),
     ("depuis_contact", "EXP-020 — bougies depuis le dernier contact avec "
                        "la zone"),
+    # Protocole OTC, EXP-002 : les indicateurs classiques à l'entrée.
+    # Décrits et jugés comme les autres ; aucune règle n'en découle.
+    ("rsi_sens", "EXP-002 — RSI(14) orienté (bas = le prix vient d'aller "
+                 "contre le trade)"),
+    ("macd_sens", "EXP-002 — histogramme MACD en ATR, orienté (+ = élan "
+                  "dans le sens du trade)"),
+    ("atr_pct", "EXP-002 — ATR(14) en % du prix"),
 )
 
 #: Le filtre combiné d'EXP-020 (variante E) : sans le pire tiers, désigné

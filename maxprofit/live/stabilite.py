@@ -87,8 +87,19 @@ def intervalle_par_blocs(liste: Sequence[Exemple], tirages: int = TIRAGES,
     (paire, jour) plutôt que des signaux isolés."""
     blocs: dict[tuple[str, int], list[int]] = {}
     for e in liste:
-        blocs.setdefault((e.pair, e.ts_sec // 86400), []).append(int(e.gagne))
-    valeurs = list(blocs.values())
+        b = blocs.setdefault((e.pair, e.ts_sec // 86400), [0, 0])
+        b[0] += 1
+        b[1] += int(e.gagne)
+    return intervalle_des_blocs(list(blocs.values()), tirages, graine)
+
+
+def intervalle_des_blocs(valeurs: Sequence[Sequence[int]],
+                         tirages: int = TIRAGES, graine: int = 7
+                         ) -> tuple[float, float] | None:
+    """Le même intervalle, à partir des comptes [n, gagnés] de chaque bloc
+    — ce que gardent les mesures sur toutes les bougies, trop nombreuses
+    pour être conservées une à une."""
+    valeurs = [v for v in valeurs if v[0]]
     if len(valeurs) < 5:
         return None
     hasard = random.Random(graine)
@@ -97,8 +108,8 @@ def intervalle_par_blocs(liste: Sequence[Exemple], tirages: int = TIRAGES,
         n = g = 0
         for _ in range(len(valeurs)):
             b = valeurs[hasard.randrange(len(valeurs))]
-            n += len(b)
-            g += sum(b)
+            n += b[0]
+            g += b[1]
         taux.append(g / n)
     taux.sort()
     return taux[int(0.025 * tirages)], taux[int(0.975 * tirages) - 1]

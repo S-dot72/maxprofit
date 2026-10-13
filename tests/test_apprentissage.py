@@ -215,6 +215,16 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     simulations = course.etat.apprentissage.simulations
     assert "ZoneH1 (15 min), comme en direct" in simulations
     assert course.etat.apprentissage.laboratoire, "le laboratoire est calculé"
+    # Le protocole OTC accompagne le rejeu, sur les mêmes bougies, et se
+    # sauve avec l'état : il doit traverser le JSON.
+    import json
+
+    from maxprofit.live.protocole import texte
+    proto = json.loads(json.dumps(
+        course.etat.apprentissage.laboratoire["protocole"]))
+    assert proto["exp001"]["paires"]["EURUSD_otc"]["lues"] == 200
+    assert proto["exp002"]["observees"] == 200 - 103
+    assert "EXP-004" in texte(proto)
     conn.close()
 
 

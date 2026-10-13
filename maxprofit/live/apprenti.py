@@ -139,25 +139,46 @@ class Apprenti:
             lecteur = MarketReader(conn)
             exemples = []
             # La persistance des bougies se mesure sur les mêmes bougies,
-            # pendant qu'elles sont en mémoire : aucune lecture de plus.
+            # pendant qu'elles sont en mémoire : aucune lecture de plus. De
+            # même la qualité des données (EXP-001) et les indicateurs sur
+            # toutes les bougies (EXP-002) du protocole OTC.
+            from maxprofit.apprentissage.indicateurs import Indicateurs
             from maxprofit.apprentissage.persistance import Persistance
-            persistance = Persistance(debut + int(0.7 * (fin - debut)))
+            from maxprofit.apprentissage.qualite import Qualite
+            from maxprofit.live.protocole import date_de_gel
+            coupure_temps = debut + int(0.7 * (fin - debut))
+            gel = date_de_gel()
+            persistance = Persistance(coupure_temps)
+            qualite = Qualite(debut, fin, coupure_temps)
+            indicateurs = Indicateurs(debut, coupure_temps, gel)
+            exclusions: dict[str, int] = {}
+            respirer = lambda: time.sleep(RESPIRATION_SEC)  # noqa: E731
             for paire in self.paires:
                 bougies = lecteur.candles(paire, 60, debut, fin)
-                persistance.ajouter(
-                    bougies, respirer=lambda: time.sleep(RESPIRATION_SEC))
+                persistance.ajouter(bougies, respirer=respirer)
+                qualite.ajouter(bougies, respirer=respirer)
+                indicateurs.ajouter(bougies, respirer=respirer)
                 exemples += exemples_historiques(
                     {paire: bougies}, strategie,
                     echeance_sec=strategie.p.expiry_sec,
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
-                    respirer=lambda: time.sleep(RESPIRATION_SEC))
+                    respirer=respirer, exclusions=exclusions)
+            try:
+                couverture = lecteur.couverture(fenetre_sec=fin - debut,
+                                                maintenant=fin)
+            except Exception:                    # noqa: BLE001
+                couverture = None             # une mesure, pas une panne
         finally:
             try:
                 conn.close()
             except Exception:                    # noqa: BLE001
                 pass
         ancien = course.etat.apprentissage
+        # Le drapeau de qualité suit chaque signal jusqu'à son entrée
+        # confirmée : à poser AVANT tout calcul sur les confirmés.
+        from maxprofit.live.protocole import marquer_qualite
+        marquer_qualite(exemples, qualite, strategie.p.expiry_sec)
         # ⚠ L'APPRENTISSAGE PORTE SUR CE QUE LA COURSE JOUE.
         #
         # Le taux par paire décide des paires écartées « au taux perdant »,
@@ -219,6 +240,19 @@ class Apprenti:
             exemples, en_direct, fenetre or 1,
             int(getattr(course, "pas_max", 2) or 2), strategie.p.expiry_sec)
         alerte = texte_alerte(nouveau.laboratoire["stabilite"])
+        # Le protocole de simulation OTC (EXP-001 à EXP-004) : le gel et le
+        # journal des hypothèses viennent du rejeu précédent.
+        from maxprofit.live.protocole import protocole
+        nouveau.laboratoire["protocole"] = protocole(
+            exemples, en_direct, fenetre or 1, strategie.p.expiry_sec,
+            qualite=qualite, indicateurs=indicateurs, exclusions=exclusions,
+            couverture=couverture,
+            experiences=nouveau.laboratoire["experiences"],
+            ancien=((getattr(ancien, "laboratoire", None) or {})
+                    .get("protocole")),
+            version_regles=version_des_regles(strategie),
+            version_experiences=VERSION_EXPERIENCES,
+            debut=debut, fin=fin, gel=gel, jours=jours)
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -230,7 +264,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 5
+VERSION_EXPERIENCES = 6
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import NamedTuple, Sequence
 
+from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle
 from maxprofit.indicators.base import verifier_periode, verifier_serie
 
@@ -175,3 +176,99 @@ def atr_normalise_pct(candles: Sequence[Candle], periode: int = 14) -> float | N
     if reference == 0:
         return None
     return valeur / reference * 100
+
+
+def rsi(candles: Sequence[Candle], periode: int = 14) -> float | None:
+    """RSI à moyennes SIMPLES (variante de Cutler), de 0 à 100.
+
+    Les hausses et les baisses de clôture des `periode` dernières bougies,
+    moyennées arithmétiquement : pas le lissage de Wilder, pour la raison de
+    l'en-tête — sa valeur dépendrait du point de départ de la série.
+
+    Il faut `periode + 1` bougies. `None` si le prix n'a pas bougé du tout :
+    le rapport hausses / (hausses + baisses) est alors indéfini.
+    """
+    verifier_periode(periode)
+    serie = verifier_serie(candles)
+    if len(serie) < periode + 1:
+        return None
+    fenetre = serie[-(periode + 1):]
+    hausses = baisses = 0.0
+    for precedente, courante in zip(fenetre, fenetre[1:]):
+        ecart = courante.close - precedente.close
+        if ecart > 0:
+            hausses += ecart
+        else:
+            baisses -= ecart
+    if hausses + baisses == 0:
+        return None
+    return 100 * hausses / (hausses + baisses)
+
+
+#: Mémoire des moyennes exponentielles TRONQUÉES, en multiples de la
+#: période : au-delà de 3 périodes, le poids restant d'une exponentielle
+#: classique est d'environ 0,25 % (période 26) — négligeable, et la
+#: troncature rend la valeur fonction pure des dernières bougies.
+MEMOIRE_EXPO = 3
+
+
+def poids_expo(periode: int) -> tuple[float, ...]:
+    """Les poids normalisés d'une moyenne exponentielle tronquée à
+    `MEMOIRE_EXPO × periode` valeurs, de la plus récente à la plus ancienne.
+    Exposés pour qu'un calcul incrémental puisse se vérifier contre eux."""
+    verifier_periode(periode)
+    beta = 1 - 2 / (periode + 1)
+    bruts = [beta ** k for k in range(MEMOIRE_EXPO * periode)]
+    total = sum(bruts)
+    return tuple(b / total for b in bruts)
+
+
+def expo_tronquee(valeurs: Sequence[float], poids: Sequence[float]) -> float:
+    """La moyenne exponentielle tronquée des dernières `valeurs` (dans
+    l'ordre du temps ; `poids[0]` va à la dernière). Publique pour qu'un
+    calcul au fil de l'eau fasse EXACTEMENT les mêmes opérations que `macd`.
+    `zip` s'arrête au dernier poids : seules les `len(poids)` dernières
+    valeurs comptent, et une `deque` convient aussi bien qu'une liste."""
+    return sum(p * v for p, v in zip(poids, reversed(valeurs)))
+
+
+class Macd(NamedTuple):
+    ligne: float
+    signal: float
+    histogramme: float
+
+
+def besoin_macd(rapide: int = 12, lente: int = 26, signal: int = 9) -> int:
+    """Nombre de bougies dont `macd` a besoin."""
+    return MEMOIRE_EXPO * lente + MEMOIRE_EXPO * signal - 1
+
+
+def macd(candles: Sequence[Candle], rapide: int = 12, lente: int = 26,
+         signal: int = 9) -> Macd | None:
+    """MACD(12, 26, 9) sur les clôtures, en unités de prix.
+
+    Ligne = moyenne exponentielle rapide − lente ; signal = moyenne
+    exponentielle de la ligne ; histogramme = ligne − signal. Les trois
+    moyennes sont TRONQUÉES (`MEMOIRE_EXPO`) et normalisées : c'est l'écart
+    assumé avec le MACD des plateformes, dont la récurrence remonte au début
+    de la série chargée — voir l'en-tête. Il faut `besoin_macd()` bougies.
+    """
+    verifier_periode(rapide)
+    verifier_periode(lente)
+    verifier_periode(signal)
+    if rapide >= lente:
+        raise BotError(f"MACD : la période rapide ({rapide}) doit être "
+                       f"inférieure à la lente ({lente})")
+    serie = verifier_serie(candles)
+    if len(serie) < besoin_macd(rapide, lente, signal):
+        return None
+    closes = [c.close for c in serie]
+    p_rapide, p_lente, p_signal = (poids_expo(rapide), poids_expo(lente),
+                                   poids_expo(signal))
+    lignes = []
+    for decalage in range(len(p_signal) - 1, -1, -1):
+        jusque = closes[:len(closes) - decalage]
+        lignes.append(expo_tronquee(jusque, p_rapide)
+                      - expo_tronquee(jusque, p_lente))
+    valeur_signal = expo_tronquee(lignes, p_signal)
+    return Macd(lignes[-1], valeur_signal, lignes[-1] - valeur_signal)

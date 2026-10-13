@@ -75,7 +75,10 @@ ALLOWED: dict[str, set[str]] = {
     # `plan` ni `execution` : une leçon juge un CONTEXTE de signal, jamais une
     # mise — sinon une leçon dirait « ce contexte perd » quand c'est la
     # martingale qui a coûté. Il propose ; `live` décide de l'appliquer.
-    "apprentissage": {"core", "strategies"},
+    # `indicators` : des fonctions pures d'une fenêtre de bougies, comme
+    # pour `strategies` — le protocole OTC (EXP-002) mesure RSI, MACD et
+    # ATR avec les MÊMES fonctions que celles qu'une stratégie lirait.
+    "apprentissage": {"core", "strategies", "indicators"},
     # Le protocole de recherche. Il LIT les données et JUGE des hypothèses ;
     # il n'en produit aucune et ne place aucun ordre.
     #
