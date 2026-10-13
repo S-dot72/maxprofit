@@ -53,6 +53,8 @@ from maxprofit.apprentissage.lecons import Exemple, wilson
 from maxprofit.apprentissage.qualite import LIBELLES_DRAPEAUX, SOURCE
 from maxprofit.live.laboratoire import (
     N_MIN_VALIDATION, PART_ETALONNAGE, confirmes)
+from maxprofit.live.preinscriptions import (
+    DECLAREES_LE, PREINSCRIPTIONS, fenetre_pre_inscrite, juger, retenue)
 from maxprofit.live.stabilite import (
     N_MIN_FENETRE, TIRAGES, intervalle_des_blocs, intervalle_par_blocs)
 
@@ -258,6 +260,34 @@ def _test_aveugle(base: Sequence[Exemple], indicateurs, gel: int,
     return sortie
 
 
+def _preinscriptions(base: Sequence[Exemple], serie: Sequence[Exemple],
+                     debut: int, fin: int) -> list[dict]:
+    """Chaque pré-inscription jugée sur SA fenêtre aveugle, [debut, fin),
+    avec le critère écrit d'avance ; « avant » : ce que la même mesure
+    donnait sur les jours rejoués qui précèdent la fenêtre."""
+    dans = [e for e in base if debut <= e.ts_sec < fin]
+    reference = [len(dans), sum(e.gagne for e in dans)]
+    sortie = []
+    for p in PREINSCRIPTIONS:
+        filtres = p.parametres.get("filtres")
+        if filtres:
+            avant = [e for e in base if e.ts_sec < debut and retenue(e, filtres)]
+            pop = [e for e in dans if retenue(e, filtres)]
+            ref = reference
+        else:
+            avant = [e for e in serie if e.ts_sec < debut]
+            pop = [e for e in serie if debut <= e.ts_sec < fin]
+            ref = None
+        n, g = len(pop), sum(e.gagne for e in pop)
+        ic = intervalle_par_blocs(pop)
+        sortie.append({
+            "id": p.ident, "nom": p.nom, "n": n, "g": g,
+            "ic": list(ic) if ic else None,
+            "avant": [len(avant), sum(e.gagne for e in avant)],
+            "reference": ref, "verdict": juger(n, g, ic, p.n_min, ref)})
+    return sortie
+
+
 def _geler(base: Sequence[Exemple], experiences: Mapping, indicateurs,
            gel: int, fin: int, version: str, sec: str) -> dict:
     """Ce qui est figé au gel : les coupes et le pire tiers de chaque
@@ -313,9 +343,11 @@ def protocole(exemples: Sequence[Exemple],
               experiences: Mapping, ancien: Mapping | None,
               version_regles: str, version_experiences: int,
               debut: int, fin: int, gel: int | None,
-              jours: int) -> dict:
+              jours: int, serie: Sequence[Exemple] = ()) -> dict:
     """Le rapport complet, en JSON. `ancien` : le protocole du rejeu
-    précédent, d'où viennent le gel figé et le journal."""
+    précédent, d'où viennent le gel figé et le journal. `serie` : les
+    signaux de la stratégie pré-inscrite P4 (`strategies.serie_rouge`),
+    rejoués sur les mêmes bougies."""
     sec = str(echeance_sec if echeance_sec in indicateurs.echeances
               else indicateurs.echeances[-1])
     base = [e for e in sorted(confirmes(exemples, fenetre),
@@ -376,6 +408,12 @@ def protocole(exemples: Sequence[Exemple],
         r = _reunir(indicateurs, cles, sec)
         sources.append(_source(ident, r["blocs"], r["periodes"],
                                duree_jours, premier_jour, n_min_semaine))
+    if serie:
+        sources.append(_source("P4 série rouge (2 min)",
+                               _blocs_exemples(serie),
+                               _periodes(serie, coupure), duree_jours,
+                               premier_jour, n_min_semaine,
+                               intervalle_par_blocs(serie)))
     sortie["exp003"] = {"sources": sources, "fenetre_jours": FENETRE_JOURS}
 
     # EXP-004 : le gel et le test aveugle.
@@ -407,6 +445,22 @@ def protocole(exemples: Sequence[Exemple],
         exp004["etalonnage_apres_gel"] = bool(
             gele.get("coupure_etalonnage")
             and gele["coupure_etalonnage"] >= gel)
+    # Les pré-inscriptions, sur LEUR fenêtre (écrite le jour de leur
+    # déclaration, indépendante de DATE_GEL) ; figées à sa clôture.
+    debut_p, fin_p = fenetre_pre_inscrite()
+    pre_prec = precedent.get("preinscriptions") or {}
+    if pre_prec.get("final"):
+        pre = pre_prec
+    else:
+        pre = {"declarees_le": DECLAREES_LE, "debut": debut_p, "fin": fin_p,
+               "ids": [p.ident for p in PREINSCRIPTIONS]}
+        if fin >= debut_p:
+            pre["resultats"] = _preinscriptions(base, serie, debut_p, fin_p)
+            pre["jours"] = round((min(fin, fin_p) - debut_p) / 86400, 1)
+            if fin >= fin_p:
+                pre["final"] = True
+                pre["fige_le"] = fin
+    exp004["preinscriptions"] = pre
     sortie["exp004"] = exp004
 
     # Le journal des hypothèses.
@@ -424,6 +478,8 @@ def protocole(exemples: Sequence[Exemple],
         hypotheses.append((p["id"], p["libelle"], p["verdict"]))
     for t in temoins:
         hypotheses.append((f"TÉMOIN {t['id']}", t["libelle"], t["verdict"]))
+    for r in pre.get("resultats", ()):
+        hypotheses.append((r["id"], r["nom"], r["verdict"]))
     sortie["hypotheses"] = [list(h) for h in hypotheses]
     sortie["journal"] = _journal(ancien, hypotheses, fin)
 
@@ -450,6 +506,11 @@ def protocole(exemples: Sequence[Exemple],
 
 def _jour(ts: int) -> str:
     return time.strftime("%d/%m", time.gmtime(ts))
+
+
+def _jour_iso(date: str) -> str:
+    """« 2026-10-13 » → « 13/10 »."""
+    return f"{date[8:10]}/{date[5:7]}"
 
 
 def _pct(n: int, g: int) -> str:
@@ -617,6 +678,31 @@ def texte(resultat: Mapping | None) -> str:
             av = p.get("avant") or [0, 0]
             lignes.append(f"    {p['id']} : {_pct(p['n'], p['g'])} sur "
                           f"{p['n']} (avant le gel {_pct(av[0], av[1])})")
+    pre = e4.get("preinscriptions") or {}
+    if pre:
+        ids = ", ".join(pre.get("ids", ()))
+        fenetre = f"{_jour(pre['debut'])} → {_jour(pre['fin'])}"
+        if not pre.get("resultats"):
+            lignes.append(f"  Pré-inscrites le {_jour_iso(pre['declarees_le'])}"
+                          f" ({ids}) : jugées sur la fenêtre {fenetre}, pas "
+                          f"encore ouverte.")
+        else:
+            etat = ("résultat FINAL" if pre.get("final") else
+                    f"en cours, {pre.get('jours', 0)} j")
+            lignes.append(f"  <b>Pré-inscriptions</b> (déclarées le "
+                          f"{_jour_iso(pre['declarees_le'])}, fenêtre "
+                          f"{fenetre}, {etat}) :")
+            for x in pre["resultats"]:
+                ref = x.get("reference")
+                comparaison = (f" · référence {_pct(ref[0], ref[1])} sur "
+                               f"{ref[0]}" if ref else "")
+                av = x["avant"]
+                lignes.append(
+                    f"    {x['nom']} : <b>{_pct(x['n'], x['g'])}</b> sur "
+                    f"{x['n']}"
+                    + (f" · par blocs {_ic(x['ic'])}" if x.get("ic") else "")
+                    + f"{comparaison} (avant la fenêtre "
+                      f"{_pct(av[0], av[1])} sur {av[0]}) → {x['verdict']}")
     lignes.append("")
 
     # Journal

@@ -146,6 +146,11 @@ class Apprenti:
             from maxprofit.apprentissage.persistance import Persistance
             from maxprofit.apprentissage.qualite import Qualite
             from maxprofit.live.protocole import date_de_gel
+            from maxprofit.strategies.serie_rouge import SerieRouge
+            # P4, pré-inscrite : la stratégie elle-même, rejouée sur les
+            # mêmes bougies que ZoneH1 pour passer le même test aveugle.
+            serie_rouge = SerieRouge()
+            serie: list = []
             coupure_temps = debut + int(0.7 * (fin - debut))
             gel = date_de_gel()
             persistance = Persistance(coupure_temps)
@@ -164,6 +169,11 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=respirer, exclusions=exclusions)
+                serie += exemples_historiques(
+                    {paire: bougies}, serie_rouge,
+                    echeance_sec=serie_rouge.p.expiry_sec,
+                    echeances=(serie_rouge.p.expiry_sec,),
+                    respirer=respirer, avec_contexte=False)
             try:
                 couverture = lecteur.couverture(fenetre_sec=fin - debut,
                                                 maintenant=fin)
@@ -252,7 +262,8 @@ class Apprenti:
                     .get("protocole")),
             version_regles=version_des_regles(strategie),
             version_experiences=VERSION_EXPERIENCES,
-            debut=debut, fin=fin, gel=gel, jours=jours)
+            debut=debut, fin=fin, gel=gel, jours=jours,
+            serie=sorted(serie, key=lambda e: e.ts_sec))
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -264,7 +275,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 6
+VERSION_EXPERIENCES = 7
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:
