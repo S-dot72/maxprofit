@@ -11,12 +11,23 @@ zone vierge, garde de calibration), le filtre de payout maximum, la règle
 d'indépendance, l'attente maximale et les trois pas de martingale sont ceux
 du direct.
 
+    outils\rejeu_plan.py --strategie serie_rouge
+
+rejoue la stratégie pré-inscrite P4 (retournement après 8 rouges, 2 min)
+avec les mêmes règles.
+
 ⚠ DEUX PÉRIODES, ET SEULE LA SECONDE COMPTE. Les données sont coupées en une
 période d'ÉTALONNAGE (la plus ancienne) et une période de VALIDATION (les
 `--validation-pct` % les plus récents). Choisir un réglage parce qu'il brille
 sur l'étalonnage, puis le garder seulement s'il tient sur la validation : sinon
 on choisit le hasard qui a le mieux réussi. Seuil de rentabilité à 92 % de
 payout : 52,08 %.
+
+⚠ ET LE TEST AVEUGLE. Quand la période couvre la date de gel du protocole
+OTC (`DATE_GEL`, 14/10 par défaut), l'étalonnage et la validation s'arrêtent
+au gel, et les `DUREE_TEST_AVEUGLE_JOURS` jours qui le suivent forment une
+troisième partie : le TEST AVEUGLE, le même que `/protocole`. Rien ne s'y
+ajuste ; c'est là que ZoneH1 et les pré-inscriptions se jugent.
 
 Lit la base de `DATABASE_URL` (ou la base locale), en lecture seule.
 """
@@ -37,12 +48,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from maxprofit.core.config import charger_env_local                # noqa: E402
 from maxprofit.live.plan_demo import (                             # noqa: E402
     DELAI_INDEPENDANCE_SEC, CoursePlanDemo)
+from maxprofit.live.protocole import (                             # noqa: E402
+    DUREE_TEST_AVEUGLE_JOURS, date_de_gel)
 from maxprofit.research.rejeu import (                             # noqa: E402
     FENETRE_SEC, IndexBougies, IndexPayouts, generer_signaux, rejouer)
 from maxprofit.store.db import chemin_donnees, open_read_only      # noqa: E402
 from maxprofit.store.market import MarketReader                    # noqa: E402
 from maxprofit.strategies.rebond_mediane import (                  # noqa: E402
     PARAMETRES_PAR_DEFAUT as PARAMETRES_REBOND, RebondMediane)
+from maxprofit.strategies.serie_rouge import SerieRouge            # noqa: E402
 from maxprofit.strategies.zone_h1 import (                         # noqa: E402
     PARAMETRES_PRE_INSCRITS, ZoneH1)
 
@@ -114,6 +128,13 @@ def _variantes(args):
     contre l'amplitude des bougies. RebondMediane s'exprime en écarts-types
     de la bande, donc à l'échelle de chaque paire, et n'en a pas besoin.
     """
+    if args.strategie == "serie_rouge":
+        # Les paramètres pré-inscrits (P4), et eux seuls : une autre
+        # longueur de série serait une autre hypothèse.
+        strategie = SerieRouge()
+        yield (strategie, lambda pair, f: True,
+               f"serie_rouge, {strategie.p.n_min} rouges ou plus (P4)")
+        return
     if args.strategie == "rebond_mediane":
         for fenetre in _liste(args.plus_haut, int):
             yield (RebondMediane(replace(PARAMETRES_REBOND,
@@ -139,11 +160,13 @@ def main() -> int:
                     help="Paires séparées par des virgules (défaut : toutes "
                          "celles qui ont assez de bougies)")
     ap.add_argument("--min-bougies", type=int, default=2000)
-    ap.add_argument("--strategie", choices=("zone_h1", "rebond_mediane"),
+    ap.add_argument("--strategie",
+                    choices=("zone_h1", "rebond_mediane", "serie_rouge"),
                     default="zone_h1")
     ap.add_argument("--echeances", default="",
                     help="Échéances en secondes, multiples de 60 (défaut : "
-                         "1 à 15 min pour zone_h1, 1 min pour rebond_mediane)")
+                         "1 à 15 min pour zone_h1, 1 min pour rebond_mediane, "
+                         "2 min pour serie_rouge)")
     ap.add_argument("--entrees", default=str(
         PARAMETRES_PRE_INSCRITS.entrees_max_par_zone),
         help="zone_h1 : valeurs de entrees_max_par_zone à comparer")
@@ -154,9 +177,9 @@ def main() -> int:
     args = ap.parse_args()
 
     charger_env_local()
-    echeances = _liste(args.echeances or (
-        "60,120,180,300,600,900" if args.strategie == "zone_h1" else "60"),
-        int)
+    echeances = _liste(args.echeances or {
+        "zone_h1": "60,120,180,300,600,900", "serie_rouge": "120",
+    }.get(args.strategie, "60"), int)
     if any(e % 60 for e in echeances):
         ap.error("les échéances doivent être des multiples de 60 s")
 
@@ -183,13 +206,23 @@ def main() -> int:
     print(f"Chargé en {time.monotonic() - t0:.0f} s : "
           f"{sum(map(len, bougies.values()))} bougies.")
 
-    coupure = fin - int((fin - debut) * args.validation_pct / 100)
+    # Le gel coupe la période : avant lui, étalonnage et validation ; après
+    # lui, le test aveugle, et rien d'autre.
+    gel = date_de_gel()
+    avant = gel if gel is not None and debut < gel < fin else fin
+    coupure = avant - int((avant - debut) * args.validation_pct / 100)
     coupure = debut + (coupure - debut) // FENETRE_SEC * FENETRE_SEC
-    valides = _fenetres_couvertes(bougies, debut, fin)
     parts = {
         "ÉTALONNAGE": (debut, coupure),
-        "VALIDATION": (coupure, fin),
+        "VALIDATION": (coupure, avant),
     }
+    if avant != fin:
+        parts["TEST AVEUGLE"] = (
+            gel, min(fin, gel + DUREE_TEST_AVEUGLE_JOURS * 86400))
+    # Les fenêtres de 12 h couvertes, comptées depuis le début de CHAQUE
+    # partie : le gel ne tombe pas forcément sur la grille du début.
+    valides = {nom: _fenetres_couvertes(bougies, a, b)
+               for nom, (a, b) in parts.items()}
 
     for strategie, calibration, libelle in _variantes(args):
 
@@ -202,8 +235,7 @@ def main() -> int:
 
         for nom, (a, b) in parts.items():
             sous = [s for s in signaux if a <= s.fin_sec < b]
-            decale = {k - (a - debut) // FENETRE_SEC for k in valides
-                      if a <= debut + k * FENETRE_SEC < b}
+            decale = valides[nom]
             print(f"\n  {nom} — {len(sous)} signaux, {len(decale)} fenêtres "
                   f"de 12 h couvertes")
             print(f"  {'échéance':<22} {'ordres':>6} {'préc.':>6} "
@@ -224,7 +256,7 @@ def main() -> int:
     print(f"\nSessions : ouvertes par fenêtre de 12 h (moyenne, médiane, "
           f"maximum, part des fenêtres à 18 ou plus). Seuil de rentabilité "
           f"par ordre : {100 * SEUIL:.2f} %. Un réglage ne vaut que s'il tient "
-          f"sur la VALIDATION.")
+          f"sur la VALIDATION, puis au TEST AVEUGLE quand il y en a un.")
     return 0
 
 
