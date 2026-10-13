@@ -48,6 +48,8 @@ from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.contexte import CARACTERISTIQUES
 from maxprofit.apprentissage.historique import CONTEXTE_A_L_ENTREE
+from maxprofit.apprentissage.indicateurs import CLES_A_L_ENTREE
+from maxprofit.apprentissage.qualite import SOURCE
 from maxprofit.apprentissage.lecons import Exemple
 from maxprofit.live.laboratoire import confirmes
 
@@ -220,7 +222,11 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
                + [f"gagne_entree_{s // 60}m" for s in ECHEANCES]
                + ["mfe_15", "mae_15", "t_mfe", "zone_cassee", "cause_perte"]
                + [f"signal_{c}" for c in CARACTERISTIQUES]
-               + [f"entree_{c}" for c in cles_entree])
+               + [f"entree_{c}" for c in cles_entree]
+               # Protocole OTC : la source, le drapeau de qualité de la
+               # fenêtre et du chemin, et RSI / MACD / ATR à l'entrée.
+               + ["source_donnees", "donnees_douteuses"]
+               + [f"entree_{c}" for c in CLES_A_L_ENTREE])
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(entetes)
@@ -251,7 +257,9 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
             + [c.get("mfe_15", ""), c.get("mae_15", ""), c.get("t_mfe", ""),
                _01(c.get("zone_cassee")), perte]
             + [c.get(k, "") for k in CARACTERISTIQUES]
-            + [c.get(f"e_{k}", "") for k in cles_entree])
+            + [c.get(f"e_{k}", "") for k in cles_entree]
+            + [SOURCE, _01(c.get("donnees_douteuses"))]
+            + [c.get(f"e_{k}", "") for k in CLES_A_L_ENTREE])
     return sortie.getvalue().encode("utf-8-sig")
 
 

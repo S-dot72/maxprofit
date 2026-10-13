@@ -28,21 +28,27 @@ from maxprofit.indicators.base import Pivot, PivotKind
 from maxprofit.indicators.fractals import derniere_fractale, fractales
 from maxprofit.indicators.geometry import corps_pct, meche_basse_pct, meche_haute_pct
 from maxprofit.indicators.oscillators import (
+    Macd,
     atr,
     atr_normalise_pct,
+    besoin_macd,
     bollinger_percent_b,
     distance_ma_pct,
+    macd,
+    rsi,
     sma,
     stochastique,
 )
 from maxprofit.indicators.zigzag import ZigZag, dernier_pivot, distance_pivot_pct, zigzag
 
 __all__ = [
+    "Macd",
     "Pivot",
     "PivotKind",
     "ZigZag",
     "atr",
     "atr_normalise_pct",
+    "besoin_macd",
     "bollinger_percent_b",
     "corps_pct",
     "dernier_pivot",
@@ -50,8 +56,10 @@ __all__ = [
     "distance_ma_pct",
     "distance_pivot_pct",
     "fractales",
+    "macd",
     "meche_basse_pct",
     "meche_haute_pct",
+    "rsi",
     "sma",
     "stochastique",
     "zigzag",
