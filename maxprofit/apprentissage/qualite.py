@@ -112,6 +112,11 @@ class Qualite:
         #: seulement, pour juger les signaux du même rejeu.
         self.intervalles: dict[str, list[tuple[int, int]]] = {}
         self._empreintes: dict[str, str] = {}
+        #: Les minutes où AU MOINS UNE paire a une bougie complète : le
+        #: temps de collecte réel. Diviser un nombre de signaux par des
+        #: jours de calendrier, quand la collecte n'écoutait que la moitié
+        #: du temps, divisait le débit par deux.
+        self._minutes: set[int] = set()
 
     def ajouter(self, bougies: Sequence[Candle],
                 respirer: Callable[[], None] | None = None) -> None:
@@ -142,6 +147,8 @@ class Qualite:
             if respirer is not None and i and i % 5000 == 0:
                 respirer()
             empreinte.update(_ligne(b))
+            if b.complete:
+                self._minutes.add(b.ts_sec)
             if precedente is not None and b.ts_sec - precedente.ts_sec > 60:
                 absentes = (b.ts_sec - precedente.ts_sec) // 60 - 1
                 trous += 1
@@ -214,6 +221,18 @@ class Qualite:
             "jours_debit_anormal": anormaux,
             "empreinte": self._empreintes[pair][:16],
         }
+
+    def minutes_par_jour(self) -> dict[int, int]:
+        """{jour UTC (en jours depuis l'époque) : minutes collectées}."""
+        jours: dict[int, int] = {}
+        for m in self._minutes:
+            jours[m // 86400] = jours.get(m // 86400, 0) + 1
+        return jours
+
+    def jours_collectes(self, debut: int, fin: int) -> float:
+        """Les jours de collecte réelle dans [debut, fin) : minutes
+        collectées / 1 440."""
+        return sum(1 for m in self._minutes if debut <= m < fin) / 1440
 
     def touche(self, pair: str, debut: int, fin: int) -> bool:
         """Un intervalle suspect de `pair` coupe-t-il [debut, fin] (débuts

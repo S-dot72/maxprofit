@@ -64,6 +64,14 @@ def test_la_fiche_csv_a_une_ligne_par_signal():
             "entree_atr_14"} <= set(entetes)
     premier = dict(zip(entetes, rangs[0]))
     assert premier["source_donnees"].startswith("Pocket Option")
+    # Le journal de la validation P2 : décision de chaque filtre et motif.
+    assert {"reference_p2", "filtre_c", "filtre_d", "filtres_c_et_d",
+            "motif_rejet"} <= set(entetes)
+    assert premier["reference_p2"] == "1"
+    assert premier["filtre_c"] == "garde"          # part parcourue 0,3
+    assert premier["motif_rejet"] == ""
+    non_joue = dict(zip(entetes, rangs[-1]))
+    assert non_joue["reference_p2"] == "0" and non_joue["filtre_c"] == ""
     assert premier["version_regles"] == "zone_h1:abcd1234"
     assert premier["sens"] == "CALL" and premier["confirme_8"] == "1"
     non_confirme = dict(zip(entetes, rangs[-1]))

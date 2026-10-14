@@ -144,8 +144,11 @@ def _categorie_paire(liste: Sequence[Exemple],
 
 def stabilite(exemples: Sequence[Exemple],
               en_direct: Callable[[Exemple], bool], fenetre: int = 1,
-              pas_max: int = 2, echeance_sec: int = 900) -> dict:
-    """EXP-021 et EXP-022 sur la référence jouée."""
+              pas_max: int = 2, echeance_sec: int = 900,
+              jours_collectes: Callable[[int, int], float] | None = None
+              ) -> dict:
+    """EXP-021 et EXP-022 sur la référence jouée. `jours_collectes(debut,
+    fin)` : les jours de collecte réelle, pour les débits par jour."""
     base = [e for e in sorted(confirmes(exemples, fenetre),
                               key=lambda e: e.ts_sec) if en_direct(e)]
     nom = "8" if fenetre == 1 else f"8f{fenetre}"
@@ -164,6 +167,13 @@ def stabilite(exemples: Sequence[Exemple],
         # débit, pas sept jours.
         jours = (FENETRE_JOURS if k < derniere else
                  max(1.0, (base[-1].ts_sec - (t0 + k * duree)) / 86400))
+        if jours_collectes is not None:
+            # La semaine telle que la collecte l'a vue : une semaine
+            # écoutée à moitié ne doit pas afficher un débit moitié moindre.
+            fin_k = (t0 + (k + 1) * duree if k < derniere
+                     else base[-1].ts_sec)
+            jours = max(1.0, jours_collectes(t0 + k * duree, fin_k)
+                        or jours)
         blocs.append(_bloc_fenetre(fenetres[k], t0 + k * duree, jours))
 
     n, g = len(base), sum(e.gagne for e in base)
@@ -292,7 +302,7 @@ def texte(resultat: Mapping | None) -> str:
     lignes = [f"📈 <b>EXP-021 — stabilité de la référence "
               f"{resultat['nom']}</b> (entrées confirmées rejouées, "
               f"fenêtres de {resultat['fenetre_jours']} jours fixées "
-              f"d'avance)", ""]
+              f"d'avance ; débits par jour de collecte réelle)", ""]
     for f in resultat["fenetres"]:
         if not f["n"]:
             continue

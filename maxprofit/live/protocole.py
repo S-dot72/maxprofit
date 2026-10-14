@@ -54,7 +54,8 @@ from maxprofit.apprentissage.qualite import LIBELLES_DRAPEAUX, SOURCE
 from maxprofit.live.laboratoire import (
     N_MIN_VALIDATION, PART_ETALONNAGE, confirmes)
 from maxprofit.live.preinscriptions import (
-    DECLAREES_LE, PREINSCRIPTIONS, fenetre_pre_inscrite, juger, retenue)
+    DECLAREES_LE, PREINSCRIPTIONS, fenetre_pre_inscrite, juger, ouverture)
+from maxprofit.live import validation_p2
 from maxprofit.live.stabilite import (
     N_MIN_FENETRE, TIRAGES, intervalle_des_blocs, intervalle_par_blocs)
 
@@ -262,22 +263,17 @@ def _test_aveugle(base: Sequence[Exemple], indicateurs, gel: int,
 
 def _preinscriptions(base: Sequence[Exemple], serie: Sequence[Exemple],
                      debut: int, fin: int) -> list[dict]:
-    """Chaque pré-inscription jugée sur SA fenêtre aveugle, [debut, fin),
-    avec le critère écrit d'avance ; « avant » : ce que la même mesure
-    donnait sur les jours rejoués qui précèdent la fenêtre."""
-    dans = [e for e in base if debut <= e.ts_sec < fin]
-    reference = [len(dans), sum(e.gagne for e in dans)]
+    """P4 jugée sur SA fenêtre aveugle, [debut, fin), avec le critère écrit
+    d'avance ; « avant » : ce que la même mesure donnait sur les jours
+    rejoués qui précèdent la fenêtre. P2 a sa propre validation
+    (`live.validation_p2`) depuis l'amendement du 14/10."""
     sortie = []
     for p in PREINSCRIPTIONS:
-        filtres = p.parametres.get("filtres")
-        if filtres:
-            avant = [e for e in base if e.ts_sec < debut and retenue(e, filtres)]
-            pop = [e for e in dans if retenue(e, filtres)]
-            ref = reference
-        else:
-            avant = [e for e in serie if e.ts_sec < debut]
-            pop = [e for e in serie if debut <= e.ts_sec < fin]
-            ref = None
+        if p.parametres.get("exclusions"):
+            continue
+        avant = [e for e in serie if e.ts_sec < debut]
+        pop = [e for e in serie if debut <= e.ts_sec < fin]
+        ref = None
         n, g = len(pop), sum(e.gagne for e in pop)
         ic = intervalle_par_blocs(pop)
         sortie.append({
@@ -343,7 +339,9 @@ def protocole(exemples: Sequence[Exemple],
               experiences: Mapping, ancien: Mapping | None,
               version_regles: str, version_experiences: int,
               debut: int, fin: int, gel: int | None,
-              jours: int, serie: Sequence[Exemple] = ()) -> dict:
+              jours: int, serie: Sequence[Exemple] = (),
+              paires: Sequence[str] = (),
+              regle_heure: float | None = None) -> dict:
     """Le rapport complet, en JSON. `ancien` : le protocole du rejeu
     précédent, d'où viennent le gel figé et le journal. `serie` : les
     signaux de la stratégie pré-inscrite P4 (`strategies.serie_rouge`),
@@ -357,7 +355,11 @@ def protocole(exemples: Sequence[Exemple],
     # ici, pour que les deux colonnes d'EXP-003 se comparent.
     coupure = indicateurs.coupure
     premier_jour = debut // 86400
-    duree_jours = max(1.0, (fin - debut) / 86400)
+    # Les débits « par jour » se comptent en jours de COLLECTE réelle : la
+    # collecte n'écoutait parfois que la moitié du temps, et diviser par
+    # des jours de calendrier divisait le débit d'autant.
+    duree_jours = (qualite.jours_collectes(debut, fin)
+                   or max(1.0, (fin - debut) / 86400))
     sortie: dict = {"debut": debut, "fin": fin, "coupure": coupure,
                     "echeance": int(sec), "population": len(base)}
 
@@ -453,7 +455,8 @@ def protocole(exemples: Sequence[Exemple],
         pre = pre_prec
     else:
         pre = {"declarees_le": DECLAREES_LE, "debut": debut_p, "fin": fin_p,
-               "ids": [p.ident for p in PREINSCRIPTIONS]}
+               "ids": [p.ident for p in PREINSCRIPTIONS
+                       if not p.parametres.get("exclusions")]}
         if fin >= debut_p:
             pre["resultats"] = _preinscriptions(base, serie, debut_p, fin_p)
             pre["jours"] = round((min(fin, fin_p) - debut_p) / 86400, 1)
@@ -461,6 +464,18 @@ def protocole(exemples: Sequence[Exemple],
                 pre["final"] = True
                 pre["fige_le"] = fin
     exp004["preinscriptions"] = pre
+    # P2 : la validation d'EXP-020 C et D (amendement du 14/10).
+    debut_v = ouverture()
+    exp004["validation_p2"] = validation_p2.validation(
+        base, precedent.get("validation_p2"), fin=fin,
+        jours_collecte=(qualite.jours_collectes(debut_v, fin)
+                        if fin > debut_v else 0.0),
+        reference={"version_regles": version_regles,
+                   "confirmation_m1": fenetre, "regle_heure": regle_heure,
+                   "echeance_sec": echeance_sec,
+                   "paires": sorted(paires)},
+        jours_avant=max(0.0, (min(debut_v, fin) - debut) / 86400),
+        gain=validation_p2.gain_minimal())
     sortie["exp004"] = exp004
 
     # Le journal des hypothèses.
@@ -480,6 +495,7 @@ def protocole(exemples: Sequence[Exemple],
         hypotheses.append((f"TÉMOIN {t['id']}", t["libelle"], t["verdict"]))
     for r in pre.get("resultats", ()):
         hypotheses.append((r["id"], r["nom"], r["verdict"]))
+    hypotheses.extend(validation_p2.hypotheses(exp004["validation_p2"]))
     sortie["hypotheses"] = [list(h) for h in hypotheses]
     sortie["journal"] = _journal(ancien, hypotheses, fin)
 
@@ -703,6 +719,7 @@ def texte(resultat: Mapping | None) -> str:
                     + (f" · par blocs {_ic(x['ic'])}" if x.get("ic") else "")
                     + f"{comparaison} (avant la fenêtre "
                       f"{_pct(av[0], av[1])} sur {av[0]}) → {x['verdict']}")
+    lignes += validation_p2.texte(e4.get("validation_p2"), _jour)
     lignes.append("")
 
     # Journal

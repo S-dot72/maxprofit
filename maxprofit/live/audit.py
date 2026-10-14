@@ -50,6 +50,8 @@ from maxprofit.apprentissage.contexte import CARACTERISTIQUES
 from maxprofit.apprentissage.historique import CONTEXTE_A_L_ENTREE
 from maxprofit.apprentissage.indicateurs import CLES_A_L_ENTREE
 from maxprofit.apprentissage.qualite import SOURCE
+from maxprofit.live.preinscriptions import (
+    EXCLUSION_C, EXCLUSION_D, motifs_de_rejet, ouverture)
 from maxprofit.apprentissage.lecons import Exemple
 from maxprofit.live.laboratoire import confirmes
 
@@ -226,7 +228,11 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
                # Protocole OTC : la source, le drapeau de qualité de la
                # fenêtre et du chemin, et RSI / MACD / ATR à l'entrée.
                + ["source_donnees", "donnees_douteuses"]
-               + [f"entree_{c}" for c in CLES_A_L_ENTREE])
+               + [f"entree_{c}" for c in CLES_A_L_ENTREE]
+               # Validation P2 (EXP-020 C et D) : la décision de chaque
+               # filtre sur les entrées de la référence, et pourquoi.
+               + ["reference_p2", "fenetre_aveugle_p2", "filtre_c",
+                  "filtre_d", "filtres_c_et_d", "motif_rejet"])
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(entetes)
@@ -259,8 +265,28 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
             + [c.get(k, "") for k in CARACTERISTIQUES]
             + [c.get(f"e_{k}", "") for k in cles_entree]
             + [SOURCE, _01(c.get("donnees_douteuses"))]
-            + [c.get(f"e_{k}", "") for k in CLES_A_L_ENTREE])
+            + [c.get(f"e_{k}", "") for k in CLES_A_L_ENTREE]
+            + _decisions_p2(joue, en_direct))
     return sortie.getvalue().encode("utf-8-sig")
+
+
+def _decisions_p2(joue: Exemple | None,
+                  en_direct: Callable[[Exemple], bool]) -> list[str]:
+    """Pour une entrée de la référence : dans la fenêtre aveugle ?, la
+    décision de C, de D et des deux (« garde » ou « écarte »), et le motif.
+    Vide pour un signal hors de la référence. Une valeur manquante ne
+    déclenche aucune exclusion (amendement du 14/10)."""
+    if joue is None or not en_direct(joue):
+        return ["0", "", "", "", "", ""]
+    valeurs = {"part_parcourue": joue.contexte.get("part_parcourue"),
+               "espace_obstacle": joue.contexte.get("espace_obstacle")}
+    motifs = motifs_de_rejet(valeurs, [EXCLUSION_C, EXCLUSION_D])
+
+    def decision(exclusions):
+        return "écarte" if motifs_de_rejet(valeurs, exclusions) else "garde"
+    return ["1", _01(joue.ts_sec >= ouverture()), decision([EXCLUSION_C]),
+            decision([EXCLUSION_D]),
+            decision([EXCLUSION_C, EXCLUSION_D]), " + ".join(motifs)]
 
 
 def _01(valeur) -> str:

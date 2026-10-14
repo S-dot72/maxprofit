@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from maxprofit.apprentissage.lecons import Exemple
 from maxprofit.live.stabilite import (
     _rangs, intervalle_par_blocs, stabilite, texte, texte_alerte)
@@ -85,3 +87,14 @@ def test_entree_immediate_et_confirmee_sur_les_memes_signaux():
     assert er["confirmes"] == 30 and er["perdus"] == [10, 10]
     assert er["apparies_immediat"] == 15 and er["apparies_confirme"] == 30
     assert er["degradation_mediane"] == 0.8
+
+
+def test_les_debits_sont_en_jours_de_collecte():
+    """Une semaine que la collecte n'a écoutée qu'à moitié n'affiche pas un
+    débit moitié moindre."""
+    exemples = _semaines([0.7, 0.7, 0.7, 0.7])
+    calendrier = stabilite(exemples, lambda e: True, 1)
+    collecte = stabilite(exemples, lambda e: True, 1,
+                         jours_collectes=lambda a, b: 3.5)
+    assert collecte["fenetres"][0]["par_jour"] == pytest.approx(
+        2 * calendrier["fenetres"][0]["par_jour"], abs=0.02)

@@ -178,10 +178,14 @@ def _series(liste: Sequence[Exemple]) -> dict:
 
 def experiences(exemples: Sequence[Exemple],
                 en_direct: Callable[[Exemple], bool],
-                fenetre: int = 3, echeance_sec: int = 900) -> dict:
+                fenetre: int = 3, echeance_sec: int = 900,
+                jours_collectes: Callable[[int, int], float] | None = None
+                ) -> dict:
     """La référence et ses expériences. `exemples` : ZoneH1 rejouée ;
     `en_direct` : la règle de l'heure en cours ; `fenetre` : la
-    confirmation M1 de la course (1 = bougie suivante, 2 ou 3)."""
+    confirmation M1 de la course (1 = bougie suivante, 2 ou 3) ;
+    `jours_collectes(debut, fin)` : les jours de collecte réelle, qui
+    servent aux débits « par jour » (sinon, des jours de calendrier)."""
     joues = sorted(confirmes(exemples, fenetre), key=lambda e: e.ts_sec)
     base = [e for e in joues if en_direct(e)]
     nom = "8" if fenetre == 1 else f"8f{fenetre}"
@@ -189,7 +193,9 @@ def experiences(exemples: Sequence[Exemple],
         return {"note": f"Seulement {len(base)} entrées confirmées rejouées "
                         f"({nom}) : il en faut {2 * N_MIN_VALIDATION}."}
     coupure = base[int(len(base) * PART_ETALONNAGE)].ts_sec
-    jours = max(1.0, (base[-1].ts_sec - base[0].ts_sec) / 86400)
+    jours = max(1.0, (jours_collectes and jours_collectes(
+        base[0].ts_sec - 60, base[-1].ts_sec)) or
+        (base[-1].ts_sec - base[0].ts_sec) / 86400)
     ref = _compte(base, coupure)
     plan = simuler(base, echeance_sec=echeance_sec, pas_max=2)
     sortie: dict = {
@@ -478,7 +484,8 @@ def texte(resultat: Mapping | None) -> str:
     if periode:
         jour = lambda ts: time.strftime("%d/%m", time.gmtime(ts))  # noqa
         lignes.append(f"Entrées rejouées du {jour(periode[0])} au "
-                      f"{jour(periode[1])}.")
+                      f"{jour(periode[1])} ; débits par jour de collecte "
+                      f"réelle ({jours:g} j).")
     donnees = texte_donnees(resultat.get("persistance"))
     if donnees:
         lignes.append(donnees)

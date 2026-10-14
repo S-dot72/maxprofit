@@ -84,10 +84,30 @@ BACKOFF_MAX_SEC = 60
 LONGUEUR_MAX = 4000
 
 
+def _unites(texte: str) -> list[str]:
+    """Les lignes du texte, un bloc `<pre>` comptant pour UNE : coupé en
+    deux messages, il laisserait une balise ouverte que Telegram refuse."""
+    unites: list[str] = []
+    bloc: list[str] | None = None
+    for ligne in texte.split("\n"):
+        if bloc is not None:
+            bloc.append(ligne)
+            if "</pre>" in ligne:
+                unites.append("\n".join(bloc))
+                bloc = None
+        elif "<pre>" in ligne and "</pre>" not in ligne:
+            bloc = [ligne]
+        else:
+            unites.append(ligne)
+    if bloc is not None:
+        unites.append("\n".join(bloc))
+    return unites
+
+
 def _decouper(texte: str, longueur: int) -> list[str]:
     """Des morceaux de `longueur` au plus, coupés entre deux lignes."""
     morceaux, courant = [], ""
-    for ligne in texte.split("\n"):
+    for ligne in _unites(texte):
         while len(ligne) > longueur:
             if courant:
                 morceaux.append(courant)
