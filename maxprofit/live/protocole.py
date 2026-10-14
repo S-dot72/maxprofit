@@ -341,7 +341,8 @@ def protocole(exemples: Sequence[Exemple],
               debut: int, fin: int, gel: int | None,
               jours: int, serie: Sequence[Exemple] = (),
               paires: Sequence[str] = (),
-              regle_heure: float | None = None) -> dict:
+              regle_heure: float | None = None,
+              potentiel: Mapping | None = None) -> dict:
     """Le rapport complet, en JSON. `ancien` : le protocole du rejeu
     précédent, d'où viennent le gel figé et le journal. `serie` : les
     signaux de la stratégie pré-inscrite P4 (`strategies.serie_rouge`),
@@ -496,6 +497,10 @@ def protocole(exemples: Sequence[Exemple],
     for r in pre.get("resultats", ()):
         hypotheses.append((r["id"], r["nom"], r["verdict"]))
     hypotheses.extend(validation_p2.hypotheses(exp004["validation_p2"]))
+    # Les variantes de /potentiel (expiration, filtres, indicateurs) : des
+    # comparaisons comme les autres, qui comptent au journal.
+    from maxprofit.live.potentiel import hypotheses as hypotheses_potentiel
+    hypotheses.extend(hypotheses_potentiel(potentiel))
     sortie["hypotheses"] = [list(h) for h in hypotheses]
     sortie["journal"] = _journal(ancien, hypotheses, fin)
 

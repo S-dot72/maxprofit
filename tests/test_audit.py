@@ -70,6 +70,10 @@ def test_la_fiche_csv_a_une_ligne_par_signal():
     assert premier["reference_p2"] == "1"
     assert premier["filtre_c"] == "garde"          # part parcourue 0,3
     assert premier["motif_rejet"] == ""
+    # Le potentiel de zone et l'entrée au repli, signal par signal.
+    assert {"entree_expiration_dynamique", "entree_stoch_k_signal",
+            "entree_tendance_ema", "entree_categorie_potentiel",
+            "attente_repli", "gagne_repli"} <= set(entetes)
     non_joue = dict(zip(entetes, rangs[-1]))
     assert non_joue["reference_p2"] == "0" and non_joue["filtre_c"] == ""
     assert premier["version_regles"] == "zone_h1:abcd1234"

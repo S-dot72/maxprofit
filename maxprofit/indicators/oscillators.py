@@ -272,3 +272,56 @@ def macd(candles: Sequence[Candle], rapide: int = 12, lente: int = 26,
                       - expo_tronquee(jusque, p_lente))
     valeur_signal = expo_tronquee(lignes, p_signal)
     return Macd(lignes[-1], valeur_signal, lignes[-1] - valeur_signal)
+
+
+def besoin_stochastique_lente(periode_k: int = 14, lissage_k: int = 3,
+                              periode_d: int = 3) -> int:
+    """Nombre de bougies dont `stochastique_lente` a besoin."""
+    return periode_k + lissage_k + periode_d - 2
+
+
+def stochastique_lente(candles: Sequence[Candle], periode_k: int = 14,
+                       lissage_k: int = 3,
+                       periode_d: int = 3) -> Stochastique | None:
+    """Stochastique LENT (14, 3, 3), en points de 0 à 100.
+
+    %K brut = position de la clôture dans le haut/bas des `periode_k`
+    dernières bougies ; %K lent = moyenne simple des `lissage_k` derniers
+    %K bruts ; %D = moyenne simple des `periode_d` derniers %K lents. C'est
+    le réglage des plateformes de graphiques, à fenêtre finie par nature.
+
+    ⚠ %K lent vaut 100 seulement si la clôture est au plus haut des
+    `periode_k` bougies `lissage_k` fois de suite : c'est rare, et c'est
+    voulu par le protocole (lignes 10 et 100), qui le MESURE plutôt que de
+    remplacer 100 par 90 en douce. `None` si une amplitude est nulle.
+    """
+    verifier_periode(periode_k)
+    verifier_periode(lissage_k)
+    verifier_periode(periode_d)
+    serie = verifier_serie(candles)
+    if len(serie) < besoin_stochastique_lente(periode_k, lissage_k,
+                                              periode_d):
+        return None
+    bruts: list[float] = []
+    for decalage in range(lissage_k + periode_d - 2, -1, -1):
+        fin = len(serie) - decalage
+        fenetre = serie[fin - periode_k:fin]
+        plus_haut = max(c.high for c in fenetre)
+        plus_bas = min(c.low for c in fenetre)
+        if plus_haut == plus_bas:
+            return None
+        bruts.append((fenetre[-1].close - plus_bas) / (plus_haut - plus_bas)
+                     * 100)
+    lents = [sum(bruts[k:k + lissage_k]) / lissage_k
+             for k in range(periode_d)]
+    return Stochastique(k=lents[-1], d=sum(lents) / periode_d)
+
+
+def ema(candles: Sequence[Candle], periode: int) -> float | None:
+    """Moyenne exponentielle des clôtures, TRONQUÉE à `MEMOIRE_EXPO ×
+    periode` bougies et normalisée (voir l'en-tête et `poids_expo`)."""
+    poids = poids_expo(periode)
+    serie = verifier_serie(candles)
+    if len(serie) < len(poids):
+        return None
+    return expo_tronquee([c.close for c in serie[-len(poids):]], poids)

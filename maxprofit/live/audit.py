@@ -49,6 +49,7 @@ from typing import Callable, Mapping, Sequence
 from maxprofit.apprentissage.contexte import CARACTERISTIQUES
 from maxprofit.apprentissage.historique import CONTEXTE_A_L_ENTREE
 from maxprofit.apprentissage.indicateurs import CLES_A_L_ENTREE
+from maxprofit.apprentissage.potentiel import CLES_POTENTIEL
 from maxprofit.apprentissage.qualite import SOURCE
 from maxprofit.live.preinscriptions import (
     EXCLUSION_C, EXCLUSION_D, motifs_de_rejet, ouverture)
@@ -232,7 +233,10 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
                # Validation P2 (EXP-020 C et D) : la décision de chaque
                # filtre sur les entrées de la référence, et pourquoi.
                + ["reference_p2", "fenetre_aveugle_p2", "filtre_c",
-                  "filtre_d", "filtres_c_et_d", "motif_rejet"])
+                  "filtre_d", "filtres_c_et_d", "motif_rejet"]
+               # Le potentiel de zone et l'expiration dynamique (/potentiel).
+               + [f"entree_{c}" for c in CLES_POTENTIEL]
+               + ["attente_repli", "gagne_repli"])
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(entetes)
@@ -266,7 +270,9 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
             + [c.get(f"e_{k}", "") for k in cles_entree]
             + [SOURCE, _01(c.get("donnees_douteuses"))]
             + [c.get(f"e_{k}", "") for k in CLES_A_L_ENTREE]
-            + _decisions_p2(joue, en_direct))
+            + _decisions_p2(joue, en_direct)
+            + [c.get(f"e_{k}", "") for k in CLES_POTENTIEL]
+            + [c.get("attente_repli", ""), _01(c.get("gagne_repli"))])
     return sortie.getvalue().encode("utf-8-sig")
 
 

@@ -38,11 +38,14 @@ from maxprofit.indicators import (
     distance_ma_pct,
     distance_pivot_pct,
     besoin_macd,
+    besoin_stochastique_lente,
+    ema,
     fractales,
     macd,
     rsi,
     sma,
     stochastique,
+    stochastique_lente,
     zigzag,
 )
 from maxprofit.indicators.zigzag import zigzag_repeignant
@@ -81,6 +84,9 @@ INDICATEURS_SCALAIRES = {
     "atr_normalise_pct(14)": lambda c: atr_normalise_pct(c, 14),
     "rsi(14)": lambda c: rsi(c, 14),
     "macd(12,26,9)": lambda c: macd(c, 12, 26, 9),
+    "stochastique_lente(14,3,3)": lambda c: stochastique_lente(c, 14, 3, 3),
+    "ema(20)": lambda c: ema(c, 20),
+    "ema(50)": lambda c: ema(c, 50),
     "corps_pct": lambda c: corps_pct(c[-1]),
     "distance_pivot_pct(0.3%)": lambda c: distance_pivot_pct(c, 0.3),
 }
@@ -97,6 +103,9 @@ BESOIN = {
     "atr_normalise_pct(14)": 15,
     "rsi(14)": 15,
     "macd(12,26,9)": besoin_macd(12, 26, 9),
+    "stochastique_lente(14,3,3)": besoin_stochastique_lente(14, 3, 3),
+    "ema(20)": 60,
+    "ema(50)": 150,
     "corps_pct": 1,
     # Le ZigZag n'a pas de fenêtre finie : le dernier pivot confirmé peut dater
     # d'aussi loin qu'on veut. Il est couvert par les tests de pivots.

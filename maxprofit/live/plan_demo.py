@@ -3432,6 +3432,16 @@ def stabilite(course) -> str:
     return texte((a.laboratoire or {}).get("stabilite") if a else None)
 
 
+def potentiel(course) -> str:
+    """`/potentiel` : le potentiel de zone, l'expiration dynamique et les
+    filtres d'entrée, sur les mêmes entrées confirmées."""
+    from maxprofit.live.potentiel import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("potentiel") if a else None)
+
+
 def protocole(course) -> str:
     """`/protocole` : le protocole de simulation OTC (EXP-001 à EXP-004)."""
     from maxprofit.live.protocole import texte

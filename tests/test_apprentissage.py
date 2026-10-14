@@ -225,6 +225,11 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     assert proto["exp001"]["paires"]["EURUSD_otc"]["lues"] == 200
     assert proto["exp002"]["observees"] == 200 - 103
     assert "EXP-004" in texte(proto)
+    # /potentiel accompagne aussi le rejeu, et se sauve avec l'état.
+    from maxprofit.live.potentiel import texte as texte_potentiel
+    pot = json.loads(json.dumps(
+        course.etat.apprentissage.laboratoire["potentiel"]))
+    assert texte_potentiel(pot).startswith("🎯")
     conn.close()
 
 
