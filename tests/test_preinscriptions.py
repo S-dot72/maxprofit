@@ -11,8 +11,8 @@ from maxprofit.apprentissage.indicateurs import Indicateurs
 from maxprofit.apprentissage.lecons import Exemple
 from maxprofit.apprentissage.qualite import Qualite
 from maxprofit.live.preinscriptions import (
-    FILTRE_C, FILTRE_D, PREINSCRIPTIONS, fenetre_pre_inscrite, juger,
-    retenue)
+    EXCLUSION_C, EXCLUSION_D, PREINSCRIPTIONS, fenetre_pre_inscrite, juger,
+    motifs_de_rejet, retenue)
 from maxprofit.live.protocole import protocole, texte
 from maxprofit.research.registre import Registre
 
@@ -45,14 +45,21 @@ def test_la_fenetre_pre_inscrite_et_les_identifiants():
     assert all(len(p.hypothese) > 100 for p in PREINSCRIPTIONS)
 
 
-def test_les_filtres_et_une_valeur_manquante():
+def test_les_exclusions_et_une_valeur_manquante():
+    """Amendement du 14/10 : des EXCLUSIONS, comme dans /experiences ; une
+    valeur manquante ne déclenche rien."""
     def e(**ctx):
         return Exemple(ts_sec=0, pair="A_otc", contexte=ctx, gagne=True)
-    assert retenue(e(part_parcourue=0.3), [FILTRE_C])
-    assert not retenue(e(part_parcourue=0.46), [FILTRE_C])
-    assert retenue(e(espace_obstacle=1.95), [FILTRE_D])
-    assert retenue(e(espace_obstacle=99.0), [FILTRE_D])     # champ libre
-    assert not retenue(e(part_parcourue=0.3), [FILTRE_C, FILTRE_D])
+    assert retenue(e(part_parcourue=0.3), [EXCLUSION_C])
+    assert not retenue(e(part_parcourue=0.46), [EXCLUSION_C])
+    assert retenue(e(), [EXCLUSION_C])                    # pas de C : gardée
+    assert retenue(e(espace_obstacle=1.95), [EXCLUSION_D])
+    assert not retenue(e(espace_obstacle=1.94), [EXCLUSION_D])
+    assert retenue(e(espace_obstacle=99.0), [EXCLUSION_D])  # champ libre
+    assert retenue(e(part_parcourue=0.3), [EXCLUSION_C, EXCLUSION_D])
+    assert motifs_de_rejet({"part_parcourue": 0.5, "espace_obstacle": 1.0},
+                           [EXCLUSION_C, EXCLUSION_D]) == ["C ≥ 0,46",
+                                                           "D sous 1,95"]
 
 
 def test_le_verdict_suit_le_critere_ecrit():
@@ -102,22 +109,22 @@ def test_le_test_aveugle_des_pre_inscriptions():
                              contexte={}, gagne=i % 5 != 0))
     avant = _rapport(DEBUT_P - JOUR, exemples, serie)
     pre = avant["exp004"]["preinscriptions"]
-    assert "resultats" not in pre and pre["ids"][-1] == "P4"
+    assert "resultats" not in pre and pre["ids"] == ["P4"]
     assert "pas encore ouverte" in texte(avant)
 
     pendant = _rapport(DEBUT_P + 7 * JOUR, exemples, serie, ancien=avant)
     res = {x["id"]: x for x in pendant["exp004"]["preinscriptions"]
            ["resultats"]}
-    e = res["P2-E"]
-    assert e["n"] == e["g"] > 30
-    assert e["reference"][0] > e["n"]
-    assert e["avant"][0] > 0
-    assert e["verdict"].startswith(("✅", "≈"))
+    # P2 a sa validation propre depuis l'amendement : seule P4 est ici.
+    assert set(res) == {"P4"}
     assert res["P4"]["reference"] is None
     assert res["P4"]["verdict"].startswith(("✅", "≈", "indécise"))
-    assert "P2-E" in pendant["journal"]
+    groupes = pendant["exp004"]["validation_p2"]["groupes"]
+    assert groupes["P2-E"]["n"] == groupes["P2-E"]["g"] > 30
+    assert groupes["A"]["n"] > groupes["P2-E"]["n"]
+    assert "P2-E" in pendant["journal"] and "P4" in pendant["journal"]
     # Telegram (HTML) refuse un « < », un « > » ou un « & » hors balise.
-    nu = re.sub(r"</?(b|code)>", "", texte(pendant))
+    nu = re.sub(r"</?(b|code|pre)>", "", texte(pendant))
     assert not re.search(r"[<>&]", nu)
 
     fini = _rapport(FIN_P + JOUR, exemples, serie, ancien=pendant)

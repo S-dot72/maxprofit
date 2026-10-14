@@ -214,3 +214,15 @@ def test_indicateurs_a_l_entree_orientes_et_fenetre_trouee():
     # n'ont pas de fenêtre entière ; rien n'est réparé.
     assert indicateurs_a_l_entree(troue, 149, True) == {}
     assert "rsi_14" in indicateurs_a_l_entree(troue, 160, True)
+
+
+def test_les_jours_de_collecte_reelle():
+    """L'union des minutes collectées, toutes paires confondues : deux
+    paires sur la même minute ne la comptent qu'une fois, une minute
+    absente ne compte pas."""
+    q = Qualite(T0, T0 + 2 * 86400, T0 + 86400)
+    q.ajouter(marche(1440, 1, paire="A_otc"))                 # le jour 1
+    q.ajouter(marche(720, 2, paire="B_otc"))                  # sa moitié
+    assert q.jours_collectes(T0, T0 + 2 * 86400) == 1.0
+    assert q.jours_collectes(T0, T0 + 720 * 60) == 0.5
+    assert q.minutes_par_jour() == {T0 // 86400: 1440}

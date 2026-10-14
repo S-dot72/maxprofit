@@ -143,7 +143,7 @@ def test_rapport_complet_et_son_texte():
                   "Journal des hypothèses", "Reproductibilité"):
         assert titre in sortie
     assert "trous de collecte" in sortie
-    assert not re.search(r"<(?!/?(b|code)>)", sortie)
+    assert not re.search(r"<(?!/?(b|code|pre)>)", sortie)
 
 
 def test_gel_fige_puis_test_aveugle_final():

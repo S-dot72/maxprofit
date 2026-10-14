@@ -220,7 +220,7 @@ class Apprenti:
             exemples, etendus,
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
-            strategie.p.expiry_sec)
+            strategie.p.expiry_sec, jours_collectes=qualite.jours_collectes)
         nouveau.laboratoire["paires_jugees_sur"] = mode
         nouveau.laboratoire["version_experiences"] = VERSION_EXPERIENCES
         from maxprofit.live.experiences import experiences
@@ -228,7 +228,8 @@ class Apprenti:
             exemples,
             (lambda e: True) if seuil is None else
             (lambda e: e.contexte.get("mouvement_heure", 0.0) >= -seuil),
-            fenetre or 3, strategie.p.expiry_sec)
+            fenetre or 3, strategie.p.expiry_sec,
+            jours_collectes=qualite.jours_collectes)
         nouveau.laboratoire["experiences"]["persistance"] = {
             **persistance.resultat(), "fin": fin}
         # L'audit : son résumé est gardé avec le laboratoire ; les signaux
@@ -248,7 +249,8 @@ class Apprenti:
         from maxprofit.live.stabilite import stabilite, texte_alerte
         nouveau.laboratoire["stabilite"] = stabilite(
             exemples, en_direct, fenetre or 1,
-            int(getattr(course, "pas_max", 2) or 2), strategie.p.expiry_sec)
+            int(getattr(course, "pas_max", 2) or 2), strategie.p.expiry_sec,
+            jours_collectes=qualite.jours_collectes)
         alerte = texte_alerte(nouveau.laboratoire["stabilite"])
         # Le protocole de simulation OTC (EXP-001 à EXP-004) : le gel et le
         # journal des hypothèses viennent du rejeu précédent.
@@ -263,7 +265,8 @@ class Apprenti:
             version_regles=version_des_regles(strategie),
             version_experiences=VERSION_EXPERIENCES,
             debut=debut, fin=fin, gel=gel, jours=jours,
-            serie=sorted(serie, key=lambda e: e.ts_sec))
+            serie=sorted(serie, key=lambda e: e.ts_sec),
+            paires=self.paires, regle_heure=seuil)
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -275,7 +278,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 7
+VERSION_EXPERIENCES = 8
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

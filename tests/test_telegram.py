@@ -639,3 +639,16 @@ def test_un_HTML_refuse_est_renvoye_en_texte_brut_et_un_long_texte_decoupe():
     assert len(envois) > 1 and all(len(e["text"]) <= LONGUEUR_MAX
                                    for e in envois)
     assert "\n".join(e["text"] for e in envois) == long
+
+
+def test_un_bloc_pre_n_est_jamais_coupe_entre_deux_messages():
+    """Un tableau `<pre>` coupé laisserait une balise ouverte, que Telegram
+    refuse : il part entier dans l'un des morceaux."""
+    from maxprofit.hosting.telegram import _decouper
+    tableau = "<pre>" + "\n".join(f"ligne {i:02d} " + "x" * 20
+                                  for i in range(10)) + "</pre>"
+    texte = "\n".join(["avant " + "y" * 40] * 6 + [tableau, "après"])
+    morceaux = _decouper(texte, 400)
+    assert all(m.count("<pre>") == m.count("</pre>") for m in morceaux)
+    assert any(tableau in m for m in morceaux)
+    assert "\n".join(morceaux).replace("\n", "") == texte.replace("\n", "")

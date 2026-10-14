@@ -188,7 +188,9 @@ def laboratoire(exemples: Sequence[Exemple],
                 en_direct: Callable[[Exemple], bool],
                 echeance_sec: int = 900,
                 autres: Mapping[str, tuple[str, Sequence[Exemple]]]
-                | None = None) -> dict:
+                | None = None,
+                jours_collectes: Callable[[int, int], float] | None = None
+                ) -> dict:
     """Les variantes mesurées, et leur verdict face à ZoneH1 en direct.
 
     `exemples` : ZoneH1 rejouée. `etendus` : ZoneH1 rejouée avec deux
@@ -201,7 +203,10 @@ def laboratoire(exemples: Sequence[Exemple],
                         f"{2 * N_MIN_VALIDATION} pour juger une variante."}
     coupure = base[int(len(base) * PART_ETALONNAGE)].ts_sec
     debut, fin = base[0].ts_sec, base[-1].ts_sec
-    jours = max(1.0, (fin - debut) / 86400)
+    # Les débits en jours de COLLECTE réelle quand on les connaît : la
+    # collecte n'écoutait parfois que la moitié du temps.
+    jours = max(1.0, (jours_collectes and jours_collectes(debut - 60, fin))
+                or (fin - debut) / 86400)
     heures_ko = _heures_perdantes([e for e in base if e.ts_sec < coupure])
 
     variantes: list[tuple[str, str, list[Exemple]]] = [
@@ -424,7 +429,8 @@ def texte(resultat: Mapping | None) -> str:
         "qui juge ce que la course joue (ZoneH1 + confirmation) : les "
         "effectifs diffèrent, ne pas les comparer ligne à ligne.",
         f"Étalonnage : signaux jusqu'au {coupe} · <b>jugement : signaux "
-        f"depuis le {coupe}</b>, jamais vus par les variantes.",
+        f"depuis le {coupe}</b>, jamais vus par les variantes. Débits par "
+        f"jour de collecte réelle.",
         f"Seuil de rentabilité : {SEUIL:.1%}.",
     ]
     for d in resultat["mesures"]:
