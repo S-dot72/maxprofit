@@ -16,6 +16,8 @@ from typing import Callable, Mapping, Sequence
 
 from maxprofit.apprentissage.contexte import FENETRE, contexte
 from maxprofit.apprentissage.indicateurs import indicateurs_a_l_entree
+from maxprofit.apprentissage.potentiel import (
+    entree_au_repli, potentiel_a_l_entree)
 from maxprofit.apprentissage.lecons import ECHEANCES_COMPAREES, Exemple
 from maxprofit.core.market_view import SequenceMarketView
 from maxprofit.core.types import Candle, Direction
@@ -228,6 +230,17 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
             for cle, valeur in indicateurs_a_l_entree(completes, j,
                                                       call).items():
                 sortie[f"e_{cle}"] = valeur
+            # Le potentiel de la zone et l'expiration dynamique (demandés
+            # le 2026-10-14), et l'entrée au repli contre l'entrée tardive.
+            # Mesurés, jamais appliqués.
+            niveau = (features or {}).get("niveau")
+            for cle, valeur in potentiel_a_l_entree(
+                    completes, i, j, call, niveau,
+                    a_l_entree.get("part_parcourue"),
+                    a_l_entree.get("espace_obstacle")).items():
+                sortie[f"e_{cle}"] = valeur
+            sortie.update(entree_au_repli(completes, i, j, call, niveau,
+                                          closes, echeance_sec))
             break
         if k == ATTENTE_CONFIRMATION_MAX:
             sortie["attente_confirmation"] = 0.0

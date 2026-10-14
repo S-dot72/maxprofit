@@ -295,6 +295,7 @@ COMMANDES = [
     ("audit", "Fiche de chaque signal rejoué, et d'où viennent les pertes"),
     ("stabilite", "La référence semaine par semaine, et le premier pas"),
     ("protocole", "Protocole OTC : qualité des données, RSI/MACD/ATR, gel"),
+    ("potentiel", "Potentiel de zone, expiration dynamique, Stochastic"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -413,6 +414,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
             | None = None
         self._stabilite: Callable[[], Awaitable[str]] | None = None
         self._protocole: Callable[[], Awaitable[str]] | None = None
+        self._potentiel: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
         self._piloter: Callable[[str, str], Awaitable[str]] | None = None
@@ -632,6 +634,12 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         log.error("Fiche d'audit non envoyée : %s", erreur)
                         await self.client.envoyer(
                             chat, f"Fiche non envoyée : {erreur}", CLAVIER)
+        elif texte.startswith("/potentiel"):
+            if self._potentiel is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._potentiel(),
+                                          CLAVIER)
         elif texte.startswith("/protocole"):
             if self._protocole is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)

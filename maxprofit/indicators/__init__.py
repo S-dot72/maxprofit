@@ -32,12 +32,15 @@ from maxprofit.indicators.oscillators import (
     atr,
     atr_normalise_pct,
     besoin_macd,
+    besoin_stochastique_lente,
     bollinger_percent_b,
     distance_ma_pct,
+    ema,
     macd,
     rsi,
     sma,
     stochastique,
+    stochastique_lente,
 )
 from maxprofit.indicators.zigzag import ZigZag, dernier_pivot, distance_pivot_pct, zigzag
 
@@ -49,12 +52,14 @@ __all__ = [
     "atr",
     "atr_normalise_pct",
     "besoin_macd",
+    "besoin_stochastique_lente",
     "bollinger_percent_b",
     "corps_pct",
     "dernier_pivot",
     "derniere_fractale",
     "distance_ma_pct",
     "distance_pivot_pct",
+    "ema",
     "fractales",
     "macd",
     "meche_basse_pct",
@@ -62,5 +67,6 @@ __all__ = [
     "rsi",
     "sma",
     "stochastique",
+    "stochastique_lente",
     "zigzag",
 ]

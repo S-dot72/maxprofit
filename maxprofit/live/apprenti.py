@@ -242,6 +242,11 @@ class Apprenti:
                       >= -seuil))
         nouveau.laboratoire["audit"] = audit(exemples, en_direct,
                                              fenetre or 1)
+        # Le potentiel de zone et l'expiration dynamique (/potentiel).
+        from maxprofit.live.potentiel import potentiel
+        nouveau.laboratoire["potentiel"] = potentiel(
+            exemples, en_direct, fenetre or 1,
+            jours_collectes=qualite.jours_collectes)
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
         # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
@@ -266,7 +271,8 @@ class Apprenti:
             version_experiences=VERSION_EXPERIENCES,
             debut=debut, fin=fin, gel=gel, jours=jours,
             serie=sorted(serie, key=lambda e: e.ts_sec),
-            paires=self.paires, regle_heure=seuil)
+            paires=self.paires, regle_heure=seuil,
+            potentiel=nouveau.laboratoire["potentiel"])
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -278,7 +284,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 8
+VERSION_EXPERIENCES = 9
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

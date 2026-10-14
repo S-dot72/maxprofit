@@ -19,10 +19,12 @@ from maxprofit.core.types import Candle
 from maxprofit.indicators import (
     atr,
     besoin_macd,
+    besoin_stochastique_lente,
     bollinger_percent_b,
     corps_pct,
     derniere_fractale,
     distance_ma_pct,
+    ema,
     fractales,
     macd,
     meche_basse_pct,
@@ -30,6 +32,7 @@ from maxprofit.indicators import (
     rsi,
     sma,
     stochastique,
+    stochastique_lente,
     zigzag,
 )
 from maxprofit.indicators.base import PivotKind
@@ -214,6 +217,40 @@ def test_macd_historique_insuffisant_et_periodes_invalides():
     assert macd(plates([1.0] * (besoin_macd() - 1))) is None
     with pytest.raises(BotError):
         macd(plates([1.0] * 200), rapide=26, lente=12)
+
+
+def test_stochastique_lente_est_la_moyenne_des_k_bruts():
+    """(14, 3, 3) : %K lent = moyenne des 3 derniers %K bruts, %D =
+    moyenne des 3 derniers %K lents — recalculés ici avec le %K brut."""
+    import random
+    rng = random.Random(4)
+    prix = [1.0 + 0.01 * rng.gauss(0, 1) for _ in range(40)]
+    serie = [bougie(i, p, p + 0.004, p - 0.004, p + 0.001)
+             for i, p in enumerate(prix)]
+
+    def brut(fin):
+        return stochastique(serie[:fin], 14, 1).k
+    lents = [sum(brut(f - d) for d in range(3)) / 3 for f in (38, 39, 40)]
+    s = stochastique_lente(serie, 14, 3, 3)
+    assert s.k == pytest.approx(lents[-1])
+    assert s.d == pytest.approx(sum(lents) / 3)
+    assert besoin_stochastique_lente() == 18
+    assert stochastique_lente(serie[:17]) is None
+
+
+def test_stochastique_lente_aux_bornes_10_et_100():
+    montee = plates([float(i) for i in range(1, 25)])
+    descente = plates([float(i) for i in range(25, 1, -1)])
+    assert stochastique_lente(montee).k == pytest.approx(100.0)
+    assert stochastique_lente(descente).k == pytest.approx(0.0)
+
+
+def test_ema_tronquee():
+    assert ema(plates([2.0] * 60), 20) == pytest.approx(2.0)
+    assert ema(plates([2.0] * 59), 20) is None
+    montee = plates([float(i) for i in range(200)])
+    # Sur une pente, la moyenne rapide est plus près du prix que la lente.
+    assert ema(montee, 20) > ema(montee, 50)
 
 
 # --------------------------------------------------------------------------- #
