@@ -45,6 +45,22 @@ ECHECS_MAX = 5
 BACKOFF_SEC = 60
 BACKOFF_MAX_SEC = 1800
 
+#: Toutes les combien de secondes la course relit, au plus, ce que la base
+#: dit de la configuration (`consigne_externe`).
+VERIFICATION_CONSIGNE_SEC = 300.0
+
+#: Ce que l'opérateur lit quand la base demande ce que /demarrer ou /arreter
+#: n'a pas demandé.
+MESSAGES_CONSIGNE_EXTERNE = {
+    "relancer": ("🔄 <b>La configuration enregistrée n'est pas celle que "
+                 "joue la course</b> (arrivée en base après son démarrage, "
+                 "par une fusion de bases par exemple) : la course repart "
+                 "dessus dès qu'elle est au repos."),
+    "arreter": ("⏹ <b>La configuration enregistrée dit « arrêtée »</b> : la "
+                "course s'arrête dès qu'elle est au repos ; /demarrer pour "
+                "la relancer."),
+}
+
 
 def _ou(erreur: BaseException) -> str:
     """Où l'erreur s'est produite : fichier, ligne, et le code fautif.
@@ -106,9 +122,24 @@ class SuperviseurCourse:
 
     def __init__(self, fabriquer, *, alerter=None, pause_sec: float = 20.0,
                  debut_ts_sec: int | None = None,
-                 reveil: threading.Event | None = None):
+                 reveil: threading.Event | None = None,
+                 consigne_externe=None,
+                 verification_sec: float = VERIFICATION_CONSIGNE_SEC):
         self._fabriquer = fabriquer
         self._alerter = alerter
+        #: `consigne_externe(course)` rend « relancer », « arreter » ou
+        #: `None` : ce que la BASE demande à la course vivante.
+        #:
+        #: Elle existe à cause de la fusion du 2026-10-18. Le service a
+        #: démarré sur la nouvelle base pendant que la fusion la remplissait ;
+        #: `reglages`, copiée en dernier, n'y était pas encore. La course est
+        #: retombée sur l'environnement (`plan-demo-v2`, 250 $, jour 1) et
+        #: n'a plus jamais relu sa configuration — elle ne le faisait qu'à sa
+        #: construction. Relue ici au repos, la configuration arrivée après
+        #: coup reprend la main sans redémarrage.
+        self._consigne_externe = consigne_externe
+        self.verification_sec = verification_sec
+        self._prochaine_verification = 0.0
         #: Attente MAXIMALE entre deux passages sans ordre.
         self.pause_sec = pause_sec
         #: Levé quand des bougies closes arrivent en base. La course se
@@ -256,6 +287,8 @@ class SuperviseurCourse:
                     self._consigne = None
                 course = self._fabriquer(self._alerter)
                 self._course = course
+                self._prochaine_verification = (time.monotonic()
+                                                + self.verification_sec)
                 self._etape = None
                 self.echecs_consecutifs = 0
                 attente = BACKOFF_SEC
@@ -268,6 +301,7 @@ class SuperviseurCourse:
                     # pendant des heures sur une course parfaitement vivante
                     # qui attendait simplement un signal.
                     self._dernier_resume = course.resume()
+                    self._lire_la_consigne_externe(course)
                     if self._consigne is not None and _au_repos(course):
                         consigne, self._consigne = self._consigne, None
                         break
@@ -314,6 +348,35 @@ class SuperviseurCourse:
                     return
                 self._arret.wait(attente)
                 attente = min(attente * 2, BACKOFF_MAX_SEC)
+
+    def _lire_la_consigne_externe(self, course) -> None:
+        """Relit, au plus toutes les `verification_sec`, ce que la base
+        demande. Une base illisible ne change rien : on réessaiera."""
+        if self._consigne_externe is None or self._consigne is not None \
+                or time.monotonic() < self._prochaine_verification:
+            return
+        self._prochaine_verification = time.monotonic() + self.verification_sec
+        try:
+            consigne = self._consigne_externe(course)
+        except Exception:                        # noqa: BLE001
+            log.warning("Configuration en base illisible : la course garde "
+                        "son réglage.", exc_info=True)
+            return
+        if consigne not in MESSAGES_CONSIGNE_EXTERNE:
+            return
+        log.info("Course du plan : la base demande « %s ».", consigne)
+        self._consigne = consigne
+        self._prevenir(MESSAGES_CONSIGNE_EXTERNE[consigne])
+
+    def origine(self) -> str | None:
+        """La campagne que joue la course vivante, et d'où vient son
+        réglage — la ligne qui aurait rendu la fusion du 18/10 évidente."""
+        course = self._course
+        campagne = getattr(getattr(course, "journal", None), "campagne", None)
+        if not campagne:
+            return None
+        origine = getattr(course, "origine", None)
+        return f"{campagne} ({origine})" if origine else campagne
 
     def noter_etape(self, etape: str) -> None:
         """Rappelée par la fabrique à chaque étape du démarrage."""

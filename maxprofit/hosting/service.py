@@ -55,7 +55,8 @@ from maxprofit.live.plan_demo import (
     UNIVERS_PRE_INSCRIT, audit, bilan, demander_reprise, echeances,
     experiences, fabriquer_course, laboratoire, lecons, potentiel, protocole,
     rapatrier, reference8, simulation, stabilite)
-from maxprofit.hosting.pilotage import Pilote, gouverne
+from maxprofit.hosting.pilotage import (
+    Pilote, alerte_sans_configuration, consigne_de_la_base, gouverne)
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -405,7 +406,7 @@ async def _servir(args) -> int:
                 return _fabriquer_depuis_l_environnement(alerter)
             log.info("Course construite sur la configuration enregistrée : "
                      "%s, campagne %s", reglage.mode, reglage.campagne)
-            return fabriquer_course(
+            construite = fabriquer_course(
                 resoudre_ssid(demo=True),
                 campagne=reglage.campagne, capital=reglage.capital,
                 sessions_par_jour=reglage.sessions_par_jour,
@@ -417,9 +418,12 @@ async def _servir(args) -> int:
                 etape=lambda texte: course.noter_etape(texte),
                 configuration=reglage,
                 campagnes_precedentes=tuple(reglage.campagnes_precedentes))
+            construite.origine = "configuration enregistrée"
+            return construite
 
         def _fabriquer_depuis_l_environnement(alerter):
-            return fabriquer_course(
+            _alerter_si_configuration_perdue(alerter)
+            construite = fabriquer_course(
                 resoudre_ssid(demo=True),
                 # ⚠ LE NOM DE CAMPAGNE EST CE QUI REMET LE TEST À ZÉRO.
                 #
@@ -476,6 +480,31 @@ async def _servir(args) -> int:
                 # `course` est le superviseur en cours de construction :
                 # la fabrique n'est appelée qu'une fois qu'il existe.
                 etape=lambda texte: course.noter_etape(texte))
+            construite.origine = ("variables d'environnement — aucune "
+                                  "configuration enregistrée en base")
+            return construite
+
+        def _alerter_si_configuration_perdue(alerter):
+            try:
+                conn = _ouvrir_en_ecriture()
+                try:
+                    message = alerte_sans_configuration(conn, campagne_env)
+                finally:
+                    conn.close()
+            except Exception:                    # noqa: BLE001
+                log.warning("Contrôle de la configuration impossible.",
+                            exc_info=True)
+                return
+            if message:
+                log.warning("%s", message)
+                if alerter is not None:
+                    alerter(message)
+
+        def _consigne_de_la_base(course_vivante):
+            reglage = pilote.charger()
+            campagne = getattr(getattr(course_vivante, "journal", None),
+                               "campagne", None)
+            return consigne_de_la_base(reglage, campagne)
 
         course = SuperviseurCourse(
             _fabriquer_la_course,
@@ -484,6 +513,9 @@ async def _servir(args) -> int:
             # lancement d'une bascule manuelle le bon jour, c'est le manquer.
             debut_ts_sec=date_de_depart(),
             reveil=BOUGIES_ECRITES,
+            # La configuration arrivée en base APRÈS la construction (fusion
+            # du 18/10) reprend la main au repos, sans redémarrage.
+            consigne_externe=_consigne_de_la_base,
         )
         _course["sup"] = course
         reglage = _configuration_qui_gouverne()
@@ -642,6 +674,12 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
         f"Paires souscrites : {superviseur.paires_souscrites_nommees()}")
     if course is not None:
         lignes.append(f"Course du plan : {course.resume()}")
+        # La campagne jouée et d'où vient son réglage : sans cette ligne, une
+        # course retombée sur l'environnement après la fusion du 18/10 ne se
+        # distinguait de la bonne que par un solde de 250 $.
+        origine = getattr(course, "origine", lambda: None)()
+        if origine:
+            lignes.append(f"Campagne : {origine}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
 

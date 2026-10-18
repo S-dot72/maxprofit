@@ -33,6 +33,16 @@ Les colonnes copiées sont celles que les DEUX tables possèdent : une base plus
 ancienne peut avoir un schéma en retard, et l'on ne veut ni planter ni inventer
 une valeur.
 
+--- Ne verser qu'une partie, ou imposer la source ---------------------------
+
+`tables` limite la fusion à quelques tables : rattraper `reglages` et
+`plan_etat` ne demande pas de relire un million de bougies sur une base
+gratuite au quota presque épuisé. `forcer` fait gagner la SOURCE même si la
+ligne de la cible est plus récente — pour le cas où la cible a reçu, entre-
+temps, une configuration écrite par erreur (un /arreter tapé sur la nouvelle
+base avant l'arrivée de la vraie, par exemple). Le bilan de `reglages` dit
+quelle campagne chaque base porte : on le lit à blanc avant de choisir.
+
 --- Pourquoi un mode « à blanc » par défaut ----------------------------------
 
 Une fusion écrit dans une base qui a déjà de la valeur. On veut voir, avant,
@@ -42,8 +52,12 @@ s'arrêter si les chiffres surprennent.
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass
+from typing import Sequence
 
+from maxprofit.core.errors import BotError
 from maxprofit.store import postgres
 from maxprofit.store.market import _inserer_en_lot
 
@@ -139,28 +153,69 @@ ATTENTE_REESSAI_SEC = (5, 20, 60)
 
 
 def fusionner(source, cible, *, appliquer: bool = False,
-              journal=print, attendre=None) -> list[Bilan]:
+              journal=print, attendre=None,
+              tables: Sequence[str] | None = None,
+              forcer: Sequence[str] = ()) -> list[Bilan]:
     """Verse `source` dans `cible`. À blanc tant que `appliquer` est faux.
 
     Rend un bilan par table : lignes à la source, déjà présentes à la cible,
     à insérer, à remplacer. Les chiffres valent pour les deux modes — à blanc,
     ils disent ce qui se produira ; appliqués, ce qui s'est produit.
+    `tables` : seulement celles-ci ; `forcer` : la source l'emporte sur ces
+    tables (parmi celles où une ligne peut être remplacée).
     """
+    inconnues = sorted(set(tables or ()) - set(ORDRE))
+    if inconnues:
+        raise BotError(f"Tables inconnues : {', '.join(inconnues)} "
+                       f"(fusionnables : {', '.join(ORDRE)}).")
+    interdites = sorted(set(forcer) - set(REMPLACER_SI_PLUS))
+    if interdites:
+        raise BotError(f"--forcer ne vaut que pour "
+                       f"{', '.join(REMPLACER_SI_PLUS)} : "
+                       f"{', '.join(interdites)} refusée(s).")
     tables_source, tables_cible = _tables(source), _tables(cible)
     bilans: list[Bilan] = []
     for table in ORDRE:
         if table in EXCLUES:
+            continue
+        if tables is not None and table not in tables:
             continue
         if table not in tables_source:
             continue
         if table not in tables_cible:
             bilans.append(Bilan(table, note="absente de la cible : ignorée"))
             continue
+        avant = None
+        if table == "reglages":
+            avant = (_configuration_lisible(source),
+                     _configuration_lisible(cible))
         bilans.append(_avec_reessais(
-            lambda t=table: _fusionner_table(source, cible, t, appliquer),
+            lambda t=table: _fusionner_table(source, cible, t, appliquer,
+                                             forcer=t in forcer),
             table, journal, attendre))
+        if avant is not None:
+            bilans[-1].note = (f"configuration : source {avant[0]} ; cible "
+                               f"{avant[1]}")
         journal(_ligne(bilans[-1], appliquer))
     return bilans
+
+
+def _configuration_lisible(conn) -> str:
+    """La campagne que porte la configuration d'une base, et sa date."""
+    try:
+        ligne = conn.execute("SELECT valeur, maj_ts_sec FROM reglages "
+                             "WHERE cle = 'configuration'").fetchone()
+    except Exception:                            # noqa: BLE001
+        return "illisible"
+    if ligne is None:
+        return "aucune"
+    try:
+        valeur = json.loads(ligne[0])
+    except ValueError:
+        return "illisible"
+    etat = "lancée" if valeur.get("lancee") else "arrêtée"
+    quand = time.strftime("%d/%m %H:%M", time.gmtime(int(ligne[1] or 0)))
+    return f"{valeur.get('campagne') or '—'} ({etat}, écrite le {quand} UTC)"
 
 
 def _avec_reessais(faire, table: str, journal, attendre):
@@ -199,7 +254,8 @@ def _ligne(b: Bilan, appliquer: bool) -> str:
             f"{verbe} {b.a_inserer:>8}{rempl}{('  ' + b.note) if b.note else ''}")
 
 
-def _fusionner_table(source, cible, table: str, appliquer: bool) -> Bilan:
+def _fusionner_table(source, cible, table: str, appliquer: bool, *,
+                     forcer: bool = False) -> Bilan:
     communes = [c for c in _colonnes(source, table)
                 if c in set(_colonnes(cible, table))]
     if table == "executions":
@@ -229,7 +285,9 @@ def _fusionner_table(source, cible, table: str, appliquer: bool) -> Bilan:
             existantes[k] = ligne[i_critere] if i_critere is not None else None
             continue
         bilan.deja += 1
-        if i_critere is not None:
+        if forcer:
+            plus_recentes.append(ligne)
+        elif i_critere is not None:
             actuel = existantes[k]
             propose = ligne[i_critere]
             if propose is not None and (actuel is None or propose > actuel):
@@ -244,8 +302,9 @@ def _fusionner_table(source, cible, table: str, appliquer: bool) -> Bilan:
         _inserer_en_lot(cible, entete, "ON CONFLICT DO NOTHING", nouvelles)
     if plus_recentes:
         maj = ", ".join(f"{c} = excluded.{c}" for c in communes if c not in cle)
-        suite = (f"ON CONFLICT ({', '.join(cle)}) DO UPDATE SET {maj} "
-                 f"WHERE {table}.{critere} < excluded.{critere}")
+        suite = f"ON CONFLICT ({', '.join(cle)}) DO UPDATE SET {maj}"
+        if not forcer:
+            suite += f" WHERE {table}.{critere} < excluded.{critere}"
         _inserer_en_lot(cible, entete, suite, plus_recentes)
     if hasattr(cible, "commit"):
         cible.commit()

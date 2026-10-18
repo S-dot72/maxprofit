@@ -7,6 +7,13 @@ Verser une base PostgreSQL dans une autre qui contient déjà des données.
     .venv313\Scripts\python.exe outils\fusionner_bases.py              # à blanc
     .venv313\Scripts\python.exe outils\fusionner_bases.py --appliquer  # pour de vrai
 
+    # Rattraper la configuration seule, sans relire les bougies :
+    .venv313\Scripts\python.exe outils\fusionner_bases.py ^
+        --tables reglages,plan_etat
+    # … et imposer celle de la source si la cible en a reçu une autre :
+    .venv313\Scripts\python.exe outils\fusionner_bases.py --tables reglages ^
+        --forcer reglages --appliquer
+
 Les règles de fusion sont dans `maxprofit/store/fusion.py`. En bref : rien
 n'est effacé dans la cible ; ce qui manque est ajouté ; seuls l'état d'une
 campagne (le plus récent gagne) et le chemin de ticks d'une minute (le plus
@@ -39,6 +46,7 @@ from _interpreteur import exiger  # noqa: E402
 
 exiger("psycopg", r"outils\fusionner_bases.py")
 
+from maxprofit.core.errors import BotError            # noqa: E402
 from maxprofit.store.db import open_postgres          # noqa: E402
 from maxprofit.store.fusion import fusionner          # noqa: E402
 from maxprofit.store.postgres import (                # noqa: E402
@@ -57,7 +65,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--appliquer", action="store_true",
                     help="Écrire pour de vrai. Sans lui, essai à blanc.")
+    ap.add_argument("--tables", default="",
+                    help="Seulement ces tables, séparées par des virgules "
+                         "(ex. reglages,plan_etat).")
+    ap.add_argument("--forcer", default="",
+                    help="La source l'emporte sur ces tables même si la cible "
+                         "est plus récente (reglages, plan_etat, tick_paths).")
     args = ap.parse_args()
+    tables = [t.strip() for t in args.tables.split(",") if t.strip()] or None
+    forcer = [t.strip() for t in args.forcer.split(",") if t.strip()]
 
     source_url = _url("SOURCE_DATABASE_URL")
     cible_url = _url("CIBLE_DATABASE_URL")
@@ -79,7 +95,11 @@ def main() -> int:
         sys.exit(f"Cible injoignable : {erreur}")
 
     debut = time.monotonic()
-    bilans = fusionner(source, cible, appliquer=args.appliquer)
+    try:
+        bilans = fusionner(source, cible, appliquer=args.appliquer,
+                           tables=tables, forcer=forcer)
+    except BotError as erreur:
+        sys.exit(f"Refusé : {erreur}")
     source.close()
     cible.close()
 

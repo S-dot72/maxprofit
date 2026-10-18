@@ -208,6 +208,55 @@ def gouverne(cfg: Configuration | None) -> bool:
     return cfg is not None and bool(cfg.campagne)
 
 
+def consigne_de_la_base(cfg: Configuration | None,
+                        campagne_en_cours: str | None) -> str | None:
+    """Ce que la configuration enregistrée demande à la course vivante.
+
+    - aucune configuration : rien (la course suit l'environnement) ;
+    - une configuration arrêtée : « arreter » ;
+    - une configuration lancée sur une AUTRE campagne que celle jouée :
+      « relancer ».
+
+    Le cas visé est une configuration arrivée en base APRÈS la construction
+    de la course — une fusion de bases qui copie `reglages` en dernier. Un
+    réglage modifié par /capital ou /risque ne change pas la campagne : la
+    course le garde jusqu'au /demarrer, comme promis.
+    """
+    if not gouverne(cfg):
+        return None
+    if not cfg.lancee:
+        return "arreter"
+    if campagne_en_cours and campagne_en_cours != cfg.campagne:
+        return "relancer"
+    return None
+
+
+def alerte_sans_configuration(conn, campagne_env: str) -> str | None:
+    """L'alerte à donner quand la course retombe sur l'environnement alors
+    que la base a connu une autre campagne, plus récente.
+
+    C'est la signature d'une configuration perdue — une fusion de bases qui
+    n'a pas (encore) versé `reglages`. Sans elle, la course repart en
+    silence sur `plan-demo-v2`, 250 $, jour 1, et seul un œil attentif voit
+    que le solde affiché n'est pas celui de la campagne en cours.
+    """
+    ligne = conn.execute(
+        "SELECT campagne, maj_ts_sec, jour, solde FROM plan_etat "
+        "ORDER BY maj_ts_sec DESC LIMIT 1").fetchone()
+    if ligne is None or ligne[0] == campagne_env:
+        return None
+    campagne, maj, jour, solde = ligne
+    quand = time.strftime("%d/%m %H:%M UTC", time.gmtime(int(maj)))
+    return (f"⚠️ <b>Aucune configuration enregistrée en base</b> : la course "
+            f"suit l'environnement (campagne {campagne_env}). La base "
+            f"contient pourtant la campagne <b>{campagne}</b> (jour {jour}, "
+            f"solde {float(solde):.2f} $, mise à jour le {quand}). Si une "
+            f"fusion de bases est en cours, la course passera d'elle-même sur "
+            f"la configuration dès qu'elle arrivera ; sinon, versez-la : "
+            f"outils/fusionner_bases.py --tables reglages,plan_etat. "
+            f"Ne lancez pas /demarrer : il ouvrirait une NOUVELLE campagne.")
+
+
 def _fermer(conn) -> None:
     try:
         conn.close()
