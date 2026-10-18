@@ -163,15 +163,68 @@ def test_une_table_qui_ECHOUE_est_rejouee_sans_doublon(deux_bases, monkeypatch):
     vraie = mod._fusionner_table
     appels = {"n": 0}
 
-    def capricieuse(src, dst, table, appliquer):
+    def capricieuse(src, dst, table, appliquer, **kw):
         if table == "candles":
             appels["n"] += 1
             if appels["n"] == 1:
-                vraie(src, dst, table, appliquer)        # écrit, PUIS coupe
+                vraie(src, dst, table, appliquer, **kw)  # écrit, PUIS coupe
                 raise OSError("failed to resolve host")
-        return vraie(src, dst, table, appliquer)
+        return vraie(src, dst, table, appliquer, **kw)
     monkeypatch.setattr(mod, "_fusionner_table", capricieuse)
     fusionner(source, cible, appliquer=True, journal=lambda *_: None,
               attendre=lambda _s: None)
     assert appels["n"] == 2, "la table doit être rejouée"
     assert _compte(cible, "candles") == 2, "et sans doublon"
+
+
+def _configuration(conn, campagne, maj, lancee=True):
+    conn.execute(
+        "INSERT INTO reglages (cle, valeur, maj_ts_sec) VALUES "
+        "('configuration', ?, ?)",
+        (f'{{"campagne": "{campagne}", "lancee": {str(lancee).lower()}}}',
+         maj))
+
+
+def test_rattraper_la_configuration_SANS_relire_les_bougies(deux_bases):
+    """Après une fusion qui avait oublié `reglages`, on ne verse qu'elle et
+    l'état du plan : les bougies ne sont même pas lues."""
+    source, cible = deux_bases
+    _bougie(source, "EURUSD_otc", 1790000040)
+    _configuration(source, "plan-20261010-000517", 100)
+    bilans = fusionner(source, cible, appliquer=True, journal=lambda *_: None,
+                       tables=("reglages", "plan_etat"))
+    assert [b.table for b in bilans] == ["plan_etat", "reglages"]
+    assert _compte(cible, "candles") == 0
+    assert "plan-20261010-000517" in cible.execute(
+        "SELECT valeur FROM reglages").fetchone()[0]
+    # Le bilan dit ce que chaque base portait AVANT.
+    note = bilans[-1].note
+    assert "source plan-20261010-000517 (lancée" in note
+    assert "cible aucune" in note
+
+
+def test_forcer_la_source_sur_une_configuration_ecrite_par_erreur(deux_bases):
+    """Un /arreter tapé sur la nouvelle base avant l'arrivée de la vraie
+    configuration y écrit `plan-demo-v2`, PLUS RÉCENT : la règle du plus
+    récent la garderait. `forcer` impose la source."""
+    source, cible = deux_bases
+    _configuration(source, "plan-20261010-000517", 100)
+    _configuration(cible, "plan-demo-v2", 200, lancee=False)
+    fusionner(source, cible, appliquer=True, journal=lambda *_: None,
+              tables=("reglages",))
+    assert "plan-demo-v2" in cible.execute(
+        "SELECT valeur FROM reglages").fetchone()[0], "le plus récent gagne"
+    bilans = fusionner(source, cible, appliquer=True, journal=lambda *_: None,
+                       tables=("reglages",), forcer=("reglages",))
+    assert bilans[0].a_remplacer == 1
+    assert "plan-20261010-000517" in cible.execute(
+        "SELECT valeur FROM reglages").fetchone()[0]
+
+
+def test_des_tables_inconnues_ou_un_forcage_risque_sont_refuses(deux_bases):
+    from maxprofit.core.errors import BotError
+    source, cible = deux_bases
+    with pytest.raises(BotError):
+        fusionner(source, cible, tables=("reglage",))
+    with pytest.raises(BotError):
+        fusionner(source, cible, forcer=("executions",))
