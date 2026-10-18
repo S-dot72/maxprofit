@@ -138,7 +138,8 @@ def _signal(k: int, t0: int) -> Exemple:
             "gagne_confirme_600": float(k % 3 != 0),
             "gagne_confirme_900": float(g900),
             "e_mouvement_heure": -10.0 if k % 50 == 7 else 0.0,
-            "e_distance_niveau": 1.2,
+            # Une entrée sur onze poussée au-delà de 1,55 (le seuil de M4).
+            "e_distance_niveau": 1.8 if k % 11 == 0 else 1.2,
             "e_taille_bougie": 1.5 if k % 6 == 1 else 1.0,
             "e_part_parcourue": 0.6 if k % 4 == 0 else 0.2,
             "e_espace_obstacle": (1.0 if k % 8 == 0 else
@@ -211,6 +212,8 @@ def test_livrable_a_table_croisee_et_decomposition():
     assert h15["mcnemar"] is not None and h15["mcnemar"] < 0.001
     d = a["distance"]
     assert d["ecart"] == [0.7, 0.7, 0.7] and d["plus_loin"] == 320
+    # Le retard pousse au-delà du seuil de M4 les entrées k % 11 = 0.
+    assert d["entrent_m4"] == sum(1 for k in ks if k % 11 == 0)
     # B, C, D : les entrées que le retard fait basculer dans l'exclusion.
     v = {x["lettre"]: x for x in a["variables"]}
     assert v["C"]["entrent"] == sum(1 for k in ks if k % 4 == 0)
@@ -223,8 +226,8 @@ def test_livrable_b_modeles_chevauchement_et_valeurs():
     r = _rapport()
     b = r["b"]
     m = {x["id"]: x for x in b["modeles"]}
-    assert [x["id"] for x in b["modeles"]] == ["M0", "M1", "M2", "M3", "D",
-                                               "C+D"]
+    assert [x["id"] for x in b["modeles"]] == ["M0", "M1", "M2", "M3", "M4",
+                                               "D", "C+D"]
     assert m["M0"]["n"] == 312 and m["M0"]["exclus"] == 0
     assert m["M2"]["ev"] > m["M0"]["ev"]          # C écarte des perdantes
     assert m["M2"]["ecart"] > 0 and m["M1"]["ecart"] < 0
@@ -233,6 +236,15 @@ def test_livrable_b_modeles_chevauchement_et_valeurs():
     assert c["seulement"]["D"] == [0, 0]
     pred = {x["lettre"]: x for x in b["predictive"]}
     assert pred["C"]["ecart"] > 0 and pred["B"]["ecart"] < 0
+    # M4 : la distance, seule puis au-delà de B.
+    joues = [k for k in range(400) if k % 5 and k % 50 != 7]
+    loin = [k for k in joues if k % 11 == 0]
+    assert m["M4"]["exclus"] == len(loin)
+    dist = b["distance"]
+    assert dist["ecartees"][0] == len(loin)
+    assert dist["aussi_b"] == sum(1 for k in loin if k % 6 == 1)
+    assert dist["au_dela_de_b"]["retirees"][0] == sum(
+        1 for k in loin if k % 6 != 1)
     aj = {x["lettre"]: x for x in b["ajoutee"]}
     # D n'écarte rien que C n'écarte déjà : aucune valeur ajoutée.
     assert aj["D"]["retirees"] == [0, 0] and aj["D"]["ecart"] == 0
@@ -360,3 +372,26 @@ def test_le_journal_du_protocole_compte_la_mission():
     ids = {h[0] for h in p["hypotheses"]}
     assert {"R8-A1", "R8-M3", "R8-H"} <= ids
     assert "R8-A1" in p["journal"]
+
+
+def test_un_registre_et_un_plan_d_avant_m4_sont_completes(monkeypatch):
+    """Les fiches écrites avant l'ajout de la distance sont remplacées par
+    leur version complète ; un plan figé sans M4 reçoit sa part, mesurée
+    sur les mêmes entrées d'avant l'ouverture."""
+    ouv = ouverture_r8()
+    t0 = ouv - 10 * JOUR
+    monkeypatch.setenv("P2_GAIN_MIN_POINTS", "10")
+    r = _rapport(t0=t0)
+    ancien = json.loads(json.dumps(r))
+    f = ancien["fenetre"]
+    f["registre"] = [x[:9] for x in f["registre"]]
+    part_m4 = f["plan"]["parts"].pop("M4")
+    f["finals"] = {k: v for k, v in f["finals"].items() if k != "M4"}
+    exemples = [_signal(k, t0) for k in range(400)]
+    deux = r8.reference8(exemples, _en_direct, 1, ancien=ancien, debut=t0,
+                         fin=t0 + 424 * 3600)
+    f2 = deux["fenetre"]
+    assert all(len(x) == 10 for x in f2["registre"])
+    assert f2["plan"]["parts"]["M4"] == part_m4
+    assert f2["plan"]["fige_le"] == f["plan"]["fige_le"]
+    assert "R8-M4" in {i for i, _h, _v in r8.hypotheses(deux)}
