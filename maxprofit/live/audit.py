@@ -52,7 +52,8 @@ from maxprofit.apprentissage.indicateurs import CLES_A_L_ENTREE
 from maxprofit.apprentissage.potentiel import CLES_POTENTIEL
 from maxprofit.apprentissage.qualite import SOURCE
 from maxprofit.live.preinscriptions import (
-    EXCLUSION_C, EXCLUSION_D, motifs_de_rejet, ouverture)
+    EXCLUSION_B, EXCLUSION_C, EXCLUSION_D, motifs_de_rejet, ouverture,
+    ouverture_r8)
 from maxprofit.apprentissage.lecons import Exemple
 from maxprofit.live.laboratoire import confirmes
 
@@ -236,7 +237,13 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
                   "filtre_d", "filtres_c_et_d", "motif_rejet"]
                # Le potentiel de zone et l'expiration dynamique (/potentiel).
                + [f"entree_{c}" for c in CLES_POTENTIEL]
-               + ["attente_repli", "gagne_repli"])
+               + ["attente_repli", "gagne_repli"]
+               # Mission Reference 8 : le chemin après l'entrée confirmée,
+               # le même après l'entrée immédiate, et les décisions des
+               # modèles gelés (B, E) et de la strate d'échéance.
+               + list(SUIVI_R8)
+               + [f"immediate_{c}" for c in SUIVI_IMMEDIAT]
+               + ["fenetre_r8", "filtre_b", "filtre_e", "strate_echeance"])
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(entetes)
@@ -272,7 +279,10 @@ def csv_du_rejeu(exemples: Sequence[Exemple],
             + [c.get(f"e_{k}", "") for k in CLES_A_L_ENTREE]
             + _decisions_p2(joue, en_direct)
             + [c.get(f"e_{k}", "") for k in CLES_POTENTIEL]
-            + [c.get("attente_repli", ""), _01(c.get("gagne_repli"))])
+            + [c.get("attente_repli", ""), _01(c.get("gagne_repli"))]
+            + [c.get(k, "") for k in SUIVI_R8]
+            + [c.get(f"imm_{k}", "") for k in SUIVI_IMMEDIAT]
+            + _decisions_r8(joue, en_direct))
     return sortie.getvalue().encode("utf-8-sig")
 
 
@@ -293,6 +303,30 @@ def _decisions_p2(joue: Exemple | None,
     return ["1", _01(joue.ts_sec >= ouverture()), decision([EXCLUSION_C]),
             decision([EXCLUSION_D]),
             decision([EXCLUSION_C, EXCLUSION_D]), " + ".join(motifs)]
+
+
+#: Les colonnes du suivi ajoutées par la mission Reference 8.
+SUIVI_R8: tuple[str, ...] = ("t_pour", "t_contre", "net_4", "net_10",
+                             "net_15")
+SUIVI_IMMEDIAT: tuple[str, ...] = ("mfe_15", "mae_15", "t_mfe",
+                                   "zone_cassee", *SUIVI_R8)
+
+
+def _decisions_r8(joue: Exemple | None,
+                  en_direct: Callable[[Exemple], bool]) -> list[str]:
+    """Pour une entrée de la référence : dans la fenêtre du 19/10 ?, la
+    décision de B, celle de E (B, C ou D), et la strate d'échéance."""
+    if joue is None or not en_direct(joue):
+        return ["", "", "", ""]
+    from maxprofit.live.reference8 import strate
+    c = joue.contexte
+
+    def decision(exclusions):
+        return "écarte" if motifs_de_rejet(c, exclusions) else "garde"
+    return [_01(joue.ts_sec >= ouverture_r8()), decision([EXCLUSION_B]),
+            decision([EXCLUSION_B, EXCLUSION_C, EXCLUSION_D]),
+            strate(c.get("taille_bougie"), c.get("part_parcourue"),
+                   c.get("espace_obstacle"))]
 
 
 def _01(valeur) -> str:

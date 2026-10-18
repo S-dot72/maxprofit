@@ -33,17 +33,23 @@ from maxprofit.core.config import (                                # noqa: E402
     charger_env_local, research_db_path)
 from maxprofit.core.errors import BotError                         # noqa: E402
 from maxprofit.live.preinscriptions import (                       # noqa: E402
-    DECLAREES_LE, PREINSCRIPTIONS, fenetre_pre_inscrite)
+    DECLAREES_LE, DECLAREES_R8, FENETRE_JOURS_R8, PREINSCRIPTIONS,
+    PREINSCRIPTIONS_R8, fenetre_pre_inscrite, ouverture_r8)
 from maxprofit.research.metriques import Resultat                  # noqa: E402
 from maxprofit.research.registre import Registre                   # noqa: E402
 
 
 def inscrire(registre: Registre) -> list[tuple[str, int, bool]]:
-    """(ident, id du registre, nouvelle ?) pour chaque pré-inscription."""
-    debut, fin = fenetre_pre_inscrite()
+    """(ident, id du registre, nouvelle ?) pour chaque pré-inscription.
+    Celles de la mission Reference 8 gardent LEUR fenêtre et leur date."""
     deja = {e.nom: e.id for e in registre.toutes()}
     sortie = []
-    for p in PREINSCRIPTIONS:
+    debut_r8 = ouverture_r8()
+    lots = [(p, *fenetre_pre_inscrite(), DECLAREES_LE)
+            for p in PREINSCRIPTIONS]
+    lots += [(p, debut_r8, debut_r8 + FENETRE_JOURS_R8 * 86400,
+              DECLAREES_R8) for p in PREINSCRIPTIONS_R8]
+    for p, debut, fin, declaree in lots:
         if p.nom in deja:
             sortie.append((p.ident, deja[p.nom], False))
             continue
@@ -53,7 +59,7 @@ def inscrire(registre: Registre) -> list[tuple[str, int, bool]]:
             periode_debut_sec=debut, periode_fin_sec=fin, sur_scelle=True,
             parametres={**dict(p.parametres), "ident": p.ident,
                         "critere": p.critere, "n_min": p.n_min,
-                        "declaree_le": DECLAREES_LE})
+                        "declaree_le": declaree})
         sortie.append((p.ident, ident, True))
     return sortie
 

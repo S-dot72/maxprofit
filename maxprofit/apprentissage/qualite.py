@@ -117,6 +117,9 @@ class Qualite:
         #: jours de calendrier, quand la collecte n'écoutait que la moitié
         #: du temps, divisait le débit par deux.
         self._minutes: set[int] = set()
+        #: {paire: {heure (début, en heures depuis l'époque): minutes
+        #: complètes}} : la couverture par paire-heure (mission Reference 8).
+        self._heures: dict[str, dict[int, int]] = {}
 
     def ajouter(self, bougies: Sequence[Candle],
                 respirer: Callable[[], None] | None = None) -> None:
@@ -136,6 +139,7 @@ class Qualite:
         #: {début de minute: drapeau} des bougies marquées.
         drapeaux: dict[int, str] = {}
         figees: list[Candle] = []
+        heures = self._heures.setdefault(pair, {})
 
         def clore_figees() -> None:
             if len(figees) >= FIGEE_SERIE:
@@ -149,6 +153,7 @@ class Qualite:
             empreinte.update(_ligne(b))
             if b.complete:
                 self._minutes.add(b.ts_sec)
+                heures[b.ts_sec // 3600] = heures.get(b.ts_sec // 3600, 0) + 1
             if precedente is not None and b.ts_sec - precedente.ts_sec > 60:
                 absentes = (b.ts_sec - precedente.ts_sec) // 60 - 1
                 trous += 1
@@ -228,6 +233,11 @@ class Qualite:
         for m in self._minutes:
             jours[m // 86400] = jours.get(m // 86400, 0) + 1
         return jours
+
+    def minutes_par_paire_heure(self) -> dict[str, dict[int, int]]:
+        """{paire: {heure UTC (en heures depuis l'époque): minutes
+        complètes}}. Une heure absente n'a aucune minute."""
+        return {p: dict(h) for p, h in self._heures.items()}
 
     def jours_collectes(self, debut: int, fin: int) -> float:
         """Les jours de collecte réelle dans [debut, fin) : minutes

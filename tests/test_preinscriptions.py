@@ -75,14 +75,19 @@ def test_l_outil_inscrit_une_fois_et_conclut(tmp_path):
     with Registre(tmp_path / "research.db", "otc-test") as registre:
         premiere = outil.inscrire(registre)
         seconde = outil.inscrire(registre)
-        assert [n for _i, _id, n in premiere] == [True] * 4
-        assert [n for _i, _id, n in seconde] == [False] * 4
+        assert [n for _i, _id, n in premiere] == [True] * 7
+        assert [n for _i, _id, n in seconde] == [False] * 7
         toutes = registre.toutes()
-        assert len(toutes) == 4 and all(e.sur_scelle for e in toutes)
+        assert len(toutes) == 7 and all(e.sur_scelle for e in toutes)
         p4 = next(e for e in toutes if e.parametres["ident"] == "P4")
         assert p4.parametres["n_min"] == 100
         assert p4.echeance_sec == 120 and not p4.conclue
-    assert outil.campagnes(tmp_path / "research.db") == [("otc-test", 4)]
+        # La mission Reference 8 garde SA fenêtre et sa date.
+        m1 = next(e for e in toutes if e.parametres["ident"] == "R8-M1")
+        assert m1.parametres["declaree_le"] == "2026-10-18"
+        assert m1.parametres["exclusions"] == [["taille_bougie", ">=", 1.31]]
+        assert p4.parametres["declaree_le"] == "2026-10-13"
+    assert outil.campagnes(tmp_path / "research.db") == [("otc-test", 7)]
 
 
 def _rapport(fin, exemples, serie, ancien=None):

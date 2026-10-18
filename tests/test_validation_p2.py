@@ -96,7 +96,8 @@ def test_c_et_d_ne_dependent_pas_de_ce_qui_suit_l_entree(graine):
         apres = _confirmation_m1(modifiee, i, True, closes_m, 900,
                                  {"niveau": niveau})
         cles = [k for k in avant if k.startswith("e_")]
-        assert "e_espace_obstacle" in cles
+        # B, C et D de la mission Reference 8 : D et B toujours mesurés.
+        assert {"e_espace_obstacle", "e_taille_bougie"} <= set(cles)
         assert {k: avant[k] for k in cles} == {k: apres[k] for k in cles}
         trouvees += 1
     assert trouvees >= 5

@@ -76,6 +76,13 @@ def test_la_fiche_csv_a_une_ligne_par_signal():
             "attente_repli", "gagne_repli"} <= set(entetes)
     non_joue = dict(zip(entetes, rangs[-1]))
     assert non_joue["reference_p2"] == "0" and non_joue["filtre_c"] == ""
+    # La mission Reference 8 : le chemin des deux entrées et les modèles.
+    assert {"t_pour", "net_15", "immediate_mfe_15", "immediate_t_contre",
+            "fenetre_r8", "filtre_b", "filtre_e",
+            "strate_echeance"} <= set(entetes)
+    assert premier["filtre_b"] in ("garde", "écarte")
+    assert premier["strate_echeance"] in ("C", "D", "B", "reste")
+    assert non_joue["filtre_e"] == "" and non_joue["strate_echeance"] == ""
     assert premier["version_regles"] == "zone_h1:abcd1234"
     assert premier["sens"] == "CALL" and premier["confirme_8"] == "1"
     non_confirme = dict(zip(entetes, rangs[-1]))
