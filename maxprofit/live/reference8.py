@@ -58,12 +58,11 @@ from maxprofit.live.experiences import _compte
 from maxprofit.live.laboratoire import (
     N_MIN_VALIDATION, PART_ETALONNAGE, confirmes)
 from maxprofit.live.preinscriptions import (
-    EXCLUSION_B, EXCLUSION_C, EXCLUSION_D, MODELES_R8, OUVERTURE_R8,
-    motifs_de_rejet, ouverture_r8, retenue)
+    EXCLUSION_B, EXCLUSION_C, EXCLUSION_D, EXCLUSION_DISTANCE, MODELES_R8,
+    OUVERTURE_R8, motifs_de_rejet, ouverture_r8, retenue)
 from maxprofit.live.validation_p2 import (
     GAINS_PROPOSES, _criteres, _ecart, _effet_de_plan, _intervalles,
-    _robustesse, conclusion, esperance, fusionner, gain_minimal,
-    volume_requis)
+    _robustesse, conclusion, esperance, gain_minimal, volume_requis)
 
 ECHEANCE = 900
 #: Les trois horizons de la mission, et la minute en témoin.
@@ -473,6 +472,10 @@ def _livrable_a(signaux: Sequence[Exemple], fenetre: int) -> dict:
             b[1] += (e.contexte["e_distance_niveau"]
                      - e.contexte["distance_niveau"])
     ecarts = [b - a for a, b in distances]
+    # M4 : combien d'entrées le retard pousse-t-il au-delà de 1,55 ?
+    entrent_distance = sum(1 for a, b in distances
+                           if not _ecartee(a, EXCLUSION_DISTANCE)
+                           and _ecartee(b, EXCLUSION_DISTANCE))
     excursions = {}
     for nom in ("mfe_15", "mae_15", "t_mfe"):
         couples = [(e.contexte[f"imm_{nom}"], e.contexte[nom]) for e in conf
@@ -513,6 +516,7 @@ def _livrable_a(signaux: Sequence[Exemple], fenetre: int) -> dict:
                      "entree": _quartiles([b for _a, b in distances]),
                      "ecart": _quartiles(ecarts),
                      "plus_loin": sum(1 for x in ecarts if x > 0),
+                     "entrent_m4": entrent_distance,
                      "moyenne": (round(sum(ecarts) / len(ecarts), 3)
                                  if ecarts else None),
                      "ic_moyenne": _bootstrap(
@@ -625,8 +629,36 @@ def _livrable_b(base: Sequence[Exemple], coupure: int, debut: int,
             "retirees": [n_a - n_e, g_a - g_e],
             "ecart": _rond(_ecart_ev(n_a, g_a, n_e, g_e), 4),
             "ic": _bootstrap(blocs, lambda s: _ecart_ev(*s))})
+    # M4, la distance à la zone : sa valeur prédictive, puis ce qu'elle
+    # apporte AU-DELÀ du filtre B (B + distance contre B seul).
+    loin = {id(e) for e in base
+            if _ecartee(e.contexte.get("distance_niveau"), EXCLUSION_DISTANCE)}
+    blocs = {}
+    for e in base:
+        bl = blocs.setdefault(_bloc(e), [0, 0, 0, 0])
+        k = 0 if id(e) in loin else 2
+        bl[k] += 1
+        bl[k + 1] += int(e.gagne)
+    ec, ga = compte(loin), compte(set(par_id) - loin)
+    distance = {"ecartees": ec, "gardees": ga,
+                "ecart": _rond(_ecart_ev(ec[0], ec[1], ga[0], ga[1]), 4),
+                "ic": _bootstrap(blocs, lambda s: _ecart_ev(*s)),
+                "aussi_b": len(loin & b)}
+    blocs = _blocs_modele(
+        [e for e in base if retenue(e, (EXCLUSION_B,))],
+        lambda e: retenue(e, (EXCLUSION_B, EXCLUSION_DISTANCE)), _bloc,
+        lambda e: e.gagne)
+    n_a = sum(v[0] for v in blocs.values())
+    g_a = sum(v[1] for v in blocs.values())
+    n_e = sum(v[2] for v in blocs.values())
+    g_e = sum(v[3] for v in blocs.values())
+    distance["au_dela_de_b"] = {
+        "retirees": [n_a - n_e, g_a - g_e],
+        "ecart": _rond(_ecart_ev(n_a, g_a, n_e, g_e), 4),
+        "ic": _bootstrap(blocs, lambda s: _ecart_ev(*s))}
     return {"modeles": lignes, "chevauchement": chevauchement,
-            "predictive": predictive, "ajoutee": ajoutee}
+            "predictive": predictive, "ajoutee": ajoutee,
+            "distance": distance}
 
 
 # --------------------------------------------------------------------------- #
@@ -798,17 +830,35 @@ def _i(x) -> int | None:
 
 def fiche(e: Exemple) -> list:
     """[entrée (s), paire, gagné à 15 min, B, C, D, douteuses, gagné à 4 min,
-    gagné à 10 min] : de quoi rejuger tous les modèles sans rejouer."""
+    gagné à 10 min, distance à la zone] : de quoi rejuger tous les modèles
+    sans rejouer."""
     return [int(e.ts_sec), e.pair, int(bool(e.gagne)),
             _v(e.contexte, "taille_bougie"), _v(e.contexte, "part_parcourue"),
             _v(e.contexte, "espace_obstacle"),
             int(bool(e.contexte.get("donnees_douteuses"))),
-            _i(e.issues.get(240)), _i(e.issues.get(600))]
+            _i(e.issues.get(240)), _i(e.issues.get(600)),
+            _v(e.contexte, "distance_niveau")]
 
 
 def _valeurs_fiche(f: Sequence) -> dict:
     return {"taille_bougie": f[3], "part_parcourue": f[4],
-            "espace_obstacle": f[5]}
+            "espace_obstacle": f[5],
+            "distance_niveau": f[9] if len(f) > 9 else None}
+
+
+def _cumuler(ancien: Sequence[Sequence], nouveau: Sequence[Sequence]
+             ) -> list[list]:
+    """Le registre cumulé : une entrée garde sa première fiche — sauf si
+    la nouvelle porte plus de mesures (la distance, ajoutée le 18/10 au
+    soir) : mêmes bougies, même entrée, rien d'autre ne change."""
+    fiches: dict[tuple[str, int], list] = {}
+    for f in ancien:
+        fiches.setdefault((f[1], int(f[0])), list(f))
+    for f in nouveau:
+        cle = (f[1], int(f[0]))
+        if cle not in fiches or len(f) > len(fiches[cle]):
+            fiches[cle] = list(f)
+    return sorted(fiches.values(), key=lambda f: (f[0], f[1]))
 
 
 def _gardee(f: Sequence, exclusions) -> bool:
@@ -872,8 +922,8 @@ def _fenetre(base: Sequence[Exemple], ancien: Mapping | None, fin: int,
              jours_collecte: float) -> dict:
     ouv = ouverture_r8()
     ancien = ancien or {}
-    registre = fusionner(ancien.get("registre") or (),
-                         [fiche(e) for e in base if e.ts_sec >= ouv])
+    registre = _cumuler(ancien.get("registre") or (),
+                        [fiche(e) for e in base if e.ts_sec >= ouv])
     registre = [f for f in registre if int(f[0]) >= ouv]
     avant = [fiche(e) for e in base if e.ts_sec < ouv]
     sortie: dict = {"ouverture": ouv, "n": len(registre)}
@@ -884,6 +934,13 @@ def _fenetre(base: Sequence[Exemple], ancien: Mapping | None, fin: int,
         plan = _planifier(avant)
         if fin >= ouv and "p" in plan:
             plan["fige_le"] = fin
+    # Un modèle pré-inscrit après le gel du plan (M4) y reçoit sa part,
+    # mesurée sur les mêmes entrées d'avant l'ouverture.
+    if "parts" in plan:
+        for ident, _l, excl in MODELES_R8:
+            if excl and ident not in plan["parts"] and avant:
+                plan["parts"][ident] = round(
+                    sum(1 for f in avant if _gardee(f, excl)) / len(avant), 4)
     gain = plan.get("gain")
     if gain is None and plan.get("fige_le"):
         gain = gain_minimal()
@@ -1037,6 +1094,19 @@ def hypotheses(r: Mapping | None) -> list[tuple[str, str, str]]:
                        f"deux autres (E contre E sans {x['lettre']})",
                        _verdict(x["ecart"], x["ic"], x["retirees"][0],
                                 n_min=20, concu=True)))
+    dist = b.get("distance")
+    if dist:
+        sortie += [
+            ("R8-B-dist", "la distance à la zone prédit le résultat (les "
+                          "entrées à 1,55 ou plus gagnent moins)",
+             _verdict(dist["ecart"], dist["ic"], dist["ecartees"][0],
+                      n_min=20, concu=True)),
+            ("R8-B+dist", "la distance apporte une information au-delà de "
+                          "B (B + distance contre B seul)",
+             _verdict(dist["au_dela_de_b"]["ecart"],
+                      dist["au_dela_de_b"]["ic"],
+                      dist["au_dela_de_b"]["retirees"][0],
+                      n_min=20, concu=True))]
     for ident, libelle, exclusions in MODELES_R8:
         if not exclusions:
             continue
@@ -1217,7 +1287,8 @@ def _section_a(r: Mapping) -> list[str]:
         f"Distance à la zone (amplitudes M1, médiane et quartiles) : signal "
         f"{_q(d['signal'])}, entrée {_q(d['entree'])}, écart "
         f"{_q(d['ecart'])} ; plus loin pour {d['plus_loin']}/{d['n']} ; "
-        f"écart moyen {_ic(d['ic_moyenne'])}.")
+        f"écart moyen {_ic(d['ic_moyenne'])} ; poussées au-delà de 1,55 "
+        f"(seuil de M4) par le retard : {d.get('entrent_m4', 0)}.")
     x = a["excursions"]
     lignes.append(
         f"MFE 15 min : immédiate {_q(x['mfe_15']['immediate'])}, confirmée "
@@ -1290,6 +1361,16 @@ def _section_b(r: Mapping) -> list[str]:
         f"{x['lettre']} {_p(*x['ecartees'])}/{x['ecartees'][0]} contre "
         f"{_p(*x['gardees'])} : {_e(x['ecart'])} {_ic(x['ic'])}"
         for x in b["predictive"]))
+    dist = b.get("distance")
+    if dist:
+        ad = dist["au_dela_de_b"]
+        lignes.append(
+            f"Distance à la zone (M4) : à 1,55 ou plus {_p(*dist['ecartees'])}"
+            f" sur {dist['ecartees'][0]} contre {_p(*dist['gardees'])} : "
+            f"{_e(dist['ecart'])} {_ic(dist['ic'])} ; dont {dist['aussi_b']} "
+            f"déjà écartées par B ; au-delà de B, elle retire "
+            f"{ad['retirees'][0]} ({_p(*ad['retirees'])}) : {_e(ad['ecart'])}"
+            f" {_ic(ad['ic'])}.")
     lignes.append("Valeur ajoutée dans E (E − E sans la variable) : "
                   + " · ".join(
                       f"{x['lettre']} retire {x['retirees'][0]} "
@@ -1387,7 +1468,8 @@ def texte(r: Mapping | None) -> str:
         return f"🧭 {r['note']}"
     lignes = [
         "🧭 <b>Mission Reference 8</b> — audit de l'entrée, filtres gelés "
-        f"(B 1,31 · C 0,46 · D 1,95), échéances. {r['n']} entrées "
+        f"(B 1,31 · C 0,46 · D 1,95 · distance 1,55), échéances. {r['n']} "
+        f"entrées "
         f"confirmées jouées, {r['jours']} jours de collecte. Des mesures : "
         "aucune règle n'est modifiée.", ""]
     for section in (_section_audit, _section_couverture, _section_a,

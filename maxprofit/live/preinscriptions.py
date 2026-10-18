@@ -186,6 +186,12 @@ GROUPES_P2: tuple[str, ...] = ("P2-C", "P2-D", "P2-E")
 # rejeu. Elles ne sont pas retenues ; /reference8 compte les entrées que
 # l'écart ferait changer de côté.
 #
+# Ajout du 18/10 au soir, AVANT l'ouverture : M4 = M0 sans les entrées
+# prises à 1,55 amplitude ou plus de la zone (`distance_niveau` à l'entrée),
+# la troisième priorité de l'analyse du 18/10 (« tester séparément la
+# distance à la zone »). 1,55 est la coupe du tiers haut que cite cette
+# analyse ; une autre expérience lisait 1,52 — non retenue, comptée.
+#
 # M2 est P2-C, D est P2-D : mêmes règles, déjà pré-inscrites le 13/10. Ici,
 # tous les modèles sont jugés sur UNE fenêtre commune ouverte le 19/10 à
 # 0 h UTC, pour que le tableau compare les mêmes signaux ; P2 garde sa
@@ -198,6 +204,8 @@ OUVERTURE_R8 = "2026-10-19"
 FENETRE_JOURS_R8 = 28
 EXCLUSION_B = ("taille_bougie", ">=", 1.31)
 LIBELLES_EXCLUSIONS["taille_bougie"] = "B ≥ 1,31"
+EXCLUSION_DISTANCE = ("distance_niveau", ">=", 1.55)
+LIBELLES_EXCLUSIONS["distance_niveau"] = "distance ≥ 1,55"
 
 #: (identifiant, libellé, exclusions) — l'ordre du tableau de /reference8.
 MODELES_R8: tuple[tuple[str, str, tuple], ...] = (
@@ -206,6 +214,8 @@ MODELES_R8: tuple[tuple[str, str, tuple], ...] = (
     ("M2", "M0 sans part parcourue ≥ 0,46", (EXCLUSION_C,)),
     ("M3", "M0 + E : sans B, C ni D", (EXCLUSION_B, EXCLUSION_C,
                                          EXCLUSION_D)),
+    ("M4", "M0 sans entrée à 1,55 amplitude ou plus de la zone",
+     (EXCLUSION_DISTANCE,)),
     ("D", "secondaire : M0 sans place sous 1,95", (EXCLUSION_D,)),
     ("C+D", "P2-E pré-inscrite : sans C ni D", (EXCLUSION_C, EXCLUSION_D)),
 )
@@ -256,6 +266,18 @@ PREINSCRIPTIONS_R8: tuple[PreInscription, ...] = (
         echeance_sec=900, n_min=100, critere=CRITERE_R8,
         parametres={"exclusions": [EXCLUSION_B, EXCLUSION_C, EXCLUSION_D],
                     "manquant": "garde"}),
+    PreInscription(
+        ident="R8-M4", famille="entree_tardive",
+        nom="R8-M4 entrée à moins de 1,55 amplitude de la zone",
+        hypothese=(
+            "Sur les entrées ZoneH1 confirmées jouées, écarter celles prises "
+            "à 1,55 amplitude M1 ou plus de la zone (distance mesurée à "
+            "l'entrée, dans le sens du trade) augmente l'espérance par "
+            "ordre à 15 min, sur la fenêtre ouverte le 19/10 ; jugée seule, "
+            "puis au-delà du filtre B."),
+        univers="ZoneH1 + confirmation M1, paires de la course",
+        echeance_sec=900, n_min=100, critere=CRITERE_R8,
+        parametres={"exclusions": [EXCLUSION_DISTANCE], "manquant": "garde"}),
     PreInscription(
         ident="R8-H", famille="echeance",
         nom="R8-H échéance choisie selon B, C et D à l'entrée",

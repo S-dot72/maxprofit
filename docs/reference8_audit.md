@@ -49,6 +49,7 @@ clés `e_…`. Unité : l'amplitude M1, c'est-à-dire la moyenne des
 | C | C ≥ 0,46 | Pré-inscrit le 13/10 (`P2-C`). |
 | D | D < 1,95 | Pré-inscrit le 13/10 (`P2-D`). |
 | E | B ou C ou D | B + C + D, seuils ci-dessus (`R8-M3`). |
+| Distance (M4) | distance à la zone ≥ 1,55 amplitude | Tiers haut cité par l'analyse du 18/10 (« 1,55 amplitude et plus »). Pré-inscrit le 18/10 au soir, avant l'ouverture (`R8-M4`). Jugée seule, puis au-delà de B. |
 
 Une valeur manquante ne déclenche aucune exclusion (amendement du 14/10).
 
@@ -103,6 +104,11 @@ Aucune fuite n'a été trouvée dans B, C et D.
 **D2 — Le seuil de D : 1,94 ou 1,95.** Le document de la mission cite 1,94,
 la pré-inscription du 13/10 cite 1,95. La valeur pré-inscrite est conservée,
 et `/reference8` compte les entrées situées entre les deux.
+
+**D2 bis — Le seuil de la distance : 1,55 ou 1,52.** L'analyse du 18/10
+cite deux découpages. Le premier vient de la variable `distance_niveau`
+de `/experiences`, avec 1,55 pour le tiers haut. Le second vient d'une autre
+expérience, à 1,52. Les deux ne se mélangent pas : 1,55 est gelé pour M4.
 
 **D3 — Ce que « E » veut dire.** Trois définitions coexistent :
 - dans le document de la mission, E = B + C + D ;
@@ -180,7 +186,7 @@ cassée.
 
   Les seuils de B, C et D et le choix de 4 ou 10 minutes ont été inspirés
   par ces données. Un résultat favorable y reste donc indéterminé.
-- **Fenêtre indépendante** (M1, M2, M3, D, C+D), ouverte le **19/10 à
+- **Fenêtre indépendante** (M1, M2, M3, M4, D, C+D), ouverte le **19/10 à
   0 h UTC** :
   - le plan (taux de M0, part conservée, effet de plan, règle d'échéance)
     est figé au premier rejeu qui suit l'ouverture, sur les entrées
