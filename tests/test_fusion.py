@@ -129,3 +129,24 @@ def test_l_etat_du_broker_n_est_JAMAIS_recopie(deux_bases):
     bilans = fusionner(source, cible, appliquer=False, journal=lambda *_: None)
     assert "etat_broker" not in {x.table for x in bilans}
     assert "_schema_version" not in {x.table for x in bilans}
+
+
+def test_toute_table_de_la_base_est_soit_copiee_soit_EXCLUE(deux_bases):
+    """`reglages` a été ajoutée après la fusion, et elle était silencieusement
+    oubliée — or c'est elle qui dit quelle campagne la course joue. Toute table
+    créée par les migrations doit être explicitement copiée ou exclue."""
+    from maxprofit.store.fusion import EXCLUES, ORDRE, _tables
+    source, _ = deux_bases
+    oubliees = _tables(source) - set(ORDRE) - set(EXCLUES)
+    assert not oubliees, f"tables ni copiées ni exclues : {sorted(oubliees)}"
+
+
+def test_la_configuration_de_la_course_est_RECOPIEE(deux_bases):
+    """Sans elle, la base reçue fait retomber la course sur `plan-demo-v2`."""
+    source, cible = deux_bases
+    source.execute(
+        "INSERT INTO reglages (cle, valeur, maj_ts_sec) VALUES "
+        "('configuration', '{\"campagne\": \"plan-20261010-000517\"}', 100)")
+    fusionner(source, cible, appliquer=True, journal=lambda *_: None)
+    valeur = cible.execute("SELECT valeur FROM reglages").fetchone()[0]
+    assert "plan-20261010-000517" in valeur

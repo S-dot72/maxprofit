@@ -55,14 +55,23 @@ EXCLUES = frozenset({"_schema_version", "etat_broker", "ticks"})
 REMPLACER_SI_PLUS = {
     "plan_etat": "maj_ts_sec",
     "tick_paths": "n_ticks",
+    "reglages": "maj_ts_sec",
 }
 
 #: Clé de dédoublonnage des ordres. L'`id` ne vaut rien d'une base à l'autre.
 CLE_EXECUTIONS = ("campagne", "pair", "sens", "signal_ts_ms")
 
-#: Ordre de copie. `plan_etat` en dernier : c'est un résumé de ce qui précède.
+#: Ordre de copie. `plan_etat` et `reglages` en dernier : ce sont des résumés
+#: de ce qui précède.
+#:
+#: ⚠ `reglages` a été ajoutée APRÈS l'écriture de cette fusion, et l'oubli
+#: n'était pas anodin : c'est elle qui dit quelle campagne la course joue. Une
+#: base reçue sans elle fait retomber la course sur le nom par défaut
+#: `plan-demo-v2` — exactement la collision que la fusion existe pour éviter.
+#: `test_toute_table_de_la_base_est_soit_copiee_soit_exclue` empêche qu'une
+#: prochaine table soit oubliée de la même façon.
 ORDRE = ("candles", "payouts", "tick_paths", "uptime", "operateurs",
-         "executions", "plan_etat")
+         "executions", "plan_etat", "reglages")
 
 
 @dataclass
@@ -81,7 +90,9 @@ def _tables(conn) -> set[str]:
     if postgres.est_postgres(conn):
         sql = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
     else:
-        sql = "SELECT name FROM sqlite_master WHERE type = 'table'"
+        # `sqlite_sequence` & co : tables internes du moteur, pas des données.
+        sql = ("SELECT name FROM sqlite_master WHERE type = 'table' "
+               "AND name NOT LIKE 'sqlite_%'")
     return {r[0] for r in conn.execute(sql).fetchall()}
 
 
