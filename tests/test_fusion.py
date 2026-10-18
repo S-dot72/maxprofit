@@ -150,3 +150,28 @@ def test_la_configuration_de_la_course_est_RECOPIEE(deux_bases):
     fusionner(source, cible, appliquer=True, journal=lambda *_: None)
     valeur = cible.execute("SELECT valeur FROM reglages").fetchone()[0]
     assert "plan-20261010-000517" in valeur
+
+
+def test_une_table_qui_ECHOUE_est_rejouee_sans_doublon(deux_bases, monkeypatch):
+    """Une coupure réseau en pleine fusion arrêtait tout, et la relance
+    relisait la source en entier. On rejoue la table, et l'idempotence garantit
+    qu'aucune ligne n'est versée deux fois."""
+    import maxprofit.store.fusion as mod
+    source, cible = deux_bases
+    _bougie(source, "EURUSD_otc", 1790000040)
+    _bougie(source, "EURUSD_otc", 1790000100)
+    vraie = mod._fusionner_table
+    appels = {"n": 0}
+
+    def capricieuse(src, dst, table, appliquer):
+        if table == "candles":
+            appels["n"] += 1
+            if appels["n"] == 1:
+                vraie(src, dst, table, appliquer)        # écrit, PUIS coupe
+                raise OSError("failed to resolve host")
+        return vraie(src, dst, table, appliquer)
+    monkeypatch.setattr(mod, "_fusionner_table", capricieuse)
+    fusionner(source, cible, appliquer=True, journal=lambda *_: None,
+              attendre=lambda _s: None)
+    assert appels["n"] == 2, "la table doit être rejouée"
+    assert _compte(cible, "candles") == 2, "et sans doublon"

@@ -133,8 +133,13 @@ def _lire(conn, table: str, colonnes: list[str]) -> list[tuple]:
 
 # --- la fusion ------------------------------------------------------------
 
+#: Tentatives par table avant d'abandonner, et attente entre deux.
+REESSAIS_PAR_TABLE = 4
+ATTENTE_REESSAI_SEC = (5, 20, 60)
+
+
 def fusionner(source, cible, *, appliquer: bool = False,
-              journal=print) -> list[Bilan]:
+              journal=print, attendre=None) -> list[Bilan]:
     """Verse `source` dans `cible`. À blanc tant que `appliquer` est faux.
 
     Rend un bilan par table : lignes à la source, déjà présentes à la cible,
@@ -151,9 +156,40 @@ def fusionner(source, cible, *, appliquer: bool = False,
         if table not in tables_cible:
             bilans.append(Bilan(table, note="absente de la cible : ignorée"))
             continue
-        bilans.append(_fusionner_table(source, cible, table, appliquer))
+        bilans.append(_avec_reessais(
+            lambda t=table: _fusionner_table(source, cible, t, appliquer),
+            table, journal, attendre))
         journal(_ligne(bilans[-1], appliquer))
     return bilans
+
+
+def _avec_reessais(faire, table: str, journal, attendre):
+    """Rejoue une table qui a échoué, au lieu d'abandonner toute la fusion.
+
+    ⚠ Mesuré : une fusion d'un million de lignes vers Neon a échoué au bout de
+    quelques minutes sur « failed to resolve host » — une coupure DNS
+    passagère, côté poste. Toute la fusion s'arrêtait, et la relancer relisait
+    la base source en entier : de quoi consommer le quota d'une base gratuite
+    déjà presque épuisée.
+
+    Rejouer est sans risque parce que la fusion est idempotente : les lignes
+    déjà versées sont reconnues à leur clé et ne sont pas réinsérées. On ne
+    rejoue que la table qui a cédé.
+    """
+    import time as _t
+    attendre = attendre or _t.sleep
+    for essai in range(1, REESSAIS_PAR_TABLE + 1):
+        try:
+            return faire()
+        except Exception as erreur:              # noqa: BLE001
+            if essai == REESSAIS_PAR_TABLE:
+                raise
+            pause = ATTENTE_REESSAI_SEC[min(essai - 1,
+                                             len(ATTENTE_REESSAI_SEC) - 1)]
+            journal(f"  {table:<12} échec ({type(erreur).__name__}: "
+                    f"{str(erreur).splitlines()[0][:90]}) — nouvel essai "
+                    f"{essai + 1}/{REESSAIS_PAR_TABLE} dans {pause} s")
+            attendre(pause)
 
 
 def _ligne(b: Bilan, appliquer: bool) -> str:
