@@ -3442,6 +3442,16 @@ def potentiel(course) -> str:
     return texte((a.laboratoire or {}).get("potentiel") if a else None)
 
 
+def reference8(course) -> str:
+    """`/reference8` : la mission Reference 8 — entrée immédiate ou
+    confirmée, modèles gelés M0 à M3, échéances et couverture."""
+    from maxprofit.live.reference8 import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("reference8") if a else None)
+
+
 def protocole(course) -> str:
     """`/protocole` : le protocole de simulation OTC (EXP-001 à EXP-004)."""
     from maxprofit.live.protocole import texte

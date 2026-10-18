@@ -652,3 +652,16 @@ def test_un_bloc_pre_n_est_jamais_coupe_entre_deux_messages():
     assert all(m.count("<pre>") == m.count("</pre>") for m in morceaux)
     assert any(tableau in m for m in morceaux)
     assert "\n".join(morceaux).replace("\n", "") == texte.replace("\n", "")
+
+
+def test_reference8_repond_avec_le_rapport():
+    client = FauxClient()
+    bot = _bot(client)
+    _traiter(bot, _message("/reference8"))
+    assert client.envoyes[-1] == (CHAT, "Course indisponible.")
+
+    async def rapport():
+        return "🧭 rapport"
+    bot._reference8 = rapport
+    _traiter(bot, _message("/reference8"))
+    assert client.envoyes[-1] == (CHAT, "🧭 rapport")

@@ -102,6 +102,15 @@ def exemples_historiques(
             if avec_contexte:
                 ctx.update(_au_dela_de_la_fenetre(
                     closes, bougie.ts_sec, call, signal.features))
+                # Le même suivi pour l'entrée IMMÉDIATE (mission Reference
+                # 8) : la confirmation ne se juge qu'en comparant les deux
+                # trajectoires sur les mêmes signaux. Des issues, préfixées
+                # « imm_ », jamais un filtre.
+                for cle, valeur in _excursions(
+                        completes, i, call,
+                        (signal.features or {}).get("niveau")).items():
+                    if cle not in ("prix_entree", "prix_15"):
+                        ctx[f"imm_{cle}"] = valeur
                 ctx.update(_confirmation_m1(completes, i, call, closes,
                                             echeance_sec, signal.features))
                 ctx.update(criteres(fenetre, call,
@@ -163,6 +172,14 @@ CONTEXTE_A_L_ENTREE: tuple[str, ...] = (
 
 #: Minutes suivies après l'entrée pour le MFE/MAE.
 SUIVI_MIN = 15
+
+#: Le premier mouvement « d'une amplitude prédéfinie » (mission Reference 8,
+#: 2026-10-18) : une amplitude M1 moyenne, l'unité du MFE/MAE. Fixée avant
+#: toute lecture des temps ; une autre valeur serait une autre mesure.
+PROGRESSION_AMPLITUDES = 1.0
+
+#: Les horizons, en minutes, où l'on note le chemin net parcouru.
+HORIZONS_NETS: tuple[int, ...] = (4, 10, 15)
 
 
 def _confirmation_m1(completes, i: int, call: bool, closes,
@@ -258,6 +275,11 @@ def _excursions(completes, j: int, call: bool,
     `zone_cassee` : une clôture est passée de l'autre côté de la zone,
     contre le trade, pendant ce suivi. `prix_entree`, `prix_15` : le prix
     d'entrée et celui du règlement à 15 minutes, pour la fiche du signal.
+    `t_pour`, `t_contre` : la première minute où le prix est allé d'au
+    moins `PROGRESSION_AMPLITUDES` dans le sens du trade, puis contre lui
+    (0 : pas en 15 minutes ; les deux à la même minute : la bougie ne dit
+    pas lequel est venu d'abord). `net_4`, `net_10`, `net_15` : le chemin
+    net à ces horizons, orienté, en amplitudes.
 
     ⚠ Ce sont des ISSUES, lues après l'entrée : elles décrivent ce qui
     s'est passé, elles ne doivent jamais servir à filtrer une entrée.
@@ -265,8 +287,9 @@ def _excursions(completes, j: int, call: bool,
     entree = completes[j]
     recul = completes[max(0, j - 59):j + 1]
     amplitude = sum(c.high - c.low for c in recul) / len(recul) or 1e-12
+    sens = 1 if call else -1
     mfe = mae = 0.0
-    t_mfe = 0
+    t_mfe = t_pour = t_contre = 0
     cassee = False
     for k in range(1, SUIVI_MIN + 1):
         if j + k >= len(completes) or \
@@ -278,13 +301,21 @@ def _excursions(completes, j: int, call: bool,
         if pour > mfe:
             mfe, t_mfe = pour, k
         mae = max(mae, contre)
+        if not t_pour and pour >= PROGRESSION_AMPLITUDES * amplitude:
+            t_pour = k
+        if not t_contre and contre >= PROGRESSION_AMPLITUDES * amplitude:
+            t_contre = k
         if niveau is not None and ((call and c.close < niveau)
                                    or (not call and c.close > niveau)):
             cassee = True
     sortie = {"mfe_15": round(mfe / amplitude, 3),
               "mae_15": round(mae / amplitude, 3), "t_mfe": float(t_mfe),
+              "t_pour": float(t_pour), "t_contre": float(t_contre),
               "prix_entree": entree.close,
               "prix_15": completes[j + SUIVI_MIN].close}
+    for m in HORIZONS_NETS:
+        sortie[f"net_{m}"] = round(
+            (completes[j + m].close - entree.close) * sens / amplitude, 3)
     if niveau is not None:
         sortie["zone_cassee"] = float(cassee)
     return sortie

@@ -169,6 +169,113 @@ PREINSCRIPTIONS: tuple[PreInscription, ...] = (
 GROUPES_P2: tuple[str, ...] = ("P2-C", "P2-D", "P2-E")
 
 
+# --------------------------------------------------------------------------- #
+# Mission Reference 8 (2026-10-18) — `live.reference8`
+# --------------------------------------------------------------------------- #
+#
+# Quatre modèles sur les mêmes entrées : M0 la référence, M1 = M0 + B,
+# M2 = M0 + C, M3 = M0 + E (B + C + D, la combinaison d'EXP-020) ; D seul en
+# analyse secondaire, et P2-E (C + D) gardée telle que pré-inscrite.
+#
+# Les seuils : C (0,46) et D (1,95) sont ceux du 13/10, déjà gelés. B n'avait
+# jamais été pré-inscrit : il prend la valeur que cite le document de la
+# mission, 1,31 (« la catégorie supérieure, taille relative d'au moins
+# 1,31 »). Deux autres lectures du même tercile existent, 1,27 (lecture du
+# 14/10, reprise par /potentiel) et, pour D, 1,94 (même document) : ce sont
+# des lectures successives de terciles que /experiences recalcule à chaque
+# rejeu. Elles ne sont pas retenues ; /reference8 compte les entrées que
+# l'écart ferait changer de côté.
+#
+# M2 est P2-C, D est P2-D : mêmes règles, déjà pré-inscrites le 13/10. Ici,
+# tous les modèles sont jugés sur UNE fenêtre commune ouverte le 19/10 à
+# 0 h UTC, pour que le tableau compare les mêmes signaux ; P2 garde sa
+# propre fenêtre du 14/10 dans /protocole.
+
+DECLAREES_R8 = "2026-10-18"
+OUVERTURE_R8 = "2026-10-19"
+#: Durée nominale inscrite au registre local ; la fenêtre se ferme sur un
+#: VOLUME calculé d'avance, comme P2.
+FENETRE_JOURS_R8 = 28
+EXCLUSION_B = ("taille_bougie", ">=", 1.31)
+LIBELLES_EXCLUSIONS["taille_bougie"] = "B ≥ 1,31"
+
+#: (identifiant, libellé, exclusions) — l'ordre du tableau de /reference8.
+MODELES_R8: tuple[tuple[str, str, tuple], ...] = (
+    ("M0", "référence (ZoneH1 + confirmation M1)", ()),
+    ("M1", "M0 sans bougie d'entrée ≥ 1,31", (EXCLUSION_B,)),
+    ("M2", "M0 sans part parcourue ≥ 0,46", (EXCLUSION_C,)),
+    ("M3", "M0 + E : sans B, C ni D", (EXCLUSION_B, EXCLUSION_C,
+                                         EXCLUSION_D)),
+    ("D", "secondaire : M0 sans place sous 1,95", (EXCLUSION_D,)),
+    ("C+D", "P2-E pré-inscrite : sans C ni D", (EXCLUSION_C, EXCLUSION_D)),
+)
+
+CRITERE_R8 = (
+    "sur la fenêtre ouverte le 19/10 (close au volume calculé d'avance sur "
+    "les données antérieures) : les cinq critères de P2 — espérance "
+    "positive ; gain d'espérance sur M0, mêmes signaux, intervalle apparié "
+    "par blocs paire × jour au-dessus de 0 ; gain encore positif sans les "
+    "deux paires et sans la journée qui y contribuent le plus ; au moins la "
+    "moitié des signaux de M0 conservés. Les cinq : soutenue ; gain positif "
+    "mais intervalle touchant 0, ou volume non atteint : indéterminée ; "
+    "sinon : non soutenue.")
+
+CRITERE_R8_H = (
+    "règle apprise sur les entrées d'AVANT le 19/10, figée au premier rejeu "
+    "qui suit : dans chaque strate (C ≥ 0,46 ; sinon D sous 1,95 ; sinon "
+    "B ≥ 1,31 ; sinon le reste), l'échéance (4, 10 ou 15 min) au meilleur "
+    "taux, 15 min si la strate a moins de 30 entrées. Jugée sur la fenêtre "
+    "contre 15 min fixe, mêmes entrées : soutenue si l'intervalle apparié "
+    "par blocs de l'écart d'espérance est au-dessus de 0 avec au moins 100 "
+    "entrées ; non soutenue si l'écart est nul ou négatif ; sinon "
+    "indéterminée.")
+
+PREINSCRIPTIONS_R8: tuple[PreInscription, ...] = (
+    PreInscription(
+        ident="R8-M1", famille="entree_tardive",
+        nom="R8-M1 bougie d'entrée sous 1,31 sur la référence 8",
+        hypothese=(
+            "Sur les entrées ZoneH1 confirmées jouées, écarter celles dont "
+            "la bougie d'entrée mesure au moins 1,31 fois la médiane des 15 "
+            "précédentes augmente l'espérance par ordre à 15 min, sur la "
+            "fenêtre ouverte le 19/10."),
+        univers="ZoneH1 + confirmation M1, paires de la course",
+        echeance_sec=900, n_min=100, critere=CRITERE_R8,
+        parametres={"exclusions": [EXCLUSION_B], "manquant": "garde"}),
+    PreInscription(
+        ident="R8-M3", famille="entree_tardive",
+        nom="R8-M3 filtre E (B, C et D) sur la référence 8",
+        hypothese=(
+            "Sur les entrées ZoneH1 confirmées jouées, écarter celles dont "
+            "la bougie d'entrée mesure au moins 1,31 fois la médiane des 15 "
+            "précédentes, OU dont la part du chemin parcourue est d'au "
+            "moins 0,46, OU dont la place jusqu'au prochain sommet/creux "
+            "est inférieure à 1,95 amplitude, augmente l'espérance par "
+            "ordre à 15 min, sur la fenêtre ouverte le 19/10."),
+        univers="ZoneH1 + confirmation M1, paires de la course",
+        echeance_sec=900, n_min=100, critere=CRITERE_R8,
+        parametres={"exclusions": [EXCLUSION_B, EXCLUSION_C, EXCLUSION_D],
+                    "manquant": "garde"}),
+    PreInscription(
+        ident="R8-H", famille="echeance",
+        nom="R8-H échéance choisie selon B, C et D à l'entrée",
+        hypothese=(
+            "Choisir l'échéance (4, 10 ou 15 min) d'après la strate de "
+            "l'entrée (C, D, B à l'entrée), selon une règle apprise avant "
+            "le 19/10 et figée, donne une meilleure espérance par ordre que "
+            "15 min fixe sur les mêmes entrées, sur la fenêtre."),
+        univers="ZoneH1 + confirmation M1, paires de la course",
+        echeance_sec=900, n_min=100, critere=CRITERE_R8_H,
+        parametres={"horizons_sec": [240, 600, 900], "n_min_strate": 30}),
+)
+
+
+def ouverture_r8() -> int:
+    """L'ouverture de la fenêtre de la mission Reference 8, en s UTC."""
+    return int(datetime.strptime(OUVERTURE_R8, "%Y-%m-%d").replace(
+        tzinfo=timezone.utc).timestamp())
+
+
 def preinscription(ident: str) -> PreInscription:
     return next(p for p in PREINSCRIPTIONS if p.ident == ident)
 
