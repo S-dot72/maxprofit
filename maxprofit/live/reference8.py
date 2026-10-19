@@ -862,20 +862,22 @@ def _i(x) -> int | None:
 
 def fiche(e: Exemple) -> list:
     """[entrée (s), paire, gagné à 15 min, B, C, D, douteuses, gagné à 4 min,
-    gagné à 10 min, distance à la zone] : de quoi rejuger tous les modèles
-    sans rejouer."""
+    gagné à 10 min, distance à la zone, mouvement de l'heure] : de quoi
+    rejuger tous les modèles sans rejouer."""
     return [int(e.ts_sec), e.pair, int(bool(e.gagne)),
             _v(e.contexte, "taille_bougie"), _v(e.contexte, "part_parcourue"),
             _v(e.contexte, "espace_obstacle"),
             int(bool(e.contexte.get("donnees_douteuses"))),
             _i(e.issues.get(240)), _i(e.issues.get(600)),
-            _v(e.contexte, "distance_niveau")]
+            _v(e.contexte, "distance_niveau"),
+            _v(e.contexte, "mouvement_heure")]
 
 
 def _valeurs_fiche(f: Sequence) -> dict:
     return {"taille_bougie": f[3], "part_parcourue": f[4],
             "espace_obstacle": f[5],
-            "distance_niveau": f[9] if len(f) > 9 else None}
+            "distance_niveau": f[9] if len(f) > 9 else None,
+            "mouvement_heure": f[10] if len(f) > 10 else None}
 
 
 def _cumuler(ancien: Sequence[Sequence], nouveau: Sequence[Sequence]

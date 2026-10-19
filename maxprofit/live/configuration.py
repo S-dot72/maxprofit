@@ -52,6 +52,24 @@ MISE_MINIMALE = 1.0
 MODES = ("plan", "trading")
 COMPTES = ("demo", "reel")
 
+#: Les filtres de qualité des signaux (demandés le 19/10 : « la qualité des
+#: signaux qu'il faut augmenter à tout prix »). Les deux plus solides du
+#: rapport du 19/10, et eux seuls :
+#: - la bougie d'entrée excessive (EXP-020 B) : au moins 1,31 fois la
+#:   médiane des 15 précédentes, l'entrée arrive après l'impulsion — 45 %
+#:   contre 62 % sans, gradient constant sur les deux périodes, et le seul
+#:   filtre qui ajoute quelque chose au-delà de C et D ;
+#: - le mouvement de l'heure déjà dans le sens du trade : le rebond est en
+#:   partie consommé — 43 % (récents) et 44 % (anciens) dans le tiers le
+#:   plus « avec », gradient constant. Seuil rond (0 : le prix a déjà
+#:   avancé dans le sens du trade depuis le début de l'heure), pas une
+#:   coupe de tercile à deux décimales.
+#: Des résultats HISTORIQUES : la campagne lancée avec ces filtres est leur
+#: test en démo, et le rejeu continue de les juger sur la fenêtre (R8-Q).
+FILTRES = ("aucun", "qualite")
+TAILLE_BOUGIE_MAX = 1.31
+MOUVEMENT_HEURE_MAX = 0.0
+
 
 @dataclass
 class Configuration:
@@ -62,6 +80,8 @@ class Configuration:
     trades: int = 7
     sessions_par_jour: int = 6
     pas_max: int = 2
+    #: « aucun » ou « qualite » (voir `FILTRES`).
+    filtres: str = "aucun"
     #: Posés au lancement (`/demarrer`).
     lancee: bool = False
     campagne: str = ""
@@ -89,6 +109,8 @@ class Configuration:
             raise BotError(f"mode inconnu : {self.mode}")
         if self.compte not in COMPTES:
             raise BotError(f"compte inconnu : {self.compte}")
+        if self.filtres not in FILTRES:
+            raise BotError(f"filtres inconnus : {self.filtres}")
         if not 10 <= self.capital <= 1_000_000:
             raise BotError("Le capital doit être entre 10 $ et 1 000 000 $.")
         if self.mode == "plan":
@@ -134,6 +156,13 @@ class Configuration:
             perte_journaliere_max_pct=TRADING_PERTE_JOUR_PCT,
             objectif_journalier_pct=TRADING_OBJECTIF_JOUR_PCT,
             exposition_max_pct=100.0)
+
+    def seuils_de_qualite(self) -> tuple[float | None, float | None]:
+        """(taille de bougie maximale, mouvement de l'heure maximal) que la
+        course applique à l'entrée ; (None, None) sans filtres."""
+        if self.filtres == "qualite":
+            return TAILLE_BOUGIE_MAX, MOUVEMENT_HEURE_MAX
+        return None, None
 
     def pas_de_course(self) -> int:
         """Pas de martingale : celui du réglage en plan, un seul en trading."""
@@ -266,6 +295,12 @@ class Configuration:
                 raise BotError("Entre 1 et 10 pas. 1 = une seule mise par "
                                "session, sans martingale.")
             return replace(self, pas_max=n)
+        if reglage == "filtres":
+            if brut in ("qualite", "qualité", "on", "oui", "actifs"):
+                return replace(self, filtres="qualite")
+            if brut in ("aucun", "off", "non", "sans"):
+                return replace(self, filtres="aucun")
+            raise BotError("Choisissez /filtres qualite ou /filtres aucun.")
         raise BotError(f"réglage inconnu : {reglage}")
 
     def erreur(self) -> str | None:
@@ -300,7 +335,7 @@ class Configuration:
                 f"{self.sessions_par_jour} sessions par jour"]
             aide = ("Modifier : /capital 300 · /risque 1/7 · /sessions 6 · "
                     "/pas 3 · /compte demo ou reel · /mode trading")
-        lignes = [self._entete(), *corps]
+        lignes = [self._entete(), *corps, self._ligne_filtres()]
         if erreur is not None:
             lignes.append(f"⛔ <b>Ce réglage ne peut pas être lancé</b> : "
                           f"{erreur}")
@@ -309,6 +344,15 @@ class Configuration:
                           "l'argent véritable.")
         lignes += ["", aide, "Lancer : /demarrer · Arrêter : /arreter"]
         return "\n".join(lignes)
+
+    def _ligne_filtres(self) -> str:
+        if self.filtres == "qualite":
+            return (f"Filtres de qualité : <b>actifs</b> — pas d'entrée sur "
+                    f"une bougie d'au moins {TAILLE_BOUGIE_MAX:.2f} fois la "
+                    f"médiane des 15 précédentes, ni quand l'heure en cours "
+                    f"va déjà dans le sens du trade (/filtres aucun pour les "
+                    f"couper)")
+        return "Filtres de qualité : aucun (/filtres qualite pour les activer)"
 
     def _resume_trading(self) -> list[str]:
         mise = TRADING_MISE_PCT / 100 * self.capital
