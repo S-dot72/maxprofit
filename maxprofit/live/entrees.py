@@ -347,7 +347,10 @@ def entrees(exemples: Sequence[Exemple],
         "series": {v: _serie(pool, v, ECHEANCE) for v in VARIANTES},
         "periodes": periodes, "seuil_etalonnage": hors,
         "par_paire": par_paire,
-        "fenetre": _fenetre(signaux, precedente, fin),
+        "fenetre": _fenetre(signaux, precedente, fin,
+                            (jours_collectes(ouverture_t(), fin)
+                             if jours_collectes and fin > ouverture_t()
+                             else 0.0)),
     }
 
 
@@ -417,7 +420,7 @@ def _juger(blocs: Mapping[tuple, Sequence[int]], variante: str) -> dict:
 
 
 def _fenetre(signaux: Sequence[Mapping], ancien: Mapping | None,
-             fin: int) -> dict:
+             fin: int, jours_collecte: float = 0.0) -> dict:
     ouv = ouverture_t()
     ancien = ancien or {}
     nouveaux = [fiche(s) for s in signaux
@@ -461,6 +464,7 @@ def _fenetre(signaux: Sequence[Mapping], ancien: Mapping | None,
         verdicts[ident] = jugement
     sortie["verdicts"] = verdicts
     sortie["finals"] = finals
+    sortie["jours_collecte"] = round(jours_collecte, 2)
     sortie["registre"] = registre
     return sortie
 
