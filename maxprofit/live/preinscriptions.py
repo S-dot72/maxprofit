@@ -352,3 +352,79 @@ def juger(n: int, g: int, ic, n_min: int,
     if ic and ic[0] > SEUIL_RENTABLE:
         return "✅ établie : borne basse au-dessus de 52,1 %"
     return "≈ compatible, non établie (intervalle sous 52,1 %)"
+
+
+# --------------------------------------------------------------------------- #
+# Le retard de la confirmation (2026-10-19) — `live.entrees`
+# --------------------------------------------------------------------------- #
+#
+# L'analyse du 18/10 : la confirmation M1 SÉLECTIONNE de meilleurs signaux
+# (+0,26 d'espérance à 15 min) mais le RETARD qu'elle impose en reprend
+# presque autant (−0,24). Quatre entrées sur les mêmes signaux :
+#
+#   T0  au signal (clôture de la bougie du signal) ;
+#   T1  à la bougie suivante, sans condition (le retard pur) ;
+#   T2  à la confirmation M1 actuelle (règle de l'heure relue à l'entrée) ;
+#   T3  comme T2, mais annulée si l'entrée est à `x` amplitudes ou plus de
+#       la zone ; x parmi 1,00, 1,25 et 1,55, choisi sur les entrées
+#       d'AVANT la fenêtre et figé.
+#
+# Un signal sans ordre (non confirmé, annulé) ne gagne ni ne perd : la
+# comparaison porte sur le GAIN PAR OPPORTUNITÉ (gain total / signaux du
+# pool), qui tient compte du volume, et non sur le seul taux.
+#
+# La fenêtre s'ouvre le 20/10 à 0 h UTC, après cette déclaration du 19/10 :
+# la fenêtre du 19/10 était déjà ouverte quand ces hypothèses ont été
+# écrites.
+
+DECLAREES_T = "2026-10-19"
+OUVERTURE_T = "2026-10-20"
+FENETRE_JOURS_T = 21
+SEUILS_ANNULATION: tuple[float, ...] = (1.00, 1.25, 1.55)
+#: Signaux du pool dans la fenêtre avant un verdict (figé ensuite).
+N_MIN_T = 300
+
+CRITERE_T = (
+    "sur la fenêtre ouverte le 20/10 à 0 h UTC, close à 300 signaux du pool "
+    "(signaux ZoneH1 passant la règle de l'heure au signal, issues "
+    "déterminables) : 1) espérance par ordre de la variante positive ; "
+    "2) gain par opportunité supérieur à celui de T2 (confirmation "
+    "actuelle), mêmes signaux, intervalle apparié par blocs paire × jour "
+    "au-dessus de 0 ; 3) gain encore positif sans les deux paires et sans "
+    "la journée qui y contribuent le plus. Les trois : soutenue ; écart "
+    "positif sans les trois : indéterminée ; écart nul ou négatif : non "
+    "soutenue.")
+
+PREINSCRIPTIONS_T: tuple[PreInscription, ...] = (
+    PreInscription(
+        ident="R8-T0", famille="confirmation",
+        nom="R8-T0 entrée au signal plutôt qu'à la confirmation M1",
+        hypothese=(
+            "Sur les mêmes signaux ZoneH1 (règle de l'heure au signal), "
+            "entrer à la clôture de la bougie du signal (T0) donne un gain "
+            "par opportunité à 15 min supérieur à celui de l'entrée à la "
+            "confirmation M1 actuelle (T2), sur la fenêtre ouverte le "
+            "20/10."),
+        univers="ZoneH1, paires de la course",
+        echeance_sec=900, n_min=N_MIN_T, critere=CRITERE_T,
+        parametres={"variante": "T0", "reference": "T2"}),
+    PreInscription(
+        ident="R8-T3", famille="confirmation",
+        nom="R8-T3 confirmation annulée au-delà d'une distance à la zone",
+        hypothese=(
+            "Sur les mêmes signaux, annuler l'entrée confirmée (T2) quand "
+            "elle se trouve à x amplitudes M1 ou plus de la zone — x choisi "
+            "parmi 1,00, 1,25 et 1,55 sur les entrées d'avant la fenêtre, "
+            "puis figé — donne un gain par opportunité à 15 min supérieur à "
+            "celui de T2, sur la fenêtre ouverte le 20/10."),
+        univers="ZoneH1, paires de la course",
+        echeance_sec=900, n_min=N_MIN_T, critere=CRITERE_T,
+        parametres={"variante": "T3", "reference": "T2",
+                    "seuils": list(SEUILS_ANNULATION)}),
+)
+
+
+def ouverture_t() -> int:
+    """L'ouverture de la fenêtre des entrées T0 à T3, en s UTC."""
+    return int(datetime.strptime(OUVERTURE_T, "%Y-%m-%d").replace(
+        tzinfo=timezone.utc).timestamp())

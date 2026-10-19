@@ -343,7 +343,8 @@ def protocole(exemples: Sequence[Exemple],
               paires: Sequence[str] = (),
               regle_heure: float | None = None,
               potentiel: Mapping | None = None,
-              reference8: Mapping | None = None) -> dict:
+              reference8: Mapping | None = None,
+              entrees: Mapping | None = None) -> dict:
     """Le rapport complet, en JSON. `ancien` : le protocole du rejeu
     précédent, d'où viennent le gel figé et le journal. `serie` : les
     signaux de la stratégie pré-inscrite P4 (`strategies.serie_rouge`),
@@ -505,6 +506,9 @@ def protocole(exemples: Sequence[Exemple],
     # La mission Reference 8 : une décision par hypothèse, au même journal.
     from maxprofit.live.reference8 import hypotheses as hypotheses_r8
     hypotheses.extend(hypotheses_r8(reference8))
+    # Les entrées T0 à T3 (le retard de la confirmation), au même journal.
+    from maxprofit.live.entrees import hypotheses as hypotheses_entrees
+    hypotheses.extend(hypotheses_entrees(entrees))
     sortie["hypotheses"] = [list(h) for h in hypotheses]
     sortie["journal"] = _journal(ancien, hypotheses, fin)
 

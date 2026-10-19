@@ -129,6 +129,13 @@ supprimée.
   populations diffèrent, et la section 0 de `/reference8` compte l'écart
   dans chaque sens. Le livrable A applique la règle au signal, là où
   l'entrée immédiate décide.
+- Le passage exact d'une population à l'autre est affiché dans la section 0
+  de `/reference8`, et vérifié par un test :
+  joués = confirmés (règle au signal) − confirmés écartés par la règle lue
+  à l'entrée − confirmés sans issue à l'entrée + joués que la règle au
+  signal aurait écartés. Par exemple, 662 signaux joués au signal, dont
+  228 confirmés, aboutissent à 254 entrées jouées : l'écart vient des deux
+  derniers termes, que la section 0 chiffre.
 - `/experiences` prend `fenetre or 3`, alors que `/audit`, `/potentiel`,
   `/stabilite` et `/reference8` prennent `fenetre or 1`. C'est identique quand
   `CONFIRMATION_M1` est réglée, différent quand elle est coupée.
@@ -200,6 +207,29 @@ cassée.
   demande un intervalle au-dessus de 0 avec au moins 100 entrées.
 
 ---
+
+## 4 bis. Le retard de la confirmation (`/entrees`, 19/10)
+
+Les mêmes signaux (règle de l'heure au signal, issues déterminables),
+quatre entrées possibles :
+- **T0** : au signal ;
+- **T1** : à la bougie suivante, sans condition ;
+- **T2** : à la confirmation actuelle, règle relue à l'entrée ;
+- **T3** : T2, annulée à x amplitudes ou plus de la zone (x = 1,00, 1,25 ou
+  1,55).
+
+Un signal sans ordre compte zéro. La mesure principale est le gain par
+opportunité, qui tient compte du volume. Les décompositions T1 − T0 (le
+retard pur), T2 − T1 (la sélection) et T3 − T2 (l'annulation) se lisent
+toutes en gain par opportunité, avec un intervalle par blocs.
+
+R8-T0 et R8-T3 sont pré-inscrites le 19/10, sur une fenêtre ouverte le
+**20/10 à 0 h UTC**, après leur déclaration : celle du 19/10 était déjà
+ouverte au moment de les écrire. Le seuil de T3 est choisi sur les signaux
+d'avant puis figé. Le verdict tombe à 300 signaux et ne bouge plus.
+
+Le rejeu (version 11) mesure aussi la distance, le MFE et le MAE de
+l'entrée à la bougie suivante (`suiv_*`).
 
 ## 5. Ce qui manque, et ce qui ne peut pas être fait
 

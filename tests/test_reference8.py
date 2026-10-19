@@ -72,6 +72,9 @@ def test_le_rejeu_suit_aussi_l_entree_immediate():
     assert {"imm_t_pour", "imm_t_contre", "imm_net_15",
             "imm_zone_cassee"} <= set(e.contexte)
     assert "imm_prix_entree" not in e.contexte
+    # Et celle de l'entrée à la bougie suivante, sans condition (T1).
+    assert {"suiv_mfe_15", "suiv_t_pour", "suiv_distance_niveau"} <= set(
+        e.contexte)
 
 
 def test_la_couverture_par_paire_heure():
@@ -189,6 +192,11 @@ def test_populations_et_disponibilite():
     # La règle de l'heure relue à l'entrée écarte 8 confirmés (k % 50 = 7).
     assert a["confirmes_ecartes_a_l_entree"] == 8
     assert r["n"] == a["base"] == 312
+    # Le passage d'une population à l'autre, à l'unité près.
+    assert a["base"] == (a["confirmes_au_signal"]
+                         - a["confirmes_ecartes_a_l_entree"]
+                         - a["confirmes_sans_issue"]
+                         + a["joues_a_l_entree_seulement"])
     assert a["champ_libre"] == sum(1 for k in range(400)
                                    if k % 5 and k % 50 != 7
                                    and k % 10 == 1 and k % 8)
