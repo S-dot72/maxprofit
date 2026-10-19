@@ -329,8 +329,8 @@ def test_la_fenetre_fige_son_plan_et_garde_son_registre(monkeypatch):
                 if k % 5 and k % 50 != 7 and t0 + k * 3600 + 120 >= ouv)
     assert f["n"] == apres > 0
     assert f["plan"]["fige_le"] and "gain" not in f["plan"]
-    assert f["modeles"]["M1"]["verdict"].startswith("≈ indéterminée — "
-                                                    "volume cible non fixé")
+    assert f["modeles"]["M1"]["verdict"].startswith(
+        "≈ indéterminée — P2_GAIN_MIN_POINTS absent")
     # Le gain fixé ensuite est lu une fois ; le plan, lui, ne bouge pas.
     monkeypatch.setenv("P2_GAIN_MIN_POINTS", "60")
     exemples = [_signal(k, t0) for k in range(400)]
@@ -403,3 +403,20 @@ def test_un_registre_et_un_plan_d_avant_m4_sont_completes(monkeypatch):
     assert f2["plan"]["parts"]["M4"] == part_m4
     assert f2["plan"]["fige_le"] == f["plan"]["fige_le"]
     assert "R8-M4" in {i for i, _h, _v in r8.hypotheses(deux)}
+
+
+def test_le_gain_deja_regle_est_dit_avant_le_gel(monkeypatch):
+    """Le 18/10, /reference8 affichait « gain minimal non fixé » alors que
+    P2_GAIN_MIN_POINTS valait 8 : la fenêtre n'était pas ouverte, le gain
+    n'était simplement pas encore lu. Chaque cas a désormais son message."""
+    monkeypatch.setenv("P2_GAIN_MIN_POINTS", "8")
+    r = _rapport()                               # données d'avant le 19/10
+    f = r["fenetre"]
+    assert not f["plan"].get("fige_le") and f["gain_lu"] == 8
+    assert "plan pas encore figé" in f["modeles"]["M1"]["verdict"]
+    assert "8 points (P2_GAIN_MIN_POINTS lu" in r8.texte(r)
+    monkeypatch.delenv("P2_GAIN_MIN_POINTS")
+    ouv = ouverture_r8()
+    sans = _rapport(t0=ouv - 10 * JOUR)
+    assert "P2_GAIN_MIN_POINTS absent" in (
+        sans["fenetre"]["modeles"]["M1"]["verdict"])

@@ -903,6 +903,18 @@ def _volume(plan: Mapping, ident: str, gain: float | None) -> int | None:
                          plan.get("effet_plan", 1.0))
 
 
+def _sans_cible(plan: Mapping, gain: float | None) -> str:
+    """Pourquoi il n'y a pas encore de volume cible — chaque cas à part."""
+    if not plan.get("fige_le"):
+        return (f"≈ indéterminée — plan pas encore figé : il le sera au "
+                f"premier rejeu après l'ouverture du {JOUR_R8}")
+    if gain is None:
+        return ("≈ indéterminée — P2_GAIN_MIN_POINTS absent : volume cible "
+                "non calculable")
+    return ("≈ indéterminée — trop peu d'entrées avant la fenêtre pour "
+            "calculer un volume cible")
+
+
 def _modele_fenetre(fiches: Sequence[Sequence], exclusions,
                     jours: float) -> dict:
     blocs = _blocs_modele(fiches, lambda f: _gardee(f, exclusions),
@@ -950,6 +962,10 @@ def _fenetre(base: Sequence[Exemple], ancien: Mapping | None, fin: int,
         if gain is not None:
             plan["gain"] = gain
     sortie["plan"] = plan
+    # Lu, pas gelé : avant le gel du plan, dire que la variable est là.
+    # Le rapport du 18/10 affichait « non fixé » alors qu'elle valait 8 —
+    # elle n'était simplement pas encore lue.
+    sortie["gain_lu"] = gain_minimal()
     if "p" in plan:
         sortie["volumes_proposes"] = {
             ident: {str(gp): volume_requis(plan["p"], plan["parts"][ident],
@@ -968,9 +984,7 @@ def _fenetre(base: Sequence[Exemple], ancien: Mapping | None, fin: int,
         cible = _volume(plan, ident, gain) if plan.get("fige_le") else None
         resultat["cible"] = cible
         if cible is None:
-            resultat["verdict"] = ("≈ indéterminée — volume cible non fixé "
-                                   "(P2_GAIN_MIN_POINTS, ou plan pas encore "
-                                   f"figé : fenêtre du {JOUR_R8})")
+            resultat["verdict"] = _sans_cible(plan, gain)
         elif len(registre) < cible:
             resultat["verdict"] = (f"≈ indéterminée — {len(registre)} "
                                    f"signaux de M0 sur {cible}")
@@ -1180,6 +1194,16 @@ def _pc(x: float | None) -> str:
 def _gain(g: float | None) -> str:
     return ("non fixé (P2_GAIN_MIN_POINTS)" if g is None
             else f"{g:g} points")
+
+
+def _gain_affiche(plan: Mapping, lu: float | None) -> str:
+    """Le gain gelé ; avant le gel, celui que la variable porte déjà."""
+    if plan.get("gain") is not None:
+        return f"{plan['gain']:g} points (gelé)"
+    if lu is not None and not plan.get("fige_le"):
+        return (f"{lu:g} points (P2_GAIN_MIN_POINTS lu, gelé au premier "
+                f"rejeu après l'ouverture)")
+    return _gain(None)
 
 
 def _qp(q: Sequence[float] | None) -> str:
@@ -1396,7 +1420,8 @@ def _section_fenetre(r: Mapping) -> list[str]:
         lignes.append(
             f"Plan {etat} sur {plan['n']} entrées d'avant : M0 "
             f"{plan['p']:.0%}, effet de plan {plan['effet_plan']} ; gain "
-            f"minimal {_gain(plan.get('gain'))} ; règle d'échéance "
+            f"minimal {_gain_affiche(plan, f.get('gain_lu'))} ; règle "
+            f"d'échéance "
             + ", ".join(
                 f"{s} → {int(h) // 60} min"
                 for s, h in plan["regle"].items()) + ".")
