@@ -178,6 +178,27 @@ un prédicteur. Le livrable C compare donc les caractéristiques connues
 AVANT l'entrée, entre les gagnées, les perdues et les perdues à zone
 cassée.
 
+**D11 — La « sélection » de la confirmation était comptée avec la bougie de
+confirmation (relevé sur le rapport du 19/10).**
+- La décomposition « sélection + retard » compare l'entrée IMMÉDIATE des
+  signaux confirmés à celle de tous les signaux.
+- Or un signal confirmé est défini par sa bougie suivante, qui clôture dans
+  le sens du trade au-delà de l'extrême du signal. Son entrée immédiate
+  part donc avec un premier mouvement favorable garanti : à 1 minute, elle
+  gagne toujours (GG 106, GP 123, PG 0, PP 0 dans le rapport).
+- Les « 68 % » des confirmés en entrée immédiate et la « sélection
+  +0,25 » comptent ce mouvement. Ce n'est pas une information disponible
+  au signal, et ce n'est pas une stratégie possible.
+- La mesure exploitable compare À HEURE ÉGALE : tous entrés à la clôture de
+  la bougie suivante, ceux qu'elle confirme contre les autres. Elle figure
+  désormais dans `/reference8` (R8-A5) et `/stabilite`, à côté du retard
+  pur (R8-A6, T1 − T0).
+- R8-A2 et R8-A3 restent au journal, avec le verdict « non exploitable ».
+- D'après les chiffres du 19/10 (calcul à la main, à confirmer au prochain
+  rejeu) : confirmés environ 56 %, autres environ 54 % à heure égale. La
+  confirmation sélectionne donc à peine, et c'est surtout le PRIX de la
+  bougie de confirmation que paie l'entrée confirmée.
+
 ---
 
 ## 4. Règles de décision

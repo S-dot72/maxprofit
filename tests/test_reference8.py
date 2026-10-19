@@ -154,6 +154,11 @@ def _signal(k: int, t0: int) -> Exemple:
             "net_4": 0.5, "net_10": 0.8, "net_15": 1.0 if g900 else -1.0})
     else:
         ctx["attente_confirmation"] = 0.0
+    # L'entrée à la bougie suivante, aux trois échéances, comme au rejeu :
+    # celle des confirmés EST l'entrée confirmée.
+    ctx.update({f"gagne_suivant_{s}": (ctx[f"gagne_confirme_{s}"] if confirme
+                                       else ctx["gagne_suivant"])
+                for s in (240, 600, 900)})
     return Exemple(ts_sec=t0 + k * 3600 + 60, pair=PAIRES[k % 4],
                    contexte=ctx, gagne=imm[900], issues=imm)
 
@@ -290,7 +295,10 @@ def test_couverture_et_sensibilite():
 def test_verdicts_regles_par_hypothese():
     r = _rapport()
     v = {i: verdict for i, _h, verdict in r8.hypotheses(r)}
-    assert v["R8-A3"].startswith("✅")             # le retard coûte
+    # A2 et A3 comptent la bougie de confirmation : neutralisées.
+    assert v["R8-A2"].startswith("≈") and "non exploitable" in v["R8-A2"]
+    assert v["R8-A3"].startswith("≈") and "non exploitable" in v["R8-A3"]
+    assert {"R8-A5", "R8-A6"} <= set(v)
     assert v["R8-A4"].startswith("✅")             # entrée plus loin
     # Favorable sur les données qui ont inspiré le seuil : indéterminée.
     assert v["R8-B-C"].startswith("≈") and "inspiré" in v["R8-B-C"]
@@ -420,3 +428,21 @@ def test_le_gain_deja_regle_est_dit_avant_le_gel(monkeypatch):
     sans = _rapport(t0=ouv - 10 * JOUR)
     assert "P2_GAIN_MIN_POINTS absent" in (
         sans["fenetre"]["modeles"]["M1"]["verdict"])
+
+
+def test_la_selection_se_mesure_a_heure_egale():
+    """À 1 min, l'entrée immédiate d'un confirmé gagne par construction : la
+    sélection exploitable compare, entrés à la même bougie, les confirmés et
+    les autres."""
+    r = _rapport()
+    h = next(x for x in r["a"]["heure_egale"] if x["sec"] == 900)
+    conf = [k for k in range(400) if k % 5]
+    autres = [k for k in range(400) if not k % 5]
+    assert h["confirmes"] == [len(conf), sum(1 for k in conf
+                                             if k % 3 and k % 4)]
+    assert h["autres"] == [len(autres), sum(1 for k in autres
+                                            if k % 3 and k % 7)]
+    sortie = r8.texte(r)
+    assert "Sélection à heure égale" in sortie
+    assert "gagnante par construction" in sortie or "par construction" in (
+        sortie)

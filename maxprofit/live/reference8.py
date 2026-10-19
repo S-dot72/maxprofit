@@ -114,6 +114,10 @@ CLASSES: tuple[tuple[str, str], ...] = (
     ("sans_mouvement", "ni +1 ni −1 en 15 min"),
 )
 STRATES: tuple[str, ...] = ("C", "D", "B", "reste")
+#: Le verdict des mesures qui conditionnent sur la bougie de confirmation.
+NON_EXPLOITABLE = ("≈ indéterminée — non exploitable : la mesure au signal "
+                   "compte la bougie de confirmation, gagnante par "
+                   "construction")
 #: « 19/10 », pour les textes.
 JOUR_R8 = f"{OUVERTURE_R8[8:]}/{OUVERTURE_R8[5:7]}"
 
@@ -440,6 +444,30 @@ def _livrable_a(signaux: Sequence[Exemple], fenetre: int) -> dict:
             "ic_total": _bootstrap(
                 blocs, lambda s: _ecart_ev(s[0], s[1], s[2], s[4])),
         })
+    # ⚠ La « sélection » ci-dessus compare l'entrée immédiate des signaux
+    # confirmés à celle de tous les signaux : elle compte la bougie de
+    # confirmation elle-même, qui va par construction dans le sens du trade
+    # (à 1 min, l'entrée immédiate d'un confirmé gagne toujours). Ce n'est
+    # pas une information disponible au signal. La mesure exploitable est
+    # À HEURE ÉGALE : tous entrés à la clôture de la bougie suivante, ceux
+    # qu'elle confirme contre les autres (rapport du 19/10).
+    heure_egale = []
+    for sec in HORIZONS:
+        cle = f"gagne_suivant_{sec}"
+        blocs_h: dict[tuple, list[int]] = {}
+        for e in signaux:
+            if cle not in e.contexte or \
+                    "retournement_suivant" not in e.contexte:
+                continue
+            b = blocs_h.setdefault(_bloc(e), [0, 0, 0, 0])
+            k = 2 if e.contexte["retournement_suivant"] == 1 else 0
+            b[k] += 1
+            b[k + 1] += int(e.contexte[cle])
+        somme = [sum(col) for col in zip(*blocs_h.values())] or [0, 0, 0, 0]
+        heure_egale.append({
+            "sec": sec, "autres": somme[:2], "confirmes": somme[2:],
+            "ecart": _rond(_ecart_ev(*somme), 4),
+            "ic": _bootstrap(blocs_h, lambda x: _ecart_ev(*x))})
     # Le témoin du retard PUR : entrer une minute plus tard, sans attendre
     # de confirmation (la bougie suivante, quelle qu'elle soit).
     suivant = [(e, bool(e.gagne), bool(e.contexte["gagne_suivant"]))
@@ -508,6 +536,7 @@ def _livrable_a(signaux: Sequence[Exemple], fenetre: int) -> dict:
     return {
         "signaux": len(signaux), "confirmes": len(conf),
         "horizons": horizons,
+        "heure_egale": heure_egale,
         "suivant": {"n": n_s,
                     "immediate": _ev(n_s, sum(i for _e, i, _s in suivant)),
                     "suivante": _ev(n_s, sum(s for _e, _i, s in suivant)),
@@ -1089,12 +1118,27 @@ def hypotheses(r: Mapping | None) -> list[tuple[str, str, str]]:
             ("R8-A1", "la confirmation M1 améliore ZoneH1 (effet total à "
                       "15 min, tous les signaux)",
              _verdict(a["total"], a["ic_total"], n)),
+            # A2 et A3 restent au journal, neutralisées : la sélection et le
+            # retard mesurés au signal comptent la bougie de confirmation.
             ("R8-A2", "la confirmation sélectionne de meilleurs signaux "
-                      "(entrés au signal)",
-             _verdict(a["selection"], a["ic_selection"], n)),
+                      "(entrés au signal)", NON_EXPLOITABLE + " (voir R8-A5)"),
             ("R8-A3", "attendre la confirmation coûte (mêmes signaux, "
-                      "entrée plus tardive)",
-             _verdict(a["retard"], a["ic_retard"], n, sens=-1))]
+                      "entrée plus tardive)", NON_EXPLOITABLE
+             + " (voir R8-A6)")]
+    h = next((x for x in r["a"].get("heure_egale", ())
+              if x["sec"] == ECHEANCE), None)
+    if h:
+        sortie.append((
+            "R8-A5", "à heure d'entrée égale (bougie suivante), les signaux "
+                     "que la confirmation retient gagnent plus que les autres",
+            _verdict(h["ecart"], h["ic"], h["confirmes"][0])))
+    s_ = r["a"]["suivant"]
+    if s_["immediate"] is not None and s_["suivante"] is not None:
+        sortie.append((
+            "R8-A6", "attendre une minute sans condition coûte (tous les "
+                     "signaux)",
+            _verdict(s_["suivante"] - s_["immediate"], s_["ic"], s_["n"],
+                     sens=-1)))
     d = r["a"]["distance"]
     sortie.append(("R8-A4", "la confirmation entre plus loin de la zone",
                    _verdict(d["moyenne"], d["ic_moyenne"], d["n"])))
@@ -1295,7 +1339,12 @@ def _section_a(r: Mapping) -> list[str]:
             for h in a["horizons"]) + "</pre>",
         "GP : la confirmation fait perdre un gagnant ; PG : elle sauve un "
         "perdant. Espérances par ordre (payout 92 %).",
-        "Sélection ou retard (écart d'espérance, intervalle par blocs) :"]
+        "⚠ La colonne « imm. » des confirmés compte la bougie de "
+        "confirmation elle-même, qui va dans le sens du trade par "
+        "construction (à 1 min, elle gagne toujours) : ce n'est pas une "
+        "information disponible au signal.",
+        "Décomposition comptable (⚠ non exploitable, même raison ; écart "
+        "d'espérance, intervalle par blocs) :"]
     for h in a["horizons"]:
         if h["sec"] == TEMOIN:
             continue
@@ -1304,6 +1353,14 @@ def _section_a(r: Mapping) -> list[str]:
             f"{_ic(h['ic_selection'])} · retard {_e(h['retard'])} "
             f"{_ic(h['ic_retard'])} · total {_e(h['total'])} "
             f"{_ic(h['ic_total'])}")
+    lignes.append("<b>Sélection à heure égale</b> (tous entrés à la clôture "
+                  "de la bougie suivante : confirmés contre les autres) — la "
+                  "mesure exploitable :")
+    for h in a.get("heure_egale", ()):
+        lignes.append(
+            f"• {h['sec'] // 60} min : confirmés {_p(*h['confirmes'])} sur "
+            f"{h['confirmes'][0]}, autres {_p(*h['autres'])} sur "
+            f"{h['autres'][0]} : ΔEV {_e(h['ecart'])} {_ic(h['ic'])}")
     s = a["suivant"]
     lignes.append(
         f"Témoin du retard pur (entrer à la bougie suivante, sans "

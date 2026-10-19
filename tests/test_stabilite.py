@@ -87,6 +87,10 @@ def test_entree_immediate_et_confirmee_sur_les_memes_signaux():
     assert er["confirmes"] == 30 and er["perdus"] == [10, 10]
     assert er["apparies_immediat"] == 15 and er["apparies_confirme"] == 30
     assert er["degradation_mediane"] == 0.8
+    # À heure égale : les 30 confirmés, entrés à la bougie suivante, contre
+    # les 10 autres entrés à la même bougie.
+    assert er["heure_egale"]["confirmes"] == [30, 30]
+    assert er["heure_egale"]["autres"] == [10, 10]
 
 
 def test_les_debits_sont_en_jours_de_collecte():
