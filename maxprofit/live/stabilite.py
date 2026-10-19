@@ -261,6 +261,16 @@ def _entree_retardee(signaux: Sequence[Exemple], fenetre: int) -> dict:
         e.contexte["e_distance_niveau"] - e.contexte["distance_niveau"]
         for e, _ in confirmes_
         if "e_distance_niveau" in e.contexte and "distance_niveau" in e.contexte)
+    # À HEURE ÉGALE : tous entrés à la clôture de la bougie suivante, ceux
+    # qu'elle confirme contre les autres. L'entrée immédiate des confirmés
+    # compte la bougie de confirmation, gagnante par construction.
+    egale = {True: [0, 0], False: [0, 0]}
+    for e in signaux:
+        if "gagne_suivant" in e.contexte and \
+                "retournement_suivant" in e.contexte:
+            x = egale[e.contexte["retournement_suivant"] == 1]
+            x[0] += 1
+            x[1] += int(e.contexte["gagne_suivant"])
     return {
         "signaux": len(signaux),
         "immediat": [len(signaux), sum(e.gagne for e in signaux)],
@@ -272,6 +282,7 @@ def _entree_retardee(signaux: Sequence[Exemple], fenetre: int) -> dict:
         "perdus": [len(perdus), sum(e.gagne for e in perdus)],
         "degradation_mediane": (round(degradation[len(degradation) // 2], 2)
                                 if degradation else None),
+        "heure_egale": {"confirmes": egale[True], "autres": egale[False]},
     }
 
 
@@ -365,10 +376,18 @@ def texte(resultat: Mapping | None) -> str:
             f"({imm_g / imm_n:.0%})",
             f"  les {nc} confirmés ({nc / imm_n:.0%}) : immédiate "
             f"{er['apparies_immediat'] / nc:.0%} · confirmée "
-            f"{er['apparies_confirme'] / nc:.0%} (seule l'heure d'entrée "
-            f"change)",
+            f"{er['apparies_confirme'] / nc:.0%} — ⚠ l'immédiate compte la "
+            f"bougie de confirmation, gagnante par construction : pas une "
+            f"information disponible au signal",
             f"  les {pn} que la confirmation fait perdre gagnaient "
             f"{pg / max(1, pn):.0%} en entrée immédiate"]
+        he = er.get("heure_egale") or {}
+        c_, a_ = he.get("confirmes"), he.get("autres")
+        if c_ and a_ and c_[0] and a_[0]:
+            lignes.append(
+                f"  à heure égale (tous entrés à la bougie suivante) : "
+                f"confirmés {c_[1] / c_[0]:.0%} sur {c_[0]}, autres "
+                f"{a_[1] / a_[0]:.0%} sur {a_[0]} — la sélection exploitable")
         if er.get("degradation_mediane") is not None:
             lignes.append(f"  prix d'entrée : la confirmation entre en "
                           f"médiane {er['degradation_mediane']:+.2f} "

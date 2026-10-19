@@ -466,6 +466,11 @@ def protocole(exemples: Sequence[Exemple],
             if fin >= fin_p:
                 pre["final"] = True
                 pre["fige_le"] = fin
+            else:
+                # Le critère porte sur la fenêtre ENTIÈRE : avant sa
+                # clôture, un verdict n'est qu'une lecture en l'état.
+                for r in pre["resultats"]:
+                    r["verdict"] += " (en l'état : fenêtre en cours)"
     exp004["preinscriptions"] = pre
     # P2 : la validation d'EXP-020 C et D (amendement du 14/10).
     debut_v = ouverture()
