@@ -1056,8 +1056,44 @@ def _fenetre(base: Sequence[Exemple], ancien: Mapping | None, fin: int,
             sortie["echeance"]["fige_le"] = fin
             finals["R8-H"] = sortie["echeance"]
     sortie["finals"] = finals
+    # Ce que /decision lit pour la production : l'EV par ordre de chaque
+    # modèle SUR LA FENÊTRE, son intervalle, et sa robustesse ; et le temps
+    # réellement collecté depuis l'ouverture.
+    sortie["ev_fenetre"] = {
+        ident: ev_robuste([f for f in registre if _gardee(f, excl)])
+        for ident, _l, excl in MODELES_R8}
+    sortie["jours_collecte"] = round(jours_collecte, 2)
     sortie["registre"] = registre
     return sortie
+
+
+def _ev_ordre(s: Sequence[float]) -> float | None:
+    return esperance(s[1] / s[0]) if s and s[0] else None
+
+
+def ev_robuste(fiches: Sequence[Sequence]) -> dict:
+    """EV par ordre de fiches [ts, paire, gagné…], son intervalle à 95 % par
+    blocs paire × jour, et l'EV sans les deux paires puis sans la journée
+    qui y contribuent le plus."""
+    blocs: dict[tuple, list[int]] = {}
+    for f in fiches:
+        b = blocs.setdefault((f[1], int(f[0]) // 86400), [0, 0])
+        b[0] += 1
+        b[1] += int(f[2])
+
+    def sans(retires):
+        reste = [v for k, v in blocs.items()
+                 if k[0] not in retires and k[1] not in retires]
+        return _ev_ordre([sum(c) for c in zip(*reste)] if reste else [])
+    paires = sorted({k[0] for k in blocs},
+                    key=lambda p: (sans({p}) or 0.0, p))
+    jours = sorted({k[1] for k in blocs},
+                   key=lambda j: (sans({j}) or 0.0, j))
+    n, g = len(fiches), sum(int(f[2]) for f in fiches)
+    return {"n": n, "g": g, "ev": _ev(n, g),
+            "ic": _bootstrap(blocs, _ev_ordre),
+            "sans_deux_paires": _rond(sans(set(paires[:2])), 4),
+            "sans_meilleur_jour": _rond(sans(set(jours[:1])), 4)}
 
 
 # --------------------------------------------------------------------------- #

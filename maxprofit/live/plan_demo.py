@@ -3442,6 +3442,16 @@ def potentiel(course) -> str:
     return texte((a.laboratoire or {}).get("potentiel") if a else None)
 
 
+def decision(course) -> str:
+    """`/decision` : où en est la décision de production, et quand chaque
+    verdict tombera au débit de collecte actuel."""
+    from maxprofit.live.decision import decision as calculer, texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte(calculer(a.laboratoire if a else None))
+
+
 def entrees(course) -> str:
     """`/entrees` : T0, T1, T2 et T3 sur les mêmes signaux — le retard de
     la confirmation M1."""

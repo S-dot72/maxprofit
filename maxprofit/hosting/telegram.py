@@ -298,6 +298,7 @@ COMMANDES = [
     ("potentiel", "Potentiel de zone, expiration dynamique, Stochastic"),
     ("reference8", "Mission Reference 8 : confirmation, B/C/E, échéances"),
     ("entrees", "Entrées T0 à T3 : le retard de la confirmation M1"),
+    ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
 ]
 
@@ -419,6 +420,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._potentiel: Callable[[], Awaitable[str]] | None = None
         self._reference8: Callable[[], Awaitable[str]] | None = None
         self._entrees: Callable[[], Awaitable[str]] | None = None
+        self._decision: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
         self._piloter: Callable[[str, str], Awaitable[str]] | None = None
@@ -638,6 +640,12 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         log.error("Fiche d'audit non envoyée : %s", erreur)
                         await self.client.envoyer(
                             chat, f"Fiche non envoyée : {erreur}", CLAVIER)
+        elif texte.startswith("/decision") or texte.startswith("/décision"):
+            if self._decision is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._decision(),
+                                          CLAVIER)
         elif texte.startswith("/entrees") or texte.startswith("/entrées"):
             if self._entrees is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
