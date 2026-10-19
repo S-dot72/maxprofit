@@ -34,7 +34,8 @@ from maxprofit.live.configuration import Configuration
 
 log = logging.getLogger(__name__)
 
-REGLAGES = ("mode", "compte", "capital", "risque", "sessions", "pas")
+REGLAGES = ("mode", "compte", "capital", "risque", "sessions", "pas",
+            "filtres")
 COMMANDES = ("configuration", "configurer", *REGLAGES, "demarrer", "arreter")
 #: Commandes qui ne modifient rien : ouvertes à tout opérateur approuvé.
 LECTURE = ("configuration", "configurer")
@@ -47,6 +48,8 @@ GUIDE = (
     "4. En plan : /risque N/M (N trades gagnants sur M trades, 1/7 par "
     "défaut), /sessions 6 (sessions par jour) et /pas 3 (pas de "
     "martingale par session)\n"
+    "5. /filtres qualite (bougie d'entrée excessive et heure déjà dans le "
+    "sens du trade écartées) ou /filtres aucun\n"
     "Chaque changement réaffiche la projection. Quand elle vous convient : "
     "/demarrer.\n\n")
 
@@ -54,7 +57,8 @@ GUIDE = (
 def signature(cfg: Configuration) -> str:
     """Ce qui fait le réglage, sans ce que le lancement y ajoute."""
     return (f"{cfg.mode}|{cfg.compte}|{cfg.capital:.2f}|{cfg.gagnants}/"
-            f"{cfg.trades}|{cfg.sessions_par_jour}|{cfg.pas_max}")
+            f"{cfg.trades}|{cfg.sessions_par_jour}|{cfg.pas_max}|"
+            f"{cfg.filtres}")
 
 
 class Pilote:
@@ -199,6 +203,7 @@ _EXEMPLES = {
     "risque": "/risque 1/7 (N trades gagnants sur M trades)",
     "sessions": "/sessions 6",
     "pas": "/pas 3 (pas de martingale par session ; 1 = sans martingale)",
+    "filtres": "/filtres qualite ou /filtres aucun",
 }
 
 

@@ -206,6 +206,10 @@ EXCLUSION_B = ("taille_bougie", ">=", 1.31)
 LIBELLES_EXCLUSIONS["taille_bougie"] = "B ≥ 1,31"
 EXCLUSION_DISTANCE = ("distance_niveau", ">=", 1.55)
 LIBELLES_EXCLUSIONS["distance_niveau"] = "distance ≥ 1,55"
+#: Les filtres de qualité de la course (`/filtres qualite`, 19/10) : B, et
+#: le mouvement de l'heure déjà dans le sens du trade (seuil rond, 0).
+EXCLUSION_HEURE = ("mouvement_heure", ">=", 0.0)
+LIBELLES_EXCLUSIONS["mouvement_heure"] = "heure déjà dans le sens du trade"
 
 #: (identifiant, libellé, exclusions) — l'ordre du tableau de /reference8.
 MODELES_R8: tuple[tuple[str, str, tuple], ...] = (
@@ -216,6 +220,8 @@ MODELES_R8: tuple[tuple[str, str, tuple], ...] = (
                                          EXCLUSION_D)),
     ("M4", "M0 sans entrée à 1,55 amplitude ou plus de la zone",
      (EXCLUSION_DISTANCE,)),
+    ("Q", "filtres de qualité : sans bougie ≥ 1,31 ni heure déjà dans le "
+          "sens du trade", (EXCLUSION_B, EXCLUSION_HEURE)),
     ("D", "secondaire : M0 sans place sous 1,95", (EXCLUSION_D,)),
     ("C+D", "P2-E pré-inscrite : sans C ni D", (EXCLUSION_C, EXCLUSION_D)),
 )
@@ -278,6 +284,21 @@ PREINSCRIPTIONS_R8: tuple[PreInscription, ...] = (
         univers="ZoneH1 + confirmation M1, paires de la course",
         echeance_sec=900, n_min=100, critere=CRITERE_R8,
         parametres={"exclusions": [EXCLUSION_DISTANCE], "manquant": "garde"}),
+    PreInscription(
+        ident="R8-Q", famille="qualite",
+        nom="R8-Q filtres de qualité de la course (B et heure)",
+        hypothese=(
+            "Sur les entrées ZoneH1 confirmées jouées, écarter celles dont "
+            "la bougie d'entrée mesure au moins 1,31 fois la médiane des 15 "
+            "précédentes ET celles prises quand le mouvement depuis le début "
+            "de l'heure va déjà dans le sens du trade (au moins 0 amplitude) "
+            "augmente l'espérance par ordre à 15 min. Déclarée le 19/10 après "
+            "l'ouverture de la fenêtre (une entrée de M0 dedans, non lue pour "
+            "ces variables) ; ce sont aussi les filtres de /filtres qualite."),
+        univers="ZoneH1 + confirmation M1, paires de la course",
+        echeance_sec=900, n_min=100, critere=CRITERE_R8,
+        parametres={"exclusions": [EXCLUSION_B, EXCLUSION_HEURE],
+                    "manquant": "garde"}),
     PreInscription(
         ident="R8-H", famille="echeance",
         nom="R8-H échéance choisie selon B, C et D à l'entrée",

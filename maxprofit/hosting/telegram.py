@@ -274,6 +274,7 @@ COMMANDES = [
     ("risque", "N gagnants sur M trades, ex. /risque 1/7 (admin)"),
     ("sessions", "Sessions par jour, ex. /sessions 6 (admin)"),
     ("pas", "Pas de martingale par session, ex. /pas 3 (admin)"),
+    ("filtres", "Filtres de qualité des signaux : /filtres qualite (admin)"),
     ("demarrer", "Lancer la course sur le réglage (admin)"),
     ("arreter", "Arrêter la course, la collecte continue (admin)"),
     ("paires", "Paires actuellement suivies"),
@@ -371,8 +372,8 @@ INSTRUCTIONS_JETON = (
 
 #: Les commandes de réglage, servies par `hosting.pilotage`.
 COMMANDES_DE_PILOTAGE = ("configuration", "configurer", "mode", "compte",
-                         "capital", "risque", "sessions", "pas", "demarrer",
-                         "arreter")
+                         "capital", "risque", "sessions", "pas", "filtres",
+                         "demarrer", "arreter")
 
 
 def _commande(texte: str) -> str:

@@ -871,6 +871,12 @@ class CoursePlanDemo:
         #: `VAGUES_MIN` : n'entrer que si les dernières vagues du ZigZag
         #: durent au moins ce nombre de minutes (0 = pas de filtre).
         self.vagues_min_minutes = vagues_min_minutes()
+        #: Les filtres de qualité (`/filtres qualite`, posés par la
+        #: configuration) : pas d'entrée sur une bougie d'au moins ce
+        #: multiple de la médiane des 15 précédentes, ni quand le mouvement
+        #: de l'heure dans le sens du trade atteint ce seuil. None : coupé.
+        self.taille_bougie_max: float | None = None
+        self.mouvement_heure_max: float | None = None
         #: Signaux en attente de leur bougie de confirmation, par paire.
         self._en_attente: dict[str, tuple] = {}
         #: Les bougies vues au signal joué, pour l'image de l'ordre.
@@ -1269,6 +1275,21 @@ class CoursePlanDemo:
         if self.distance_entree_max is not None and \
                 ctx.get("distance_niveau", 0.0) > self.distance_entree_max:
             self.etat.noter("entree_tardive")
+            return None
+        if self.taille_bougie_max is not None and \
+                ctx.get("taille_bougie", 0.0) >= self.taille_bougie_max:
+            self.etat.noter("bougie_excessive")
+            log.info("%s %s écarté : bougie d'entrée %.2f fois la médiane "
+                     "(seuil %.2f).", paire, signal.direction.name,
+                     ctx["taille_bougie"], self.taille_bougie_max)
+            return None
+        if self.mouvement_heure_max is not None and \
+                ctx.get("mouvement_heure") is not None and \
+                ctx["mouvement_heure"] >= self.mouvement_heure_max:
+            self.etat.noter("heure_consommee")
+            log.info("%s %s écarté : l'heure va déjà dans le sens du trade "
+                     "(%+.2f amplitudes).", paire, signal.direction.name,
+                     ctx["mouvement_heure"])
             return None
         # Les critères de validation sont MESURÉS sur chaque signal, exigés
         # ou non : ils partent avec l'ordre dans son contexte, et /bilan
@@ -2816,6 +2837,10 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
                if a.get("elan_contre") else "")
             + (f", {a['entree_tardive']} entrée(s) trop loin de la zone"
                if a.get("entree_tardive") else "")
+            + (f", {a['bougie_excessive']} bougie(s) d'entrée excessive(s)"
+               if a.get("bougie_excessive") else "")
+            + (f", {a['heure_consommee']} heure déjà dans le sens du trade"
+               if a.get("heure_consommee") else "")
             + f" ; {a.get('retenus', 0)} "
             f"retenu(s), {a.get('independance', 0)} pas reporté(s) "
             f"(indépendance), {a.get('ordres', 0)} ordre(s).")
@@ -3795,6 +3820,8 @@ def _assembler(courtier, lecteur, ecriture, journal, plan, paires, campagne,
     if configuration is not None:
         course.pas_max = configuration.pas_de_course()
         course.mode_trading = configuration.mode == "trading"
+        course.taille_bougie_max, course.mouvement_heure_max = (
+            configuration.seuils_de_qualite())
     log.info("Univers : %s (%s)", mode_univers,
              ", ".join(paires) if mode_univers == UNIVERS_EPINGLEES
              else "tous les actifs au plafond")

@@ -240,7 +240,7 @@ def test_livrable_b_modeles_chevauchement_et_valeurs():
     b = r["b"]
     m = {x["id"]: x for x in b["modeles"]}
     assert [x["id"] for x in b["modeles"]] == ["M0", "M1", "M2", "M3", "M4",
-                                               "D", "C+D"]
+                                               "Q", "D", "C+D"]
     assert m["M0"]["n"] == 312 and m["M0"]["exclus"] == 0
     assert m["M2"]["ev"] > m["M0"]["ev"]          # C écarte des perdantes
     assert m["M2"]["ecart"] > 0 and m["M1"]["ecart"] < 0
@@ -407,7 +407,7 @@ def test_un_registre_et_un_plan_d_avant_m4_sont_completes(monkeypatch):
     deux = r8.reference8(exemples, _en_direct, 1, ancien=ancien, debut=t0,
                          fin=t0 + 424 * 3600)
     f2 = deux["fenetre"]
-    assert all(len(x) == 10 for x in f2["registre"])
+    assert all(len(x) == 11 for x in f2["registre"])
     assert f2["plan"]["parts"]["M4"] == part_m4
     assert f2["plan"]["fige_le"] == f["plan"]["fige_le"]
     assert "R8-M4" in {i for i, _h, _v in r8.hypotheses(deux)}
