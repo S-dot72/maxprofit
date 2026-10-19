@@ -257,6 +257,14 @@ class Apprenti:
             ancien=((getattr(ancien, "laboratoire", None) or {})
                     .get("reference8")),
             debut=debut, fin=fin, jours_collectes=qualite.jours_collectes)
+        # T0 à T3 sur les mêmes signaux (/entrees) : le retard de la
+        # confirmation ; le registre de sa fenêtre vient du rejeu précédent.
+        from maxprofit.live.entrees import entrees
+        nouveau.laboratoire["entrees"] = entrees(
+            exemples, en_direct, fenetre or 1,
+            ancien=((getattr(ancien, "laboratoire", None) or {})
+                    .get("entrees")),
+            fin=fin, jours_collectes=qualite.jours_collectes)
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
         # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
@@ -283,7 +291,8 @@ class Apprenti:
             serie=sorted(serie, key=lambda e: e.ts_sec),
             paires=self.paires, regle_heure=seuil,
             potentiel=nouveau.laboratoire["potentiel"],
-            reference8=nouveau.laboratoire["reference8"])
+            reference8=nouveau.laboratoire["reference8"],
+            entrees=nouveau.laboratoire["entrees"])
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -295,7 +304,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 10
+VERSION_EXPERIENCES = 11
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

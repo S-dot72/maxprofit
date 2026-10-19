@@ -216,7 +216,7 @@ def _verdict(ecart: float | None, ic: Sequence[float] | None, n: int, *,
     if ecart is None or n < n_min:
         return f"≈ indéterminée — {n} observations, il en faut {n_min}"
     if ecart * sens <= 0:
-        return "❌ non soutenue — l'écart va dans l'autre sens"
+        return "❌ non soutenue — écart nul ou dans l'autre sens"
     if concu:
         return ("≈ indéterminée — favorable sur les données qui ont "
                 "inspiré la règle : à juger sur la fenêtre")
@@ -255,6 +255,8 @@ def _audit(exemples: Sequence[Exemple], signaux: Sequence[Exemple],
                             if entrees.get((e.pair, e.ts_sec)) is False)
     gagnes_a_l_entree = sum(1 for cle, joue in entrees.items()
                             if joue and cle not in ids_signal)
+    sans_issue = sum(1 for e in confirmes_signal
+                     if (e.pair, e.ts_sec) not in entrees)
     n = len(base)
     dispo = {}
     for lettre, cle, _excl in VARIABLES:
@@ -283,6 +285,7 @@ def _audit(exemples: Sequence[Exemple], signaux: Sequence[Exemple],
         "confirmes_au_signal": len(confirmes_signal),
         "base": n, "fenetre": fenetre,
         "confirmes_ecartes_a_l_entree": perdus_a_l_entree,
+        "confirmes_sans_issue": sans_issue,
         "joues_a_l_entree_seulement": gagnes_a_l_entree,
         "attentes": attentes,
         "disponibles": dispo, "champ_libre": libres,
@@ -1197,6 +1200,10 @@ def _section_audit(r: Mapping) -> list[str]:
         f"la règle au signal aurait écartés : "
         f"{a['joues_a_l_entree_seulement']}. Confirmation sur "
         f"{a['fenetre']} bougie(s).",
+        f"Identité : joués {n} = confirmés {a['confirmes_au_signal']} − "
+        f"écartés à l'entrée {a['confirmes_ecartes_a_l_entree']} − sans "
+        f"issue à l'entrée {a.get('confirmes_sans_issue', 0)} + joués à "
+        f"l'entrée seulement {a['joues_a_l_entree_seulement']}.",
         f"À l'entrée : B {d['B']}/{n}, C {d['C']}/{n}, D {d['D']}/{n} ; "
         f"D = 99 (champ libre, aucun sommet/creux confirmé devant) "
         f"{a['champ_libre']} — une CATÉGORIE, jamais écartée.",
@@ -1479,7 +1486,11 @@ def texte(r: Mapping | None) -> str:
                   "indéterminée)")
     for ident, enonce, verdict in hypotheses(r):
         lignes.append(f"• {ident} — {enonce} : {verdict}")
-    lignes += ["", "⚠ Payout de 92 % supposé à toutes les échéances. Une "
+    lignes += ["", "Lecture : [a ; b] suit un taux quand il suit un taux, un "
+                   "écart d'espérance (ΔEV) quand il suit un écart — "
+                   "intervalles à 95 % par blocs paire × jour ; McNemar est "
+                   "le test apparié des paires discordantes.",
+               "⚠ Payout de 92 % supposé à toutes les échéances. Une "
                    "association n'est pas une cause ; un résultat favorable "
                    "sur l'historique désigne une piste, pas une règle."]
     return "\n".join(lignes)

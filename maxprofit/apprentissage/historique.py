@@ -214,6 +214,21 @@ def _confirmation_m1(completes, i: int, call: bool, closes,
             if prix is not None and prix != suivante.close:
                 sortie[f"gagne_suivant_{sec}"] = float(
                     (prix > suivante.close) == call)
+        # L'entrée à la bougie suivante SANS condition (T1, /entrees) : le
+        # témoin du retard pur. Sa trajectoire et sa distance à la zone,
+        # préfixées « suiv_ », comme celles des deux autres entrées.
+        niveau = (features or {}).get("niveau")
+        for cle, valeur in _excursions(completes, i + 1, call,
+                                       niveau).items():
+            if cle not in ("prix_entree", "prix_15"):
+                sortie[f"suiv_{cle}"] = valeur
+        if niveau is not None:
+            recul = completes[max(0, i - 58):i + 2]
+            amplitude = (sum(c.high - c.low for c in recul) / len(recul)
+                         or 1e-12)
+            sortie["suiv_distance_niveau"] = round(
+                (suivante.close - float(niveau)) * (1 if call else -1)
+                / amplitude, 4)
     # `attente_confirmation` : la première des ATTENTE_CONFIRMATION_MAX
     # bougies suivantes qui casse l'extrême de la bougie du signal dans le
     # sens du trade (1 = la suivante, comme `retournement_suivant`), 0 si

@@ -3442,6 +3442,16 @@ def potentiel(course) -> str:
     return texte((a.laboratoire or {}).get("potentiel") if a else None)
 
 
+def entrees(course) -> str:
+    """`/entrees` : T0, T1, T2 et T3 sur les mêmes signaux — le retard de
+    la confirmation M1."""
+    from maxprofit.live.entrees import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("entrees") if a else None)
+
+
 def reference8(course) -> str:
     """`/reference8` : la mission Reference 8 — entrée immédiate ou
     confirmée, modèles gelés M0 à M3, échéances et couverture."""
