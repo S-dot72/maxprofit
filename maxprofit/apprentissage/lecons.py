@@ -379,6 +379,21 @@ class Apprentissage:
         n, g = n + reels[0], g + reels[1]
         return (g + POIDS_PRIORITE * base) / (n + POIDS_PRIORITE)
 
+    def perdante_prouvee(self, paire: str,
+                         reels: tuple[int, int] = (0, 0)) -> bool:
+        """Vrai si la paire perd de façon PROUVÉE à 95 % : la borne haute de
+        Wilson de son taux, rejeu et ordres réels additionnés, reste sous le
+        seuil de rentabilité. C'est le « ⚠ » de `texte_par_paire`, et la
+        seule raison pour laquelle la course écarte une paire.
+
+        Pas la priorité : tempérée vers un taux d'ensemble à 53,7 %, elle
+        tombait sous 52,1 % par le seul hasard pour quatre paires sur dix
+        (20/10, « Il ne prend plus de trade »).
+        """
+        n, g = self.par_paire.get(paire, (0, 0))
+        n, g = n + reels[0], g + reels[1]
+        return n > 0 and wilson(g, n, 1.96)[1] < SEUIL
+
     def texte_par_paire(self) -> str:
         """Le taux de chaque paire sur le rejeu — dix fois plus de signaux
         que les ordres réels, qui n'en comptent qu'une dizaine par paire."""
@@ -389,12 +404,12 @@ class Apprentissage:
                   "bonne ; "
                   "la course y ajoute les ordres réels de /bilan pour choisir "
                   "entre des signaux simultanés ; ⚠ = perdante prouvée à "
-                  "95 %)"]
+                  "95 %, écartée par la course)"]
         # Dans l'ordre de priorité de la course.
         for paire, (n, g) in sorted(self.par_paire.items(),
                                     key=lambda kv: -self.priorite(kv[0])):
             bas, haut = wilson(g, n, 1.96)
-            marque = " ⚠" if haut < SEUIL else ""
+            marque = " ⚠" if self.perdante_prouvee(paire) else ""
             lignes.append(f"  {paire.replace('_otc', '')} : {g / n:.0%} sur "
                           f"{n} (95 % : {bas:.0%}–{haut:.0%}){marque}")
         return "\n".join(lignes)

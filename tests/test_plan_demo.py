@@ -2622,17 +2622,53 @@ def test_une_paire_dont_le_taux_estime_est_PERDANT_n_est_plus_jouee(tmp_path,
     assert c.chercher_un_signal().pair == "B_otc"
     assert c.etat.paires_perdantes == ["A_otc"]
     c.etat.bougies_evaluees = 10
-    assert "paires écartées (taux sous le seuil) : A" in c.resume()
+    assert "paires écartées (perdantes prouvées) : A" in c.resume()
 
     # Deux pertes réelles ne suffisent pas à écarter une paire sans passé.
     c.etat.apprentissage = Apprentissage(n=200, taux=0.6, par_paire={})
     c._reels, c._reels_ts = {"A_otc": (2, 0)}, float("inf")
     assert c._paire_perdante("A_otc") is False
+    # Mais des ordres réels qui confirment le rejeu, si.
+    c.etat.apprentissage = Apprentissage(
+        n=200, taux=0.6, par_paire={"A_otc": (12, 4)})
+    assert c._paire_perdante("A_otc") is False
+    c._reels = {"A_otc": (10, 2)}
+    assert c._paire_perdante("A_otc") is True
+    c._reels = {}
 
     c.ecarter_les_perdantes = False
     c._reels = {"A_otc": (50, 10)}
     assert c._paire_perdante("A_otc") is False, "PAIRES_PERDANTES=0"
     journal.close()
+
+
+def test_une_paire_sous_le_seuil_par_le_seul_hasard_reste_jouee(course):
+    """« Il ne prend plus de trade » (20/10) : 2561 bougies écartées en 12 h.
+
+    Taux d'ensemble 53,7 %, à 1,6 point du seuil : GBPAUD (13 sur 27) ou
+    USDCAD (15 sur 31) passaient sous 52,1 % en priorité tempérée sans que
+    rien ne les dise perdantes. Seules AUDNZD et CADJPY, marquées ⚠ dans
+    /apprentissage, le sont.
+    """
+    from maxprofit.apprentissage.lecons import Apprentissage
+
+    c = course([])
+    a = Apprentissage(n=337, taux=0.537, par_paire={
+        "GBPAUD_otc": (27, 13), "USDCAD_otc": (31, 15),
+        "USDCHF_otc": (7, 3), "CADCHF_otc": (7, 2),
+        "AUDNZD_otc": (10, 2), "CADJPY_otc": (12, 2)})
+    c.etat.apprentissage = a
+    c._reels, c._reels_ts = {}, float("inf")
+    for paire in ("GBPAUD_otc", "USDCAD_otc", "USDCHF_otc", "CADCHF_otc"):
+        assert c.priorite(paire) < 1 / 1.92, "l'ancienne règle l'écartait"
+        assert c._paire_perdante(paire) is False, paire
+    assert c._paire_perdante("AUDNZD_otc") is True
+    assert c._paire_perdante("CADJPY_otc") is True
+    texte = a.texte_par_paire()
+    assert "AUDNZD : 20% sur 10 (95 % : 6%–51%) ⚠" in texte
+    lignes = {ligne.split(" :")[0].strip(): ligne
+              for ligne in texte.splitlines()}
+    assert not lignes["GBPAUD"].endswith("⚠")
 
 
 
