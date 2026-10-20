@@ -194,8 +194,6 @@ RECOUVREMENT_CACHE_SEC = 300
 #: Au-delà de l'échéance, délai laissé au broker avant de confronter une
 #: réservation restée sans issue à la liste de ses ordres clôturés.
 MARGE_CONFIRMATION_SEC = 120
-#: Le seuil de rentabilité d'un ordre à 92 % : 1 / 1,92.
-SEUIL_RENTABILITE = 1 / 1.92
 
 #: Intervalle minimal entre deux relectures des ordres réels par paire.
 RELIRE_REELS_SEC = 600
@@ -1368,22 +1366,30 @@ class CoursePlanDemo:
         return sortie
 
     def _paire_perdante(self, paire: str) -> bool:
-        """Vrai si la meilleure estimation du taux de la paire est PERDANTE.
+        """Vrai si la paire perd de façon PROUVÉE (le ⚠ de /apprentissage).
 
         Demandé par l'utilisateur, 2026-09-30 : « on perd sur les paires
         qu'on a l'habitude de perdre » — EURGBP_otc, 2 gains sur 7, jouée
         quand même parce que la priorité ne tranchait qu'entre signaux
         simultanés, et qu'elle signalait seule.
 
-        L'estimation est celle de la priorité — rejeu et ordres réels,
-        tempérés vers le taux d'ensemble à hauteur de 20 signaux : deux
-        pertes de suite ne suffisent pas à écarter une paire, un historique
-        qui la dit sous le seuil de rentabilité, si. Elle revient d'elle-même
-        si le rejeu du lendemain la remonte. `PAIRES_PERDANTES=0` désactive.
+        ⚠ PAS SUR L'ESTIMATION PONCTUELLE. Jusqu'au 20/10, une paire était
+        écartée dès que sa priorité (rejeu et ordres réels, tempérés vers le
+        taux d'ensemble) passait sous 52,1 %. Le taux d'ensemble des entrées
+        confirmées étant tombé à 53,7 %, à 1,6 point du seuil, quatre paires
+        sur dix y tombaient par le seul hasard, à taux réel identique — dont
+        GBPAUD et USDCAD, parmi les plus prolifiques. Mesuré : 2561 bougies
+        écartées en 12 h, 0 ordre (« Il ne prend plus de trade »).
+
+        Désormais : borne haute à 95 % sous le seuil, rejeu et ordres réels
+        additionnés. Elle revient d'elle-même si le rejeu du lendemain la
+        remonte. `PAIRES_PERDANTES=0` désactive.
         """
         if not self.ecarter_les_perdantes:
             return False
-        return self.priorite(paire) < SEUIL_RENTABILITE
+        reels = self._ordres_reels_par_paire().get(paire, (0, 0))
+        return (self.etat.apprentissage or Apprentissage()).perdante_prouvee(
+            paire, reels)
 
     def priorite(self, paire: str) -> float:
         """Rejeu + ordres réels de la paire (voir `Apprentissage.priorite`).
@@ -1912,7 +1918,7 @@ class CoursePlanDemo:
                   f"  contre l'heure en cours : "
                   f"{self.etat.signaux_contre_heure} écarté(s)")
         perdantes = ("" if not self.etat.paires_perdantes else
-                     "  paires écartées (taux sous le seuil) : " + ", ".join(
+                     "  paires écartées (perdantes prouvées) : " + ", ".join(
                          p.replace("_otc", "")
                          for p in self.etat.paires_perdantes))
         return self._ligne_lecons() + contre + perdantes
@@ -2819,7 +2825,8 @@ def texte_activite(a: dict[str, int], heures: int) -> str:
                         f"confirmé(s), {a.get('non_confirmes', 0)} "
                         f"abandonné(s) ; ")
     autres = ""
-    for cle, libelle in (("paire_perdante", "sur des paires au taux perdant"),
+    for cle, libelle in (("paire_perdante",
+                          "sur des paires perdantes prouvées"),
                          ("hors_calibration", "hors calibration"),
                          ("manquees", "MANQUÉES (passage trop lent)")):
         if a.get(cle):
