@@ -3494,6 +3494,16 @@ def entrees(course) -> str:
     return texte((a.laboratoire or {}).get("entrees") if a else None)
 
 
+def simples(course) -> str:
+    """`/simples` : momentum de 7 bougies, croisement de moyennes mobiles et
+    retour vers la médiane de Bollinger, sur toutes les bougies M1."""
+    from maxprofit.live.simples import texte
+    if course is None:
+        return "Course indisponible."
+    a = course.etat.apprentissage
+    return texte((a.laboratoire or {}).get("simples") if a else None)
+
+
 def reference8(course) -> str:
     """`/reference8` : la mission Reference 8 — entrée immédiate ou
     confirmée, modèles gelés M0 à M3, échéances et couverture."""

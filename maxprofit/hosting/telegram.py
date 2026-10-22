@@ -299,6 +299,7 @@ COMMANDES = [
     ("potentiel", "Potentiel de zone, expiration dynamique, Stochastic"),
     ("reference8", "Mission Reference 8 : confirmation, B/C/E, échéances"),
     ("entrees", "Entrées T0 à T3 : le retard de la confirmation M1"),
+    ("simples", "Momentum 7 bougies, croisement de moyennes, Bollinger"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
 ]
@@ -421,6 +422,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._potentiel: Callable[[], Awaitable[str]] | None = None
         self._reference8: Callable[[], Awaitable[str]] | None = None
         self._entrees: Callable[[], Awaitable[str]] | None = None
+        self._simples: Callable[[], Awaitable[str]] | None = None
         self._decision: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
@@ -652,6 +654,12 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
             else:
                 await self.client.envoyer(chat, await self._entrees(),
+                                          CLAVIER)
+        elif texte.startswith("/simples"):
+            if self._simples is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(chat, await self._simples(),
                                           CLAVIER)
         elif texte.startswith("/reference8"):
             if self._reference8 is None:

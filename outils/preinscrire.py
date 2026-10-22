@@ -33,17 +33,18 @@ from maxprofit.core.config import (                                # noqa: E402
     charger_env_local, research_db_path)
 from maxprofit.core.errors import BotError                         # noqa: E402
 from maxprofit.live.preinscriptions import (                       # noqa: E402
-    DECLAREES_LE, DECLAREES_R8, DECLAREES_T, FENETRE_JOURS_R8,
-    FENETRE_JOURS_T, PREINSCRIPTIONS, PREINSCRIPTIONS_R8, PREINSCRIPTIONS_T,
-    fenetre_pre_inscrite, ouverture_r8, ouverture_t)
+    DECLAREES_LE, DECLAREES_R8, DECLAREES_S, DECLAREES_T, FENETRE_JOURS_R8,
+    FENETRE_JOURS_S, FENETRE_JOURS_T, PREINSCRIPTIONS, PREINSCRIPTIONS_R8,
+    PREINSCRIPTIONS_S, PREINSCRIPTIONS_T, fenetre_pre_inscrite, ouverture_r8,
+    ouverture_s, ouverture_t)
 from maxprofit.research.metriques import Resultat                  # noqa: E402
 from maxprofit.research.registre import Registre                   # noqa: E402
 
 
 def inscrire(registre: Registre) -> list[tuple[str, int, bool]]:
     """(ident, id du registre, nouvelle ?) pour chaque pré-inscription.
-    Celles de la mission Reference 8 et des entrées T0 à T3 gardent LEUR
-    fenêtre et leur date."""
+    Celles de la mission Reference 8, des entrées T0 à T3 et des trois
+    stratégies simples gardent LEUR fenêtre et leur date."""
     deja = {e.nom: e.id for e in registre.toutes()}
     sortie = []
     debut_r8 = ouverture_r8()
@@ -54,6 +55,9 @@ def inscrire(registre: Registre) -> list[tuple[str, int, bool]]:
     debut_t = ouverture_t()
     lots += [(p, debut_t, debut_t + FENETRE_JOURS_T * 86400, DECLAREES_T)
              for p in PREINSCRIPTIONS_T]
+    debut_s = ouverture_s()
+    lots += [(p, debut_s, debut_s + FENETRE_JOURS_S * 86400, DECLAREES_S)
+             for p in PREINSCRIPTIONS_S]
     for p, debut, fin, declaree in lots:
         if p.nom in deja:
             sortie.append((p.ident, deja[p.nom], False))

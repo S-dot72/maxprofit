@@ -271,6 +271,15 @@ def test_les_paires_sont_jugees_sur_les_signaux_confirmes(tmp_path,
     assert a.laboratoire["paires_jugees_sur"] == "suivante"
     assert "experiences" in a.laboratoire
     assert mod._avec_zone_confirmee(a.laboratoire)
+    # Les trois stratégies simples (/simples) : mesurées, sauvables, au
+    # journal du protocole.
+    import json
+    from maxprofit.live.simples import texte as texte_simples
+    simples = a.laboratoire["simples"]
+    assert "blocs" not in json.dumps(simples)
+    assert "Trois stratégies simples" in texte_simples(simples)
+    assert any(h[0] == "EXP-030 mom7_vertes"
+               for h in a.laboratoire["protocole"]["hypotheses"])
     # Sans confirmation, tous les signaux de ZoneH1 comptent : davantage.
     course.confirmation_m1 = "0"
     mod.Apprenti(course, lambda: open_read_write(tmp_path / "m.db"),
