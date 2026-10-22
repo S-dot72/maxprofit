@@ -3496,7 +3496,8 @@ def entrees(course) -> str:
 
 def simples(course) -> str:
     """`/simples` : momentum de 7 bougies, croisement de moyennes mobiles et
-    retour vers la médiane de Bollinger, sur toutes les bougies M1."""
+    repli jusqu'à la médiane de Bollinger en tendance, sur toutes les
+    bougies M1."""
     from maxprofit.live.simples import texte
     if course is None:
         return "Course indisponible."

@@ -1,7 +1,7 @@
 """
 /simples — trois stratégies simples sur toutes les bougies M1 (EXP-030,
 2026-10-22) : momentum de 7 bougies, croisement de deux moyennes mobiles du
-prix, retour vers la bande médiane de Bollinger après au moins 3 bougies.
+prix, repli jusqu'à la médiane de Bollinger en tendance haussière.
 
 Les règles et leurs raisons sont dans `apprentissage.simples` ; les
 pré-inscriptions S-MOM7, S-EMA et S-BB dans `live.preinscriptions`.

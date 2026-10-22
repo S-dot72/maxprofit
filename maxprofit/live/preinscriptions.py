@@ -455,8 +455,8 @@ def ouverture_t() -> int:
 # Trois stratégies simples (2026-10-22) — `live.simples`
 # --------------------------------------------------------------------------- #
 #
-# Momentum de 7 bougies, croisement de deux moyennes mobiles du prix, retour
-# vers la bande médiane de Bollinger après au moins 3 bougies : les règles
+# Momentum de 7 bougies, croisement de deux moyennes mobiles du prix, repli
+# jusqu'à la médiane de Bollinger en tendance haussière : les règles
 # sont écrites dans `apprentissage.simples`, avant toute mesure. Sur toutes
 # les bougies M1 des paires rejouées, aucune zone.
 #
@@ -520,19 +520,22 @@ PREINSCRIPTIONS_S: tuple[PreInscription, ...] = (
                     "choix": "avant la fenêtre, figé"}),
     PreInscription(
         ident="S-BB", famille="bollinger",
-        nom="S-BB retour vers la bande médiane de Bollinger après 3 bougies",
+        nom="S-BB repli jusqu'à la médiane de Bollinger en tendance "
+            "haussière, CALL",
         hypothese=(
-            "À la clôture d'une série d'au moins 3 bougies M1 de même "
-            "couleur qui finit au-delà de la bande médiane de Bollinger "
-            "(20, 2) du côté de la série — ou hors de la bande extérieure, "
-            "selon la variante choisie —, une position contre la série, "
-            "vers la médiane, gagne plus de 52,1 % du temps, sur la "
-            "fenêtre ouverte le 23/10 ; variante et échéance parmi 1, 2, "
-            "3, 5, 10 et 15 min choisies sur les signaux d'avant la "
-            "fenêtre, puis figées."),
+            "Quand la médiane de Bollinger (moyenne des 20 dernières "
+            "clôtures M1) monte — plus haute à la veille du repli que 10 "
+            "minutes plus tôt — et que le prix clôturait au-dessus d'elle, "
+            "un repli d'au moins 3 bougies rouges qui ramène le prix à la "
+            "médiane (plus bas à la médiane ou dessous) donne un CALL, pris "
+            "à la clôture de la première bougie du repli qui remplit tout "
+            "cela, qui gagne plus de 52,1 % du temps, sur la fenêtre "
+            "ouverte le 23/10 ; variante (clôture au-dessus de la médiane "
+            "ou non) et échéance parmi 1, 2, 3, 5, 10 et 15 min choisies "
+            "sur les signaux d'avant la fenêtre, puis figées."),
         univers="toutes les paires rejouées",
         echeance_sec=60, n_min=N_MIN_S, critere=CRITERE_S,
-        parametres={"regles": ["bb_mediane", "bb_bande"],
+        parametres={"regles": ["bb_hausse_tient", "bb_hausse_cede"],
                     "echeances": list(ECHEANCES_S),
                     "choix": "avant la fenêtre, figé"}),
 )
