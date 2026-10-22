@@ -16,15 +16,17 @@ T0 = 1_790_000_040 // 60 * 60
 LOIN = 10 ** 12
 
 
-def _bougies(closes, debut=T0, sauter=(), pair="EURUSD_otc"):
+def _bougies(closes, debut=T0, sauter=(), pair="EURUSD_otc", bas=None):
     """Une bougie par clôture, ouverte à la clôture précédente : la couleur
-    suit le sens du mouvement. `sauter` : indices des minutes absentes."""
+    suit le sens du mouvement. `sauter` : indices des minutes absentes ;
+    `bas` : {indice: plus bas}, une mèche."""
     sortie, precedent = [], closes[0] - 0.0001
     for i, close in enumerate(closes):
         if i not in sauter:
             sortie.append(Candle(
                 pair=pair, tf_sec=60, ts_sec=debut + 60 * i, open=precedent,
-                high=max(precedent, close), low=min(precedent, close),
+                high=max(precedent, close),
+                low=(bas or {}).get(i, min(precedent, close)),
                 close=close, tick_count=10, complete=True))
         precedent = close
     return sortie
@@ -70,17 +72,35 @@ def test_le_croisement_de_moyennes_suit_le_prix_apres_la_chauffe():
                for r, l in acc.COUPLES_EMA)
 
 
-def test_bollinger_parie_le_retour_vers_la_mediane():
-    # 20 minutes calmes, 3 vertes qui s'écartent, puis le retour.
-    calme = [1.0 + 0.0001 * ((i + 1) % 2) for i in range(20)]  # finit rouge
-    montee = [1.001, 1.002, 1.003]
-    retour = [1.002, 1.0015]          # deux rouges : pas de série de 3
+HAUSSE = [1.0 + 0.0002 * i for i in range(40)]      # médiane qui monte
+
+
+def test_bollinger_achete_le_repli_jusqu_a_la_mediane_en_hausse():
+    # Trois rouges : la 3e touche la médiane (≈ 1,00625) et clôture dessous.
     a = StrategiesSimples(T0, LOIN, LOIN)
-    a.ajouter(_bougies(calme + montee + retour))
-    n, g = _comptes(a, "bb_mediane")
-    assert n == 1 and g == 1, "la 3e verte au-dessus de la médiane : PUT"
-    n, g = _comptes(a, "bb_bande")
-    assert n == 1 and g == 1, "et hors de la bande haute"
+    a.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0058, 1.0050, 1.0065]))
+    assert _comptes(a, "bb_hausse_cede") == (1, 0), "un signal par repli"
+    assert _comptes(a, "bb_hausse_cede", 120) == (1, 1)
+    assert _comptes(a, "bb_hausse_tient") == (0, 0)
+    # La médiane tient : une mèche la touche, la clôture reste au-dessus.
+    tient = StrategiesSimples(T0, LOIN, LOIN)
+    tient.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0064, 1.0070],
+                           bas={42: 1.0060}))
+    assert _comptes(tient, "bb_hausse_tient") == (1, 1)
+    # Le miroir, en baisse : PUT.
+    miroir = StrategiesSimples(T0, LOIN, LOIN)
+    miroir.ajouter(_bougies([2 - x for x in HAUSSE]
+                            + [0.9928, 0.9934, 0.9942, 0.9935]))
+    assert _comptes(miroir, "bb_baisse") == (1, 1)
+    assert _comptes(miroir, "bb_hausse_cede") == (0, 0)
+
+
+def test_sans_tendance_pas_de_repli_a_acheter():
+    plat = [1.0 + 0.0001 * ((i + 1) % 2) for i in range(40)]
+    a = StrategiesSimples(T0, LOIN, LOIN)
+    a.ajouter(_bougies(plat + [0.9999, 0.9997, 0.9995, 1.0]))
+    assert all(_comptes(a, cle) == (0, 0)
+               for cle in ("bb_hausse_tient", "bb_hausse_cede", "bb_baisse"))
 
 
 def test_anciens_recents_avant_et_fenetre():
@@ -124,10 +144,11 @@ def _res(cellules=None, fenetre=None):
 def test_le_rapport_marque_et_compte_ce_que_ferait_le_hasard():
     r = simples(_res({("mom7_vertes", 60): ([341, 197, 742, 390],
                                             [1083, 587]),
-                      ("bb_bande", 300): ([400, 180, 200, 90], [600, 270])}),
+                      ("bb_baisse", 300): ([400, 180, 200, 90],
+                                           [600, 270])}),
                 ancien=None, fin=ouverture_s() - 3600)
     assert r["regles"]["mom7_vertes"]["60"]["marque"] == "✅"
-    assert r["regles"]["bb_bande"]["300"]["marque"] == "🔁"
+    assert r["regles"]["bb_baisse"]["300"]["marque"] == "🔁"
     assert r["regles"]["ema_9_21"]["60"]["marque"] == ""
     marquees, attendues, total = r["cases"]
     assert (marquees, total) == (2, len(REGLES) * len(acc.ECHEANCES))
