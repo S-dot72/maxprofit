@@ -75,24 +75,31 @@ def test_le_croisement_de_moyennes_suit_le_prix_apres_la_chauffe():
 HAUSSE = [1.0 + 0.0002 * i for i in range(40)]      # médiane qui monte
 
 
-def test_bollinger_achete_le_repli_jusqu_a_la_mediane_en_hausse():
-    # Trois rouges : la 3e touche la médiane (≈ 1,00625) et clôture dessous.
+def test_bollinger_achete_le_repli_confirme_par_une_verte():
+    # La 3e rouge touche la médiane (≈ 1,00625) : armé, pas encore d'ordre.
+    # Une rouge de plus, puis la verte qui reprend la médiane : CALL.
     a = StrategiesSimples(T0, LOIN, LOIN)
-    a.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0058, 1.0050, 1.0065]))
-    assert _comptes(a, "bb_hausse_cede") == (1, 0), "un signal par repli"
-    assert _comptes(a, "bb_hausse_cede", 120) == (1, 1)
-    assert _comptes(a, "bb_hausse_tient") == (0, 0)
-    # La médiane tient : une mèche la touche, la clôture reste au-dessus.
-    tient = StrategiesSimples(T0, LOIN, LOIN)
-    tient.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0064, 1.0070],
-                           bas={42: 1.0060}))
-    assert _comptes(tient, "bb_hausse_tient") == (1, 1)
-    # Le miroir, en baisse : PUT.
+    a.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0058, 1.0050, 1.0065,
+                                 1.0070]))
+    assert _comptes(a, "bb_hausse_rebond") == (1, 1), "à la clôture verte"
+    assert _comptes(a, "bb_hausse_sous") == (0, 0)
+    # La verte reste sous la médiane : l'autre variante.
+    sous = StrategiesSimples(T0, LOIN, LOIN)
+    sous.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0058, 1.0060, 1.0068]))
+    assert _comptes(sous, "bb_hausse_sous") == (1, 1)
+    assert _comptes(sous, "bb_hausse_rebond") == (0, 0)
+    # Pas de verte dans les 3 bougies qui suivent : abandonné.
+    tard = StrategiesSimples(T0, LOIN, LOIN)
+    tard.ajouter(_bougies(HAUSSE + [1.0072, 1.0066, 1.0058, 1.0050, 1.0045,
+                                    1.0040, 1.0050, 1.0060]))
+    assert all(_comptes(tard, cle) == (0, 0)
+               for cle in ("bb_hausse_rebond", "bb_hausse_sous"))
+    # Le miroir, en baisse : la rouge de confirmation, PUT.
     miroir = StrategiesSimples(T0, LOIN, LOIN)
     miroir.ajouter(_bougies([2 - x for x in HAUSSE]
-                            + [0.9928, 0.9934, 0.9942, 0.9935]))
+                            + [0.9928, 0.9934, 0.9942, 0.9935, 0.9930]))
     assert _comptes(miroir, "bb_baisse") == (1, 1)
-    assert _comptes(miroir, "bb_hausse_cede") == (0, 0)
+    assert _comptes(miroir, "bb_hausse_sous") == (0, 0)
 
 
 def test_sans_tendance_pas_de_repli_a_acheter():
@@ -100,7 +107,7 @@ def test_sans_tendance_pas_de_repli_a_acheter():
     a = StrategiesSimples(T0, LOIN, LOIN)
     a.ajouter(_bougies(plat + [0.9999, 0.9997, 0.9995, 1.0]))
     assert all(_comptes(a, cle) == (0, 0)
-               for cle in ("bb_hausse_tient", "bb_hausse_cede", "bb_baisse"))
+               for cle in ("bb_hausse_rebond", "bb_hausse_sous", "bb_baisse"))
 
 
 def test_anciens_recents_avant_et_fenetre():

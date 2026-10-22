@@ -17,9 +17,10 @@ Demandé par l'utilisateur le 2026-10-22, après une liste de stratégies
 3. **Le retour vers la moyenne n'est pas « après 8 rouges »** (P4) : c'est
    le retour vers la bande MÉDIANE de Bollinger, après AU MOINS 3 bougies,
    et « c'est en tendance haussière » : le repli d'une hausse jusqu'à la
-   médiane, où l'on achète (première lecture, du même jour, corrigée avant
-   l'ouverture de la fenêtre : parier contre toute série de 3 bougies
-   au-delà de la médiane, quel que soit le sens de la tendance).
+   médiane, où l'on achète — « sur la médiane il faut attendre la
+   confirmation avec une bougie verte ». Deux lectures du même jour ont été
+   corrigées avant l'ouverture de la fenêtre : parier contre toute série de
+   3 bougies au-delà de la médiane ; puis acheter dès la bougie qui touche.
 
 --- Les règles, écrites AVANT toute mesure -------------------------------------
 
@@ -41,12 +42,13 @@ une bougie sans corps interrompt une série, comme dans la persistance.
   la veille du repli que `PENTE_MEDIANE` minutes plus tôt — et le prix
   clôturait au-dessus d'elle à la veille du repli ; puis un repli d'AU
   MOINS 3 bougies rouges ramène le prix à la médiane (plus bas de la bougie
-  à la médiane ou dessous) → CALL, à la PREMIÈRE bougie du repli qui
-  remplit tout cela (un seul signal par repli). Deux variantes selon la
-  clôture de cette bougie : au-dessus de la médiane (elle a tenu), ou à la
-  médiane et dessous (elle a cédé). Le miroir — tendance baissière, 3
-  vertes ou plus qui remontent à la médiane, PUT — est mesuré à part, pour
-  information.
+  à la médiane ou dessous) : le signal est ARMÉ, une fois par repli. On
+  attend alors la confirmation : la première bougie VERTE dans les
+  `DELAI_CONFIRMATION` bougies qui suivent → CALL à sa clôture ; sans verte
+  à temps, le signal est abandonné. Deux variantes selon la clôture de la
+  verte : au-dessus de la médiane (le rebond l'a reprise), ou encore
+  dessous. Le miroir — tendance baissière, 3 vertes ou plus qui remontent
+  à la médiane, puis une rouge, PUT — est mesuré à part, pour information.
 
 Chaque règle est jugée à 1, 2, 3, 5, 10 et 15 min : position prise à la
 clôture, issue à la clôture de la bougie de l'échéance ; une égalité ne
@@ -80,6 +82,9 @@ BB_SERIE_MIN = 3
 #: La tendance : la médiane à la veille du repli comparée à elle-même tant
 #: de minutes plus tôt.
 PENTE_MEDIANE = 10
+#: La bougie de confirmation (verte pour un achat) doit venir dans les
+#: `DELAI_CONFIRMATION` bougies qui suivent celle qui touche la médiane.
+DELAI_CONFIRMATION = 3
 
 #: Bougies récentes gardées pour lire la veille du repli et la pente : un
 #: repli plus long que cela n'est plus un repli.
@@ -94,15 +99,15 @@ REGLES: tuple[tuple[str, str, str], ...] = (
        f"EMA {r} croise EMA {l} → dans le sens du croisement"
        + (" (= ligne MACD qui croise zéro)" if (r, l) == (12, 26) else ""))
       for r, l in COUPLES_EMA),
-    ("bb_hausse_tient", "bollinger",
+    ("bb_hausse_rebond", "bollinger",
      f"hausse, repli de {BB_SERIE_MIN} rouges ou plus jusqu'à la médiane, "
-     f"clôture au-dessus → CALL"),
-    ("bb_hausse_cede", "bollinger",
+     f"puis une verte qui clôture au-dessus d'elle → CALL"),
+    ("bb_hausse_sous", "bollinger",
      f"hausse, repli de {BB_SERIE_MIN} rouges ou plus jusqu'à la médiane, "
-     f"clôture dessous → CALL"),
+     f"puis une verte encore sous elle → CALL"),
     ("bb_baisse", "bollinger",
      f"miroir : baisse, remontée de {BB_SERIE_MIN} vertes ou plus jusqu'à "
-     f"la médiane → PUT"),
+     f"la médiane, puis une rouge → PUT"),
 )
 FAMILLES: tuple[tuple[str, str], ...] = (
     ("momentum", "Momentum — 7 bougies de même couleur, on suit la série"),
@@ -111,7 +116,8 @@ FAMILLES: tuple[tuple[str, str], ...] = (
     ("bollinger", f"Retour vers la bande médiane de Bollinger "
                   f"({BB_PERIODE}) en tendance : la médiane monte depuis "
                   f"{PENTE_MEDIANE} min, repli d'au moins {BB_SERIE_MIN} "
-                  f"bougies jusqu'à elle"),
+                  f"bougies jusqu'à elle, puis la bougie de "
+                  f"confirmation"),
 )
 
 
@@ -161,6 +167,9 @@ class StrategiesSimples:
                 historique: deque[tuple[float | None, float]] = deque(
                     maxlen=HISTORIQUE)
                 repli_signale = False
+                #: (sens du pari, bougies restantes) d'un signal armé qui
+                #: attend sa bougie de confirmation.
+                attente: tuple[int, int] | None = None
             precedente = c
             vues += 1
             col = (c.close > c.open) - (c.close < c.open)
@@ -187,22 +196,33 @@ class StrategiesSimples:
             mediane = (sum(fenetre) / BB_PERIODE
                        if len(fenetre) == BB_PERIODE else None)
             historique.append((mediane, c.close))
-            if (mediane is not None and serie >= BB_SERIE_MIN
+            if attente is not None:
+                sens, restantes = attente
+                if col == sens and mediane is not None:
+                    if sens > 0:
+                        paris.append(("bb_hausse_rebond"
+                                      if c.close > mediane
+                                      else "bb_hausse_sous", 1))
+                    else:
+                        paris.append(("bb_baisse", -1))
+                    attente = None
+                else:
+                    attente = (sens, restantes - 1) if restantes > 1 else None
+            elif (mediane is not None and serie >= BB_SERIE_MIN
                     and not repli_signale
                     and len(historique) > serie + PENTE_MEDIANE):
                 # La veille du repli, et la médiane PENTE_MEDIANE min avant.
                 m_veille, c_veille = historique[-1 - serie]
                 m_avant = historique[-1 - serie - PENTE_MEDIANE][0]
                 if m_veille is not None and m_avant is not None:
+                    # Armé : on attend la bougie de confirmation.
                     if (col < 0 and m_veille > m_avant
                             and c_veille > m_veille and c.low <= mediane):
-                        paris.append(("bb_hausse_tient"
-                                      if c.close > mediane
-                                      else "bb_hausse_cede", 1))
+                        attente = (1, DELAI_CONFIRMATION)
                         repli_signale = True
                     elif (col > 0 and m_veille < m_avant
                           and c_veille < m_veille and c.high >= mediane):
-                        paris.append(("bb_baisse", -1))
+                        attente = (-1, DELAI_CONFIRMATION)
                         repli_signale = True
             if not paris:
                 continue
@@ -253,5 +273,6 @@ class StrategiesSimples:
                                "ema": [list(c) for c in COUPLES_EMA],
                                "chauffe": CHAUFFE,
                                "bollinger": [BB_PERIODE, BB_SERIE_MIN,
-                                             PENTE_MEDIANE]},
+                                             PENTE_MEDIANE,
+                                             DELAI_CONFIRMATION]},
                 "paires": dict(self.paires), "regles": regles}
