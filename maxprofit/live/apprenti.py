@@ -145,6 +145,8 @@ class Apprenti:
             from maxprofit.apprentissage.indicateurs import Indicateurs
             from maxprofit.apprentissage.persistance import Persistance
             from maxprofit.apprentissage.qualite import Qualite
+            from maxprofit.apprentissage.simples import StrategiesSimples
+            from maxprofit.live.preinscriptions import ouverture_s
             from maxprofit.live.protocole import date_de_gel
             from maxprofit.strategies.serie_rouge import SerieRouge
             # P4, pré-inscrite : la stratégie elle-même, rejouée sur les
@@ -156,6 +158,10 @@ class Apprenti:
             persistance = Persistance(coupure_temps)
             qualite = Qualite(debut, fin, coupure_temps)
             indicateurs = Indicateurs(debut, coupure_temps, gel)
+            # EXP-030 (/simples) : momentum de 7 bougies, croisement de
+            # moyennes, retour vers la médiane de Bollinger.
+            strategies_simples = StrategiesSimples(debut, coupure_temps,
+                                                   ouverture_s())
             exclusions: dict[str, int] = {}
             respirer = lambda: time.sleep(RESPIRATION_SEC)  # noqa: E731
             for paire in self.paires:
@@ -163,6 +169,7 @@ class Apprenti:
                 persistance.ajouter(bougies, respirer=respirer)
                 qualite.ajouter(bougies, respirer=respirer)
                 indicateurs.ajouter(bougies, respirer=respirer)
+                strategies_simples.ajouter(bougies, respirer=respirer)
                 exemples += exemples_historiques(
                     {paire: bougies}, strategie,
                     echeance_sec=strategie.p.expiry_sec,
@@ -265,6 +272,14 @@ class Apprenti:
             ancien=((getattr(ancien, "laboratoire", None) or {})
                     .get("entrees")),
             fin=fin, jours_collectes=qualite.jours_collectes)
+        # Les trois stratégies simples (/simples) : le choix figé de leur
+        # fenêtre vient du rejeu précédent.
+        from maxprofit.live.simples import simples
+        nouveau.laboratoire["simples"] = simples(
+            strategies_simples.resultat(),
+            ancien=((getattr(ancien, "laboratoire", None) or {})
+                    .get("simples")),
+            fin=fin, jours_collectes=qualite.jours_collectes)
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
         # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
@@ -292,7 +307,8 @@ class Apprenti:
             paires=self.paires, regle_heure=seuil,
             potentiel=nouveau.laboratoire["potentiel"],
             reference8=nouveau.laboratoire["reference8"],
-            entrees=nouveau.laboratoire["entrees"])
+            entrees=nouveau.laboratoire["entrees"],
+            simples=nouveau.laboratoire["simples"])
         course.etat.apprentissage = nouveau
         log.info("Apprentissage : %d signaux rejoués sur %d jours en %.0f s, "
                  "%d leçon(s) active(s).", nouveau.n, jours,
@@ -304,7 +320,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 11
+VERSION_EXPERIENCES = 12
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

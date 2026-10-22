@@ -449,3 +449,96 @@ def ouverture_t() -> int:
     """L'ouverture de la fenêtre des entrées T0 à T3, en s UTC."""
     return int(datetime.strptime(OUVERTURE_T, "%Y-%m-%d").replace(
         tzinfo=timezone.utc).timestamp())
+
+
+# --------------------------------------------------------------------------- #
+# Trois stratégies simples (2026-10-22) — `live.simples`
+# --------------------------------------------------------------------------- #
+#
+# Momentum de 7 bougies, croisement de deux moyennes mobiles du prix, retour
+# vers la bande médiane de Bollinger après au moins 3 bougies : les règles
+# sont écrites dans `apprentissage.simples`, avant toute mesure. Sur toutes
+# les bougies M1 des paires rejouées, aucune zone.
+#
+# S-MOM7 est entièrement fixée : la case « 7 vertes, 1 min » de la
+# persistance, ✅ à chaque rejeu depuis le 10/10. Pour S-EMA et S-BB, rien
+# n'a encore été mesuré : le couple (ou la variante) et l'échéance sont
+# choisis sur les signaux d'AVANT la fenêtre — la meilleure espérance sur au
+# moins `N_MIN_CHOIX_S` signaux —, figés au premier rejeu qui suit
+# l'ouverture, puis jugés sur la fenêtre seule (le schéma de R8-T3).
+#
+# La fenêtre s'ouvre le 23/10 à 0 h UTC, après cette déclaration du 22/10.
+
+DECLAREES_S = "2026-10-22"
+OUVERTURE_S = "2026-10-23"
+FENETRE_JOURS_S = 21
+#: Signaux de la règle dans la fenêtre avant un verdict (figé ensuite)...
+N_MIN_S = 300
+#: ... et jours écoulés depuis l'ouverture : un croisement de moyennes
+#: atteint 300 signaux en quelques heures, et une seule journée ne dit rien
+#: de la suivante.
+JOURS_MIN_S = 3
+#: Signaux d'avant la fenêtre exigés d'une case pour qu'elle soit choisie.
+N_MIN_CHOIX_S = 200
+ECHEANCES_S: tuple[int, ...] = (60, 120, 180, 300, 600, 900)
+
+CRITERE_S = (
+    "sur la fenêtre ouverte le 23/10 à 0 h UTC, toutes les bougies M1 des "
+    "paires rejouées, close à 300 signaux de la règle et au plus tôt 3 "
+    "jours après l'ouverture : taux au-dessus de "
+    "52,1 % (payout supposé 92 %) ; établie si la borne basse de "
+    "l'intervalle par blocs paire × jour dépasse 52,1 % ; réfutée à 52,1 % "
+    "ou moins ; indécise avant.")
+
+PREINSCRIPTIONS_S: tuple[PreInscription, ...] = (
+    PreInscription(
+        ident="S-MOM7", famille="momentum",
+        nom="S-MOM7 7 vertes de suite, CALL 1 min",
+        hypothese=(
+            "À la clôture de la 7e bougie M1 verte consécutive (minutes "
+            "contiguës, sans doji), un CALL d'une minute gagne plus de "
+            "52,1 % du temps, sur la fenêtre ouverte le 23/10, toutes "
+            "paires rejouées (persistance : 54,2 % sur 1 086, anciens "
+            "57,8 %, récents 52,6 %)."),
+        univers="toutes les paires rejouées",
+        echeance_sec=60, n_min=N_MIN_S, critere=CRITERE_S,
+        parametres={"regles": ["mom7_vertes"], "echeances": [60]}),
+    PreInscription(
+        ident="S-EMA", famille="moyennes",
+        nom="S-EMA croisement de deux moyennes mobiles du prix",
+        hypothese=(
+            "À la clôture où une moyenne mobile exponentielle rapide des "
+            "clôtures M1 croise la lente, une position dans le sens du "
+            "croisement gagne plus de 52,1 % du temps, sur la fenêtre "
+            "ouverte le 23/10 ; couple parmi 9/21, 12/26 et 20/50 et "
+            "échéance parmi 1, 2, 3, 5, 10 et 15 min choisis sur les "
+            "signaux d'avant la fenêtre, puis figés."),
+        univers="toutes les paires rejouées",
+        echeance_sec=60, n_min=N_MIN_S, critere=CRITERE_S,
+        parametres={"regles": ["ema_9_21", "ema_12_26", "ema_20_50"],
+                    "echeances": list(ECHEANCES_S),
+                    "choix": "avant la fenêtre, figé"}),
+    PreInscription(
+        ident="S-BB", famille="bollinger",
+        nom="S-BB retour vers la bande médiane de Bollinger après 3 bougies",
+        hypothese=(
+            "À la clôture d'une série d'au moins 3 bougies M1 de même "
+            "couleur qui finit au-delà de la bande médiane de Bollinger "
+            "(20, 2) du côté de la série — ou hors de la bande extérieure, "
+            "selon la variante choisie —, une position contre la série, "
+            "vers la médiane, gagne plus de 52,1 % du temps, sur la "
+            "fenêtre ouverte le 23/10 ; variante et échéance parmi 1, 2, "
+            "3, 5, 10 et 15 min choisies sur les signaux d'avant la "
+            "fenêtre, puis figées."),
+        univers="toutes les paires rejouées",
+        echeance_sec=60, n_min=N_MIN_S, critere=CRITERE_S,
+        parametres={"regles": ["bb_mediane", "bb_bande"],
+                    "echeances": list(ECHEANCES_S),
+                    "choix": "avant la fenêtre, figé"}),
+)
+
+
+def ouverture_s() -> int:
+    """L'ouverture de la fenêtre des trois stratégies simples, en s UTC."""
+    return int(datetime.strptime(OUVERTURE_S, "%Y-%m-%d").replace(
+        tzinfo=timezone.utc).timestamp())
