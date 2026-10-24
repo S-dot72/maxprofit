@@ -3494,6 +3494,20 @@ def entrees(course) -> str:
     return texte((a.laboratoire or {}).get("entrees") if a else None)
 
 
+def ticks(course) -> tuple[str, bytes | None]:
+    """`/ticks` : l'étape 0, la qualité des ticks (lecture seule), et la fiche
+    CSV des anomalies si le rejeu a tourné depuis le démarrage."""
+    from maxprofit.apprentissage.audit_ticks import csv_anomalies
+    from maxprofit.live.ticks import texte
+    if course is None:
+        return "Course indisponible.", None
+    a = course.etat.apprentissage
+    anomalies = getattr(course, "anomalies_ticks", None)
+    fichier = csv_anomalies(anomalies) if anomalies else None
+    return texte((a.laboratoire or {}).get("ticks") if a else None,
+                 fichier is not None), fichier
+
+
 def simples(course) -> str:
     """`/simples` : momentum de 7 bougies, croisement de moyennes mobiles et
     repli jusqu'à la médiane de Bollinger en tendance, sur toutes les

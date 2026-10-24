@@ -164,18 +164,33 @@ class Apprenti:
                                                    ouverture_s())
             exclusions: dict[str, int] = {}
             respirer = lambda: time.sleep(RESPIRATION_SEC)  # noqa: E731
+            # L'étape 0 des ticks (/ticks), en lecture seule, sur les
+            # derniers jours : elle réutilise les bougies et les signaux
+            # déjà en mémoire. Une panne de l'audit n'arrête pas le rejeu.
+            audit_ticks, erreur_ticks = self._audit_des_ticks(conn, fin)
             for paire in self.paires:
                 bougies = lecteur.candles(paire, 60, debut, fin)
                 persistance.ajouter(bougies, respirer=respirer)
                 qualite.ajouter(bougies, respirer=respirer)
                 indicateurs.ajouter(bougies, respirer=respirer)
                 strategies_simples.ajouter(bougies, respirer=respirer)
-                exemples += exemples_historiques(
+                de_la_paire = exemples_historiques(
                     {paire: bougies}, strategie,
                     echeance_sec=strategie.p.expiry_sec,
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=respirer, exclusions=exclusions)
+                exemples += de_la_paire
+                if audit_ticks is not None:
+                    try:
+                        audit_ticks.ajouter_paire(
+                            paire, bougies, lecteur.tick_paths(
+                                paire, audit_ticks.debut, audit_ticks.fin),
+                            de_la_paire, respirer=respirer)
+                    except Exception as erreur:      # noqa: BLE001
+                        log.exception("Audit des ticks en échec sur %s",
+                                      paire)
+                        audit_ticks, erreur_ticks = None, repr(erreur)
                 serie += exemples_historiques(
                     {paire: bougies}, serie_rouge,
                     echeance_sec=serie_rouge.p.expiry_sec,
@@ -186,6 +201,8 @@ class Apprenti:
                                                 maintenant=fin)
             except Exception:                    # noqa: BLE001
                 couverture = None             # une mesure, pas une panne
+            resultat_ticks = self._fin_de_l_audit(audit_ticks, erreur_ticks,
+                                                  conn, lecteur)
         finally:
             try:
                 conn.close()
@@ -272,6 +289,11 @@ class Apprenti:
             ancien=((getattr(ancien, "laboratoire", None) or {})
                     .get("entrees")),
             fin=fin, jours_collectes=qualite.jours_collectes)
+        # L'étape 0 des ticks : le résumé est gardé avec le laboratoire, la
+        # fiche des anomalies en mémoire seulement (le CSV de /ticks).
+        if resultat_ticks is not None:
+            nouveau.laboratoire["ticks"] = resultat_ticks[0]
+            course.anomalies_ticks = resultat_ticks[1]
         # Les trois stratégies simples (/simples) : le choix figé de leur
         # fenêtre vient du rejeu précédent.
         from maxprofit.live.simples import simples
@@ -317,10 +339,49 @@ class Apprenti:
         if alerte:
             course._prevenir(alerte)
 
+    def _audit_des_ticks(self, conn, fin: int):
+        """(audit prêt à recevoir les paires, erreur) ; (None, None) si
+        `AUDIT_TICKS_JOURS=0`."""
+        from maxprofit.live.ticks import (
+            jours_audites, lire_battements, nouvel_audit)
+        jours = jours_audites()
+        if not jours:
+            return None, None
+        seuil = getattr(self.course, "seuil_contre_heure", None)
+        try:
+            audit = nouvel_audit(
+                fin - jours * 86400, fin,
+                joue=None if seuil is None else (
+                    lambda e: e.contexte.get("mouvement_heure", 0.0)
+                    >= -seuil))
+            audit.noter_battements(lire_battements(conn, audit.debut,
+                                                   audit.fin))
+            return audit, None
+        except Exception as erreur:              # noqa: BLE001
+            log.exception("Audit des ticks impossible")
+            return None, repr(erreur)
+
+    def _fin_de_l_audit(self, audit, erreur, conn, lecteur):
+        """Les ordres réels comparés au flux, puis (résumé, anomalies)."""
+        from maxprofit.live.protocole import commit
+        from maxprofit.live.ticks import jours_audites, lire_ordres
+        if audit is None:
+            return None if erreur is None else (
+                {"erreur": erreur}, [])
+        try:
+            audit.comparer_ordres(lire_ordres(conn), lecteur.ticks)
+            return (audit.resultat(commit=commit() or "",
+                                   parametres_extra={"jours":
+                                                     jours_audites()}),
+                    audit.anomalies_triees())
+        except Exception as erreur:              # noqa: BLE001
+            log.exception("Audit des ticks en échec")
+            return {"erreur": repr(erreur)}, []
+
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 12
+VERSION_EXPERIENCES = 13
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:

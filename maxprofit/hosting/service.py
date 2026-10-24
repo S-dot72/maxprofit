@@ -55,7 +55,7 @@ from maxprofit.hosting.superviseur import Superviseur
 from maxprofit.live.plan_demo import (
     UNIVERS_PRE_INSCRIT, audit, bilan, decision, demander_reprise, echeances,
     entrees, experiences, fabriquer_course, laboratoire, lecons, potentiel,
-    protocole, rapatrier, reference8, simples, simulation, stabilite)
+    protocole, rapatrier, reference8, simples, simulation, stabilite, ticks)
 from maxprofit.hosting.pilotage import (
     Pilote, alerte_sans_configuration, consigne_de_la_base, gouverne)
 from maxprofit.hosting.rotation import ARRET_FORCE_SEC, CODE_BASCULE, Rotation
@@ -345,6 +345,8 @@ async def _servir(args) -> int:
                 entrees, getattr(_course.get("sup"), "_course", None))
             bot._simples = lambda: asyncio.to_thread(
                 simples, getattr(_course.get("sup"), "_course", None))
+            bot._ticks = lambda: asyncio.to_thread(
+                ticks, getattr(_course.get("sup"), "_course", None))
             bot._decision = lambda: asyncio.to_thread(
                 decision, getattr(_course.get("sup"), "_course", None))
             bot._lecons = lambda: asyncio.to_thread(
