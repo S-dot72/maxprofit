@@ -65,6 +65,28 @@ ENV_URL = "DATABASE_URL"
 DELAI_CONNEXION_SEC = 30
 
 
+#: Appelé quand Neon refuse une connexion pour QUOTA ÉPUISÉ. Posé par le
+#: service, qui bascule alors sur la base de relève (voir `store/pool.py`).
+#: Reçoit `(url, message)` : seule la base ACTIVE qui refuse fait basculer.
+#:
+#: Un rappel plutôt qu'une exception de plus : le refus survient au fond d'une
+#: reconnexion, dans n'importe quel fil — collecte, course, sonde — et c'est le
+#: service, pas la couche de stockage, qui sait quoi en faire.
+QUAND_QUOTA_EPUISE = None
+
+
+def _signaler_quota(erreur: Exception, url: str) -> None:
+    if "exceeded the quota" not in str(erreur):
+        return
+    rappel = QUAND_QUOTA_EPUISE
+    if rappel is None:
+        return
+    try:
+        rappel(url, str(erreur))
+    except Exception:                                    # noqa: BLE001
+        log.exception("Le rappel de quota épuisé a échoué")
+
+
 class PostgresIndisponible(BotError):
     """PostgreSQL est demandé mais inutilisable."""
 
@@ -131,8 +153,9 @@ class _CurseurVide:
 class Connexion:
     """Ce que le reste du code croit être une `sqlite3.Connection`."""
 
-    def __init__(self, brute, rouvrir=None):
+    def __init__(self, brute, rouvrir=None, url: str = ""):
         self._conn = brute
+        self._url = url
         #: Rouvre une connexion neuve (voir l'en-tête : Neon coupe les
         #: connexions inactives). `None` : pas de reprise.
         self._rouvrir = rouvrir
@@ -206,7 +229,14 @@ class Connexion:
             self._conn.close()
         except Exception:                                # noqa: BLE001
             pass
-        self._conn = self._rouvrir()
+        try:
+            self._conn = self._rouvrir()
+        except Exception as erreur:                      # noqa: BLE001
+            # Une base qui atteint son quota coupe les connexions ouvertes :
+            # c'est ICI, à la reconnexion, que le refus apparaît le plus
+            # souvent — pas à l'ouverture.
+            _signaler_quota(erreur, self._url)
+            raise
         self._bloc = False
 
     @property
@@ -262,6 +292,7 @@ def ouvrir(url: str | None = None) -> Connexion:
     try:
         brute = connecter()
     except Exception as erreur:                          # noqa: BLE001
+        _signaler_quota(erreur, url)
         raise PostgresIndisponible(
             f"Connexion à PostgreSQL impossible : {erreur}. Vérifiez "
             f"{ENV_URL} — sur Neon, le mot de passe se régénère depuis "
@@ -269,7 +300,7 @@ def ouvrir(url: str | None = None) -> Connexion:
         ) from None
 
     log.info("PostgreSQL ouvert (%s)", _sans_secret(url))
-    return Connexion(brute, rouvrir=connecter)
+    return Connexion(brute, rouvrir=connecter, url=url)
 
 
 def _sans_secret(url: str) -> str:

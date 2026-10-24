@@ -35,6 +35,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 
 import aiohttp
@@ -57,6 +58,7 @@ from maxprofit.live.plan_demo import (
     protocole, rapatrier, reference8, simples, simulation, stabilite)
 from maxprofit.hosting.pilotage import (
     Pilote, alerte_sans_configuration, consigne_de_la_base, gouverne)
+from maxprofit.hosting.rotation import ARRET_FORCE_SEC, CODE_BASCULE, Rotation
 from maxprofit.hosting.telegram import BotExploitation, ClientTelegram
 
 ENV_TELEGRAM_JETON = "TELEGRAM_BOT_TOKEN"
@@ -266,6 +268,7 @@ def proposer_les_paires(cfg, argument: str = "", ouvrir=None) -> str:
 
 
 async def _servir(args) -> int:
+    rotation = getattr(args, "rotation", None)
     cfg = build_config(args)
     _verifier_emplacement_base(cfg.db)
     # En premier, avant tout le reste : c'est la ligne qui dit si le journal
@@ -309,7 +312,7 @@ async def _servir(args) -> int:
         )
         if bot is not None:
             bot._etat = lambda: _resume(superviseur, etat_collecte,
-                                        _course.get("sup"))
+                                        _course.get("sup"), rotation)
             bot._installer_jeton = superviseur.installer_jeton
             bot._paires = lambda: _paires(superviseur)
             bot._diagnostic = lambda: _diagnostic(superviseur)
@@ -369,6 +372,24 @@ async def _servir(args) -> int:
             if bot is not None:
                 bot.actif = False
 
+        code_sortie = [0]
+        if rotation is not None:
+            def _basculer():
+                # Appelé depuis n'importe quel fil. L'arrêt propre d'abord ;
+                # s'il pend sur la base morte, la sortie forcée le relaie.
+                code_sortie[0] = CODE_BASCULE
+                boucle.call_soon_threadsafe(_arreter)
+                minuteur = threading.Timer(ARRET_FORCE_SEC, os._exit,
+                                           (CODE_BASCULE,))
+                minuteur.daemon = True
+                minuteur.start()
+
+            rotation.alerter = (None if bot is None
+                                else _alerte_synchrone(bot))
+            rotation.arreter = _basculer
+            rotation.installer()
+            rotation.demarrer()
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 boucle.add_signal_handler(sig, _arreter)
@@ -386,6 +407,8 @@ async def _servir(args) -> int:
                 rester_eveille(http, adresse), name="eveil"))
         if bot is not None:
             await bot.alerter("🟢 <b>Collecte démarrée</b>")
+            if rotation is not None and rotation.message_de_demarrage():
+                await bot.alerter(rotation.message_de_demarrage())
             taches.append(asyncio.create_task(bot.boucler(), name="telegram"))
 
         # La course du plan, dans un thread À PART et INACTIVE par défaut.
@@ -560,8 +583,10 @@ async def _servir(args) -> int:
             await asyncio.gather(*taches[1:], return_exceptions=True)
             await runner.cleanup()
 
+    if rotation is not None:
+        rotation.arreter_synchro()
     log.info("Processus terminé.")
-    return 0
+    return code_sortie[0]
 
 
 def _annuaire() -> Annuaire:
@@ -619,7 +644,7 @@ def _fabriquer_bot(http) -> BotExploitation | None:
 
 
 async def _resume(superviseur: Superviseur, etat: EtatCollecte,
-                  course=None) -> str:
+                  course=None, rotation=None) -> str:
     """Ce que raconte /etat. Aucune décision ici : on formate (§0)."""
     sain, details = etat.rapport()
     compteurs = details.get("compteurs") or {}
@@ -675,6 +700,8 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
             f"Depuis le début : {100 * tot['part']:.1f} % "
             f"({tot['collecte_sec'] / 3600:.0f} h sur "
             f"{tot['fenetre_sec'] / 3600:.0f} h)")
+    if rotation is not None:
+        lignes.append(rotation.resume())
     lignes.append(f"Démarrages du collecteur : {superviseur.demarrages}")
     lignes.append(
         f"Paires souscrites : {superviseur.paires_souscrites_nommees()}")
@@ -857,6 +884,16 @@ def main(argv: list[str] | None = None) -> int:
         # croire à une avalanche de pannes.
         stream=sys.stdout,
     )
+
+    # Le pool de bases Neon : AVANT que quoi que ce soit n'ouvre
+    # `DATABASE_URL`, puisque c'est cette variable que le choix réécrit.
+    # Une seule URL déclarée : rien ne change.
+    try:
+        args.rotation = Rotation.au_demarrage()
+    except Exception:                            # noqa: BLE001
+        log.exception("Pool de bases : choix impossible, DATABASE_URL "
+                      "inchangée.")
+        args.rotation = None
 
     if args.min_payout is None:
         log.error("Payout minimal non fourni : passez --min-payout ou "
