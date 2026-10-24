@@ -280,6 +280,9 @@ def test_les_paires_sont_jugees_sur_les_signaux_confirmes(tmp_path,
     assert "Trois stratégies simples" in texte_simples(simples)
     assert any(h[0] == "EXP-030 mom7_vertes"
                for h in a.laboratoire["protocole"]["hypotheses"])
+    # L'étape 0 des ticks : mesurée au rejeu, sauvable, en lecture seule.
+    assert "controles" in a.laboratoire["ticks"]
+    json.dumps(a.laboratoire["ticks"])
     # Sans confirmation, tous les signaux de ZoneH1 comptent : davantage.
     course.confirmation_m1 = "0"
     mod.Apprenti(course, lambda: open_read_write(tmp_path / "m.db"),

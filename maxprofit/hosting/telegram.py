@@ -300,6 +300,7 @@ COMMANDES = [
     ("reference8", "Mission Reference 8 : confirmation, B/C/E, échéances"),
     ("entrees", "Entrées T0 à T3 : le retard de la confirmation M1"),
     ("simples", "Momentum 7 bougies, croisement de moyennes, Bollinger"),
+    ("ticks", "Étape 0 : qualité des ticks, en lecture seule"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
 ]
@@ -423,6 +424,8 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._reference8: Callable[[], Awaitable[str]] | None = None
         self._entrees: Callable[[], Awaitable[str]] | None = None
         self._simples: Callable[[], Awaitable[str]] | None = None
+        self._ticks: Callable[[], Awaitable[tuple[str, bytes | None]]] \
+            | None = None
         self._decision: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
@@ -655,6 +658,21 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             else:
                 await self.client.envoyer(chat, await self._entrees(),
                                           CLAVIER)
+        elif texte.startswith("/ticks"):
+            if self._ticks is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                resume, fichier = await self._ticks()
+                await self.client.envoyer(chat, resume, CLAVIER)
+                if fichier:
+                    try:
+                        await self.client.envoyer_document(
+                            chat, fichier, "anomalies_ticks.csv",
+                            "Une ligne par anomalie, la plus grave d'abord")
+                    except Exception as erreur:          # noqa: BLE001
+                        log.error("Fiche des ticks non envoyée : %s", erreur)
+                        await self.client.envoyer(
+                            chat, f"Fiche non envoyée : {erreur}", CLAVIER)
         elif texte.startswith("/simples"):
             if self._simples is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
