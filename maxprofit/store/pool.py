@@ -100,11 +100,26 @@ def bases_du_pool(env=None) -> list[tuple[str, str]]:
     noms.sort(key=lambda k: k != "DATABASE_URL")
     vues, pool = set(), []
     for nom in noms:
-        url = (env.get(nom) or "").strip()
-        if url.startswith(("postgres://", "postgresql://")) and url not in vues:
+        url = nettoyer_url(env.get(nom) or "")
+        if not url.startswith(("postgres://", "postgresql://")):
+            if url:
+                log.warning("Pool : %s ignorée — sa valeur ne commence pas "
+                            "par postgresql://", nom)
+            continue
+        if url not in vues:
             vues.add(url)
             pool.append((nom, url))
     return pool
+
+
+def nettoyer_url(brut: str) -> str:
+    """L'URL telle qu'on la colle depuis Neon : la console affiche
+    `psql 'postgresql://…'`, et l'URL collée avec sa commande et ses
+    guillemets était écartée en silence — le pool ne voyait qu'une base."""
+    url = (brut or "").strip()
+    if url.startswith("psql "):
+        url = url[5:].strip()
+    return url.strip("'\"").strip()
 
 
 @dataclass
@@ -136,6 +151,11 @@ def sonder(nom: str, url: str, ouvrir=None) -> EtatBase:
             ligne = conn.execute("SELECT MAX(ts_sec) FROM candles").fetchone()
             derniere = int(ligne[0]) if ligne and ligne[0] is not None else None
         return EtatBase(nom, url, True, derniere_ts=derniere)
+    except Exception as erreur:                  # noqa: BLE001
+        # Ouverte puis coupée : on ne choisit pas une base qui flanche.
+        texte = str(erreur)
+        return EtatBase(nom, url, False, quota_epuise=est_quota(texte),
+                        raison=texte.splitlines()[0][:160])
     finally:
         try:
             conn.close()
@@ -176,7 +196,12 @@ def choisir_au_demarrage(env=None, sonde=None) -> tuple[EtatBase | None,
     """
     env = os.environ if env is None else env
     pool = bases_du_pool(env)
+    log.info("Pool : %d base(s) déclarée(s) : %s", len(pool),
+             ", ".join(nom for nom, _ in pool) or "aucune")
     if len(pool) < 2:
+        if pool:
+            log.warning("Pool : une seule base — pas de relève, pas de "
+                        "bascule. Déclarez les autres en DATABASE_URL_<NOM>.")
         return None, None, []
     sonde = sonde or sonder
     etats = [sonde(nom, url) for nom, url in pool]

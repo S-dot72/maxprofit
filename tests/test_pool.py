@@ -275,3 +275,19 @@ def test_la_synchro_copie_la_campagne_avant_les_bougies(deux_bases):
     finally:
         pool_mod._synchroniser_serie = vraie
     assert vues[0] == ("candles", 1), "l'ordre était déjà copié"
+
+
+def test_une_URL_collee_avec_sa_commande_psql_est_reconnue():
+    """La console Neon affiche `psql 'postgresql://…'` : collée telle quelle
+    sur Render, elle était écartée et le service restait sur la base bloquée."""
+    env = {"DATABASE_URL": U.format("a"),
+           "DATABASE_URL_AUTUMN": "  psql '" + U.format("b") + "' "}
+    assert bases_du_pool(env)[1] == ("DATABASE_URL_AUTUMN", U.format("b"))
+
+
+def test_une_base_qui_flanche_pendant_la_sonde_est_injoignable():
+    class _Coupee:
+        def execute(self, *a): raise RuntimeError("SSL connection closed")
+        def close(self): pass
+    from maxprofit.store.pool import sonder
+    assert sonder("X", "u", ouvrir=lambda url: _Coupee()).joignable is False
