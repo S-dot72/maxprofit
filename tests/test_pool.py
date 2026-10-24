@@ -248,3 +248,30 @@ def test_au_demarrage_la_bascule_est_annoncee():
         pool_mod.sonder = ancien
     assert rot.active.hote == "neuve" and rot.releve.hote == "vieille"
     assert "epuisee → <b>neuve</b>" in rot.message_de_demarrage()
+
+
+def test_la_CAMPAGNE_passe_avant_les_series():
+    """Une source qui tombe en cours de copie ne doit pas emporter les ordres :
+    les bougies se recollectent, une campagne non."""
+    from maxprofit.store.fusion import ORDRE
+    for petite in ("executions", "plan_etat", "reglages"):
+        assert ORDRE.index(petite) < ORDRE.index("candles")
+    assert ORDRE.index("executions") < ORDRE.index("plan_etat")         < ORDRE.index("reglages")
+
+
+def test_la_synchro_copie_la_campagne_avant_les_bougies(deux_bases):
+    active, releve = deux_bases
+    _ordre(active, 1790000000000)
+    _bougie(active, 1790000040)
+    vues = []
+    import maxprofit.store.pool as pool_mod
+    vraie = pool_mod._synchroniser_serie
+    def espion(source, cible, table, *a):
+        vues.append((table, _n(cible, "executions")))
+        return vraie(source, cible, table, *a)
+    pool_mod._synchroniser_serie = espion
+    try:
+        synchroniser(active, releve, journal=lambda *_: None)
+    finally:
+        pool_mod._synchroniser_serie = vraie
+    assert vues[0] == ("candles", 1), "l'ordre était déjà copié"

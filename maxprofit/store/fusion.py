@@ -75,8 +75,13 @@ REMPLACER_SI_PLUS = {
 #: Clé de dédoublonnage des ordres. L'`id` ne vaut rien d'une base à l'autre.
 CLE_EXECUTIONS = ("campagne", "pair", "sens", "signal_ts_ms")
 
-#: Ordre de copie. `plan_etat` et `reglages` en dernier : ce sont des résumés
-#: de ce qui précède.
+#: Ordre de copie. Les petites tables de la CAMPAGNE d'abord, les grosses
+#: séries ensuite. Le 24/10, une fusion floral-morning → autumn a passé des
+#: heures sur les bougies et la base source a atteint son quota avant d'arriver
+#: aux ordres : autumn a reçu 450 000 bougies, et pas un ordre ni l'état de la
+#: campagne — la seule chose qui ne se recollecte pas. Entre elles, `plan_etat`
+#: et `reglages` restent après `executions` : ce sont des résumés des ordres,
+#: et c'est `reglages` qui fait basculer la course sur la campagne.
 #:
 #: ⚠ `reglages` a été ajoutée APRÈS l'écriture de cette fusion, et l'oubli
 #: n'était pas anodin : c'est elle qui dit quelle campagne la course joue. Une
@@ -84,8 +89,8 @@ CLE_EXECUTIONS = ("campagne", "pair", "sens", "signal_ts_ms")
 #: `plan-demo-v2` — exactement la collision que la fusion existe pour éviter.
 #: `test_toute_table_de_la_base_est_soit_copiee_soit_exclue` empêche qu'une
 #: prochaine table soit oubliée de la même façon.
-ORDRE = ("candles", "payouts", "tick_paths", "uptime", "operateurs",
-         "executions", "plan_etat", "reglages")
+ORDRE = ("operateurs", "executions", "plan_etat", "reglages",
+         "candles", "payouts", "tick_paths", "uptime")
 
 
 @dataclass

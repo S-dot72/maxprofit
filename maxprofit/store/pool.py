@@ -215,14 +215,11 @@ def synchroniser(source, cible, journal=log.info, attendre=None) -> dict:
     Une première passe vers une base vide recopie tout, par tranches d'un
     jour ; les suivantes ne relisent que la dernière heure et ce qui l'a suivie.
     """
+    # La campagne D'ABORD : si la source tombe en cours de passe (quota), ce
+    # qui ne se recollecte pas doit déjà être à l'abri. Les ordres avant leurs
+    # résumés (`plan_etat`, `reglages`).
     copiees: dict[str, int] = {}
     tables_source, tables_cible = _tables(source), _tables(cible)
-    for table, colonne, regle in SERIES:
-        if table in tables_source and table in tables_cible:
-            copiees[table] = _avec_reessais(
-                lambda t=table, c=colonne, r=regle:
-                    _synchroniser_serie(source, cible, t, c, r),
-                table, journal, attendre)
     if "executions" in tables_source and "executions" in tables_cible:
         copiees["executions"] = _avec_reessais(
             lambda: _synchroniser_ordres(source, cible), "executions",
@@ -233,6 +230,12 @@ def synchroniser(source, cible, journal=log.info, attendre=None) -> dict:
                 lambda t=table: _fusionner_table(source, cible, t, True),
                 table, journal, attendre)
             copiees[table] = bilan.a_inserer + bilan.a_remplacer
+    for table, colonne, regle in SERIES:
+        if table in tables_source and table in tables_cible:
+            copiees[table] = _avec_reessais(
+                lambda t=table, c=colonne, r=regle:
+                    _synchroniser_serie(source, cible, t, c, r),
+                table, journal, attendre)
     return copiees
 
 

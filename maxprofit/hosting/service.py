@@ -557,6 +557,18 @@ async def _servir(args) -> int:
             else:
                 log.info("Course du plan : arrêtée depuis Telegram "
                          "(/demarrer pour la relancer).")
+        elif course_activee() and rotation is not None                 and rotation.basculee_depuis:
+            # Bascule sur une base qui n'a pas reçu la configuration : partir
+            # sur l'environnement ouvrirait `plan-demo-v2` à son capital par
+            # défaut, en silence. On attend un /demarrer explicite.
+            message = (
+                "⏸ <b>Course NON relancée</b> : la base de relève n'a pas de "
+                "configuration enregistrée. Pour éviter de repartir sur "
+                f"{campagne_env} par défaut, rien ne part. Vérifiez "
+                "/configuration puis /demarrer.")
+            log.warning("%s", message)
+            if bot is not None:
+                await bot.alerter(message)
         elif course_activee():
             course.demarrer()
         else:
