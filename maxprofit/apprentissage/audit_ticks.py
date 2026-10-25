@@ -1662,9 +1662,9 @@ class AuditTicks:
                 f"des bougies (tick_count) et les débits les comptent ; les "
                 f"débits sont aussi donnés en ticks distincts. Les prix, "
                 f"l'OHLC et les trajectoires n'en sont pas changés. Le "
-                f"collecteur les a écartés quelques heures le 25/10/2026, "
-                f"correction retirée en attendant l'enquête (colonne « flux "
-                f"doublé » : la fenêtre, jour par jour).")
+                f"collecteur les a écartés au plus quelques minutes le "
+                f"25/10/2026 (21:50-21:55 UTC), correction retirée en "
+                f"attendant l'enquête (docs/enquete_doublons.md).")
         if p["horodates"] and p["seconde_ronde"] >= 0.9 * p["horodates"]:
             limites.append(
                 "Horodatages d'ouverture du broker à la seconde entière : "
