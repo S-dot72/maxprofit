@@ -87,6 +87,20 @@ MINUTES_MIN_JOUR = 60
 #: [minute − 30 s, minute + 90 s[ (battement toutes les 30 s, trou toléré
 #: 90 s, comme `MarketReader.couverture`).
 BATTEMENT_AVANT_SEC, BATTEMENT_APRES_SEC = 30, 90
+#: Un trou de battements d'au moins `HISTORIQUE_ABSENT_SEC`, pendant lequel la
+#: paire a des ticks sur au moins `HISTORIQUE_COUVERT` de ses minutes, n'est
+#: pas un collecteur qui s'est tu : il écrit ticks et battements depuis la
+#: même boucle (`Collector._taches_periodiques`). C'est l'historique des
+#: battements qui manque à la base. Ses minutes sont « sans historique » : le
+#: contrôle par les battements y est NOT TESTABLE, ni réussi ni échoué.
+#: Règle ajoutée le 25/10 après le premier rapport réel : 586 exclusions
+#: TIMESTAMP_UNCERTAIN, toutes dans deux trous de battements (13 h et 4,7 j)
+#: où les 20 paires avaient leurs ticks sans interruption.
+HISTORIQUE_ABSENT_SEC = 7200
+HISTORIQUE_COUVERT = 0.9
+#: Part de doublons exacts à partir de laquelle une minute est « à flux
+#: doublé » : chaque tick reçu deux fois en donne 50 %.
+DOUBLES_MIN = 0.4
 #: Fenêtres de recherche d'un prix du broker dans notre flux (ms) ; la
 #: deuxième est celle qui juge.
 FENETRES_PRIX_MS: tuple[int, ...] = (0, 1000, 2000, 5000)
@@ -131,7 +145,9 @@ SEUILS: dict[str, str] = {
     "trous": (
         "sur les minutes où le collecteur battait, paires sans aucun tick "
         "exclues : FAIL au-delà de 5 % sans ticks, WARNING au-delà de 1 %, "
-        "PASS sinon ; NOT TESTABLE sans battement"),
+        "PASS sinon ; NOT TESTABLE sans battement ; les minutes sans "
+        "historique des battements (trou de 2 h ou plus couvert à 90 % par "
+        "les ticks de la paire) sortent du contrôle"),
     "signaux": (
         "fenêtres de 30 min complètes : FAIL sous 50 %, WARNING sous 80 %, "
         "PASS sinon ; NOT TESTABLE sans signal"),
@@ -186,12 +202,13 @@ CODES: dict[str, str] = {
     "DECOMPRESSION_ERROR": "une minute illisible",
     "INTERNAL_GAP": "minute(s) absente(s)",
     "INVALID_ORDER": "tick hors de sa minute ou ordre décroissant",
-    "TIMESTAMP_UNCERTAIN": "ticks sans battement du collecteur, ou "
+    "TIMESTAMP_UNCERTAIN": "ticks sans battement du collecteur là où "
+                           "l'historique des battements existe, ou "
                            "horodatages à la seconde",
     "START_BOUNDARY_MISSING": "premier tick à plus de 5 s du début",
     "END_BOUNDARY_MISSING": "dernier tick à plus de 5 s de la fin",
     "FEED_FREEZE": "gel du flux de 10 s ou plus",
-    "INSUFFICIENT_COVERAGE": "minute à moins de 5 ticks",
+    "INSUFFICIENT_COVERAGE": "minute à moins de 5 ticks distincts",
     "M1_MISMATCH": "concordance M1 inexpliquée",
     "NO_TICK_AT_DECISION": "pas de tick dans les 5 s avant la décision",
 }
@@ -200,7 +217,8 @@ COMPLETE = "OK"
 #: Classes de concordance d'une minute (chemin face à sa bougie), et la
 #: catégorie du cahier des charges (§5.2) dont chacune relève.
 IDENTIQUE = "identique"
-EXPLICABLES = ("bougie incomplète", "minute coupée",
+ORDRE = "ordre d'arrivée"
+EXPLICABLES = ("bougie incomplète", ORDRE, "minute coupée",
                "chemin moins fourni", "chemin plus fourni")
 DECALAGE = "décalage de minute"
 INEXPLIQUE = "écart inexpliqué"
@@ -210,6 +228,8 @@ CATEGORIES: dict[str, str] = {
                          "coupure)",
     "chemin plus fourni": "convention d'agrégation (le chemin le plus fourni "
                           "gagne ; fusion de bases)",
+    ORDRE: "ordre d'arrivée ≠ ordre des horodatages (ouverture ou "
+           "clôture de la bougie prise à l'arrivée)",
     "minute coupée": "bornes temporelles (minute coupée)",
     "chemin moins fourni": "tick manquant dans le chemin (établi par les "
                            "comptes)",
@@ -246,6 +266,13 @@ NATURES: dict[str, tuple[str, str, str, str, str]] = {
         "concordance", "OHLC ou nombre de ticks différents sans règle "
         "d'écriture qui l'explique", "bougie ou chemin faux sur cette minute",
         "élevée", ""),
+    "ordre d'arrivée ≠ horodatages": (
+        "concordance", "nombre de ticks, haut et bas égaux ; l'ouverture ou "
+        "la clôture de la bougie est un AUTRE tick de la minute",
+        "aucun sur les prix de la minute ; montre que des ticks arrivent hors "
+        "de l'ordre de leurs horodatages", "élevée",
+        "deux flux mêlés ou un tampon rejoué à une reconnexion l'expliqueraient"
+        " ; l'ordre d'arrivée n'est pas stocké"),
     "décalage de minute": (
         "concordance", "le chemin correspond exactement à la bougie de la "
         "minute voisine", "horodatages décalés d'une minute", "élevée", ""),
@@ -262,9 +289,18 @@ NATURES: dict[str, tuple[str, str, str, str, str]] = {
         "paire inexploitable au tick", "élevée",
         "paire non souscrite ou stockage des ticks coupé"),
     "ticks sans battement du collecteur": (
-        "trous", "minute de ticks sans battement dans [m − 30 s, m + 90 s[",
+        "trous", "minute de ticks sans battement dans [m − 30 s, m + 90 s[, "
+        "hors trou sans historique des battements",
         "horodatage possiblement décalé (changement d'heure)", "moyenne",
         "des battements perdus l'expliqueraient aussi"),
+    "historique des battements absent": (
+        "trous", f"{HISTORIQUE_ABSENT_SEC // 3600} h ou plus sans battement "
+        f"alors que la paire a des ticks sur {HISTORIQUE_COUVERT:.0%} ou plus "
+        "des minutes", "contrôle par les battements NOT TESTABLE sur ces "
+        "minutes", "élevée",
+        "le collecteur écrit ticks et battements depuis la même boucle : des "
+        "ticks continus prouvent qu'il tournait ; les battements manquent à "
+        "la base (bascule ou synchronisation de bases)"),
     "débit anormal": (
         "trous", "médiane du jour hors de [0,5 ; 2] fois la médiane de la "
         "paire sur la fenêtre", "qualité du flux à vérifier ce jour-là",
@@ -344,6 +380,8 @@ class _Compteurs:
         self.minutes = 0
         self.ticks = 0
         self.par_minute: list[int] = []
+        self.par_minute_distincts: list[int] = []
+        self.minutes_doublees = 0
         self.ecarts: Counter = Counter()
         self.ecart_max = 0
         self.gels = 0
@@ -352,6 +390,7 @@ class _Compteurs:
         self.concordance: Counter = Counter()
         self.manquantes_ecoutees = 0
         self.manquantes_muettes = 0
+        self.manquantes_sans_historique = 0
         self.bougie_sans_chemin = 0
         self.chemin_sans_bougie = 0
         self.interruptions = 0
@@ -367,6 +406,9 @@ class _Compteurs:
             if attendues else None,
             "ticks": self.ticks,
             "ticks_min": _quantiles(self.par_minute),
+            "distincts_min": _quantiles(self.par_minute_distincts),
+            "doublees": round(self.minutes_doublees / self.minutes, 4)
+            if self.minutes else None,
             "ecarts_ms": [_quantile_histogramme(self.ecarts, q)
                           for q in (0.25, 0.5, 0.75, 0.99)]
             + [self.ecart_max],
@@ -420,6 +462,9 @@ class AuditTicks:
         #: Minutes de ticks sans battement du collecteur : un horodatage
         #: décalé (changement d'heure du broker) se verrait ici.
         self.sans_battement = 0
+        #: Minutes de ticks dans un trou de l'historique des battements.
+        self.sans_historique = 0
+        self._trous_battements: list[tuple[int, int]] | None = None
         # Compression
         self.illisibles = 0
         self.reencodees = [0, 0]           # contrôlées, différentes
@@ -427,12 +472,14 @@ class AuditTicks:
         # Concordance
         self.concordance: Counter = Counter()
         self.ecarts_concordance: Counter = Counter()   # champ en défaut
+        self.champs_ordre: Counter = Counter()   # o / c pris à l'arrivée
         self.exemples: dict[str, list] = {}
         # Signaux
         self.fiches_signaux: list[dict] = []
         self.codes: Counter = Counter()
         self.codes_joues: Counter = Counter()
         self.hors_fenetre = 0
+        self.complets_sans_historique = 0
         self.par_jour_signaux: dict[int, list[int]] = {}
         self.par_heure_signaux: dict[int, list[int]] = {}
         # Phase F
@@ -468,6 +515,7 @@ class AuditTicks:
     def noter_battements(self, battements: Iterable[int]) -> None:
         self.battements = sorted(int(b) for b in battements)
         self._ecoutees = None
+        self._trous_battements = None
 
     def _minutes_ecoutees(self) -> set[int] | None:
         """None quand aucun battement n'est connu : « écoutée » est alors
@@ -483,6 +531,40 @@ class AuditTicks:
                         ecoutees.add(m)
             self._ecoutees = ecoutees
         return self._ecoutees
+
+    def _sans_historique(self, resumes: Mapping[int, dict]) -> set[int]:
+        """Les minutes de la paire où l'historique des battements MANQUE :
+        un trou de battements d'au moins `HISTORIQUE_ABSENT_SEC` (les bords
+        de la fenêtre comptent comme des battements), couvert par les ticks
+        de la paire sur au moins `HISTORIQUE_COUVERT` de ses minutes. Vide
+        quand aucun battement n'est connu : tout est alors indéterminé."""
+        ecoutees = self._minutes_ecoutees()
+        if ecoutees is None:
+            return set()
+        if self._trous_battements is None:
+            bornes = [self.debut, *self.battements, self.fin]
+            self._trous_battements = [
+                (a, b) for a, b in zip(bornes, bornes[1:])
+                if b - a >= HISTORIQUE_ABSENT_SEC]
+        sortie: set[int] = set()
+        for a, b in self._trous_battements:
+            minutes = [m for m in range(a // 60 * 60, b, 60)
+                       if self.debut <= m < self.fin and m not in ecoutees]
+            if minutes and (sum(1 for m in minutes if m in resumes)
+                            >= HISTORIQUE_COUVERT * len(minutes)):
+                sortie.update(minutes)
+        return sortie
+
+    @staticmethod
+    def _series(minutes: Iterable[int]) -> list[tuple[int, int]]:
+        """Les suites de minutes consécutives : (première, fin exclue)."""
+        series: list[tuple[int, int]] = []
+        for m in sorted(minutes):
+            if series and series[-1][1] == m:
+                series[-1] = (series[-1][0], m + 60)
+            else:
+                series.append((m, m + 60))
+        return series
 
     # --- une paire ---------------------------------------------------------------
 
@@ -532,14 +614,15 @@ class AuditTicks:
             r = self._minute(paire, m, ticks, chemin.echelle,
                              dernier_ms if derniere_minute == m - 60
                              else None)
-            r["concordance"] = self._concorder(paire, m, r, bougies_m)
+            r["concordance"] = self._concorder(paire, m, r, bougies_m, ticks)
             resumes[m] = r
             dernier_ms, derniere_minute = r["dernier"], m
         if relire is not None:
             self._relire(paire, resumes, par_minute, relire)
-        self._trous_et_debit(paire, resumes, bougies_m)
+        sans_historique = self._sans_historique(resumes)
+        self._trous_et_debit(paire, resumes, bougies_m, sans_historique)
         self._signaux(paire, resumes, illisibles, signaux, par_minute,
-                      toutes)
+                      toutes, sans_historique)
         self._temoins(paire, resumes, par_minute)
 
     def _reencoder(self, paire: str, m: int, chemin: Any,
@@ -645,18 +728,31 @@ class AuditTicks:
                 c.ecarts[k] += 1
             c.ecart_max = max(c.ecart_max, ecart_max)
             c.gels += gel
-            c.pauvres += n < TICKS_MIN_MINUTE
+            # Pauvre en ticks DISTINCTS : un tick reçu deux fois n'en fait
+            # pas deux.
+            c.pauvres += n - exacts < TICKS_MIN_MINUTE
             c.doublons_exacts += exacts
-        return {"n": n, "premier": ts[0], "dernier": ts[-1],
+            c.par_minute_distincts.append(n - exacts)
+            c.minutes_doublees += exacts >= DOUBLES_MIN * n
+        return {"n": n, "distincts": n - exacts,
+                "premier": ts[0], "dernier": ts[-1],
                 "ecart_max": ecart_max, "entree": entree,
                 "invalide": bool(hors or decr), "o": prix[0], "h": max(prix),
                 "l": min(prix), "c": prix[-1],
                 "pas": 10 ** -echelle if echelle else 1.0}
 
     def _concorder(self, paire: str, m: int, r: dict,
-                   bougies_m: Mapping[int, Candle]) -> str | None:
+                   bougies_m: Mapping[int, Candle],
+                   ticks: Sequence[Tick] = ()) -> str | None:
         """La classe de la minute, chemin face à sa bougie (None : pas de
-        bougie). Tolérance : une demi-unité de la grille décimale."""
+        bougie). Tolérance : une demi-unité de la grille décimale.
+
+        « Ordre d'arrivée » : l'agrégateur prend l'ouverture et la clôture
+        dans l'ordre où les ticks ARRIVENT, l'encodeur les trie par
+        horodatage. Mêmes ticks (nombre, haut et bas égaux) et une ouverture
+        ou une clôture de bougie qui est un autre tick de la minute : rien
+        n'est faux, des ticks sont arrivés hors de l'ordre de leurs
+        horodatages."""
         b = bougies_m.get(m)
         if b is None:
             for c in self._compteurs(paire, m):
@@ -692,6 +788,16 @@ class AuditTicks:
                 "FAIL", "décalage de minute", paire, m, m + 60,
                 f"chemin égal à la bougie de {_horodatage(voisine[0].ts_sec)}",
                 r["n"])
+        elif (pareils["n"] and pareils["h"] and pareils["l"]
+              and self._prix_de_la_minute(b, r, ticks)):
+            classe = ORDRE
+            champs = [x for x in ("o", "c") if not pareils[x]]
+            for x in champs:
+                self.champs_ordre[x] += 1
+            self._anomalie(
+                "INFO", "ordre d'arrivée ≠ horodatages", paire, m, m + 60,
+                f"bougie O {b.open} C {b.close} ; chemin O {r['o']} "
+                f"C {r['c']} ({', '.join(champs)})", r["n"])
         elif coupee and sous_ensemble:
             classe = "minute coupée"
         elif r["n"] < b.tick_count and sous_ensemble:
@@ -716,9 +822,23 @@ class AuditTicks:
             c.concordance[classe] += 1
         return classe
 
+    @staticmethod
+    def _prix_de_la_minute(b: Candle, r: dict,
+                           ticks: Sequence[Tick]) -> bool:
+        """L'ouverture et la clôture de la bougie sont-elles des prix de
+        ticks de la minute (sur la grille décimale du chemin) ?"""
+        if not ticks:
+            return False
+        pas = r["pas"]
+        grille = {round(t.price / pas) for t in ticks}
+        return (round(b.open / pas) in grille
+                and round(b.close / pas) in grille)
+
     def _trous_et_debit(self, paire: str, resumes: Mapping[int, dict],
-                        bougies_m: Mapping[int, Candle]) -> None:
+                        bougies_m: Mapping[int, Candle],
+                        sans_historique: set[int] | None = None) -> None:
         ecoutees = self._minutes_ecoutees()
+        sans_historique = sans_historique or set()
         absentes: list[int] = []
 
         def clore() -> None:
@@ -746,6 +866,8 @@ class AuditTicks:
                     c.bougie_sans_chemin += 1
                 if ecoutees is not None and m in ecoutees:
                     c.manquantes_ecoutees += 1
+                elif m in sans_historique:
+                    c.manquantes_sans_historique += 1
                 else:
                     c.manquantes_muettes += 1
         clore()
@@ -756,21 +878,28 @@ class AuditTicks:
                 "non souscrite par le collecteur, ou stockage des ticks coupé",
                 (self.fin - self.debut) // 60)
         # Des ticks là où le collecteur ne battait pas : horodatage décalé ?
+        # Sauf dans un trou de l'historique des battements, où la question
+        # ne se pose pas : des ticks continus prouvent qu'il tournait.
         if ecoutees is not None:
-            hors = [m for m in sorted(resumes) if m not in ecoutees]
+            hors = [m for m in resumes
+                    if m not in ecoutees and m not in sans_historique]
             self.sans_battement += len(hors)
-            debut_serie = None
-            for i, m in enumerate(hors):
-                if debut_serie is None:
-                    debut_serie = m
-                if i + 1 == len(hors) or hors[i + 1] != m + 60:
-                    duree = (m + 60 - debut_serie) // 60
-                    self._anomalie(
-                        "WARNING", "ticks sans battement du collecteur",
-                        paire, debut_serie, m + 60,
-                        f"{duree} min : horodatage décalé (changement "
-                        f"d'heure ?) ou battements perdus", duree)
-                    debut_serie = None
+            for debut_serie, fin_serie in self._series(hors):
+                duree = (fin_serie - debut_serie) // 60
+                self._anomalie(
+                    "WARNING", "ticks sans battement du collecteur",
+                    paire, debut_serie, fin_serie,
+                    f"{duree} min : horodatage décalé (changement "
+                    f"d'heure ?) ou battements perdus", duree)
+            avec_ticks = sum(1 for m in resumes if m in sans_historique)
+            self.sans_historique += avec_ticks
+            for debut_serie, fin_serie in self._series(sans_historique):
+                duree = (fin_serie - debut_serie) // 60
+                self._anomalie(
+                    "WARNING", "historique des battements absent", paire,
+                    debut_serie, fin_serie,
+                    f"{duree} min sans battement en base, ticks présents : "
+                    f"contrôle des battements non testable", duree)
         # Le débit, jugé contre la paire elle-même.
         par_jour: dict[int, list[int]] = {}
         for m, r in resumes.items():
@@ -793,8 +922,10 @@ class AuditTicks:
     def _signaux(self, paire: str, resumes: Mapping[int, dict],
                  illisibles: set[int], signaux: Sequence[Any],
                  par_minute: Mapping[int, Any],
-                 bougies: Mapping[int, Candle]) -> None:
+                 bougies: Mapping[int, Candle],
+                 sans_historique: set[int] | None = None) -> None:
         ecoutees = self._minutes_ecoutees()
+        sans_historique = sans_historique or set()
         seconde = self._granularite() >= 1000
         for s in signaux:
             d = int(s.ts_sec)
@@ -807,7 +938,8 @@ class AuditTicks:
             minutes = list(range(d - AVANT_SEC, d + APRES_SEC, 60))
             presentes = [m for m in minutes if m in resumes]
             code = self._code(d, minutes, resumes, illisibles, ecoutees,
-                              seconde)
+                              seconde, sans_historique)
+            indeterminees = sum(1 for m in minutes if m in sans_historique)
             joue = self.joue(s) if self.joue is not None else None
             ecart = max([resumes[m]["ecart_max"] for m in presentes]
                         + [resumes[m]["entree"] for m in presentes[1:]
@@ -821,6 +953,8 @@ class AuditTicks:
                 "ecart_max_ms": ecart,
                 "ecoutees": (sum(1 for m in minutes if m in ecoutees)
                              if ecoutees is not None else None),
+                "sans_historique": (indeterminees if ecoutees is not None
+                                    else None),
                 "code": code, "motif": CODES.get(code, ""),
                 "joue": joue}
             self.fiches_signaux.append(fiche)
@@ -834,6 +968,7 @@ class AuditTicks:
                 v = table.setdefault(cle, [0, 0])
                 v[0] += 1
                 v[1] += complet
+            self.complets_sans_historique += complet and indeterminees > 0
             c = self.paires[paire]
             c.signaux += 1
             c.signaux_complets += complet
@@ -842,7 +977,9 @@ class AuditTicks:
 
     def _code(self, d: int, minutes: Sequence[int],
               resumes: Mapping[int, dict], illisibles: set[int],
-              ecoutees: set[int] | None, seconde: bool) -> str:
+              ecoutees: set[int] | None, seconde: bool,
+              sans_historique: set[int] | None = None) -> str:
+        sans_historique = sans_historique or set()
         if not any(m in resumes for m in minutes):
             return "DECOMPRESSION_ERROR" if any(
                 m in illisibles for m in minutes) else "NO_TICKS"
@@ -852,8 +989,9 @@ class AuditTicks:
             return "INTERNAL_GAP"
         if any(resumes[m]["invalide"] for m in minutes):
             return "INVALID_ORDER"
-        if seconde or (ecoutees is not None
-                       and any(m not in ecoutees for m in minutes)):
+        if seconde or (ecoutees is not None and any(
+                m not in ecoutees and m not in sans_historique
+                for m in minutes)):
             return "TIMESTAMP_UNCERTAIN"
         if resumes[minutes[0]]["premier"] - minutes[0] * 1000 \
                 > BORD_SEC * 1000:
@@ -866,7 +1004,8 @@ class AuditTicks:
             if max(r["ecart_max"], r["entree"] or 0 if k else 0) \
                     >= GEL_SEC * 1000:
                 return "FEED_FREEZE"
-        if any(resumes[m]["n"] < TICKS_MIN_MINUTE for m in minutes):
+        if any(resumes[m].get("distincts", resumes[m]["n"])
+               < TICKS_MIN_MINUTE for m in minutes):
             return "INSUFFICIENT_COVERAGE"
         if any(resumes[m]["concordance"] in (INEXPLIQUE, DECALAGE)
                for m in minutes):
@@ -1140,6 +1279,8 @@ class AuditTicks:
                                    if n else None),
             "doublons_instant": self.doublons_instant,
             "doublons_exacts": g.doublons_exacts,
+            "minutes_doublees": g.minutes_doublees,
+            "ticks_distincts_min": _quantiles(g.par_minute_distincts),
             "hors_minute": self.hors_minute,
             "decroissants": self.decroissants,
             "minutes_gelees": self.minutes_gelees,
@@ -1194,6 +1335,7 @@ class AuditTicks:
             "categories": dict(CATEGORIES),
             "exemples": {k: v for k, v in self.exemples.items()},
             "champs_inexpliques": dict(self.ecarts_concordance),
+            "champs_ordre": dict(self.champs_ordre),
             "chemin_sans_bougie": g.chemin_sans_bougie,
             "bougie_sans_chemin": g.bougie_sans_chemin}
 
@@ -1226,11 +1368,17 @@ class AuditTicks:
             "minutes_avec_ticks": g.minutes,
             "manquantes_ecoutees": g.manquantes_ecoutees,
             "manquantes_muettes": g.manquantes_muettes,
+            "manquantes_sans_historique": g.manquantes_sans_historique,
             "part_manquante_ecoutee": part,
             "paires_sans_ticks": sans_ticks,
             "minutes_sans_battement": self.sans_battement,
+            "minutes_sans_historique": self.sans_historique,
             "minutes_pauvres": g.pauvres,
             "battements": len(self.battements),
+            "battements_par_jour": {
+                str(j): [sum(1 for b in self.battements if _jour(b) == j),
+                         par_jour[j] * 2]
+                for j in sorted(par_jour)},
             "interruptions_longues": g.interruptions,
             "interruptions_min": g.interruptions_min,
             "principales_interruptions": [
@@ -1255,6 +1403,7 @@ class AuditTicks:
                    "codes_joues": {c: self.codes_joues.get(c, 0)
                                    for c in (*CODES, COMPLETE)},
                    "hors_fenetre": self.hors_fenetre,
+                   "complets_sans_historique": self.complets_sans_historique,
                    "par_jour": {str(j): v for j, v in
                                 sorted(self.par_jour_signaux.items())},
                    "par_heure": {str(h): v for h, v in
@@ -1307,6 +1456,9 @@ class AuditTicks:
                     "debit": [DEBIT_BAS, DEBIT_HAUT],
                     "battement_sec": [BATTEMENT_AVANT_SEC,
                                       BATTEMENT_APRES_SEC],
+                    "historique_absent_sec": HISTORIQUE_ABSENT_SEC,
+                    "historique_couvert": HISTORIQUE_COUVERT,
+                    "doubles_min": DOUBLES_MIN,
                     "fenetres_prix_ms": list(FENETRES_PRIX_MS),
                     "echantillon_reencodage": ECHANTILLON_REENCODAGE,
                     "fenetre_relecture_min": LECTURE_MIN,
@@ -1493,6 +1645,21 @@ class AuditTicks:
             limites.append("Aucun battement du collecteur dans la fenêtre : "
                            "un trou de collecte ne se distingue pas d'une "
                            "paire muette.")
+        if t.get("minutes_sans_historique"):
+            limites.append(
+                f"Historique des battements absent de la base sur "
+                f"{t['minutes_sans_historique']} minute(s) de ticks (trous de "
+                f"{HISTORIQUE_ABSENT_SEC // 3600} h ou plus, ticks continus) :"
+                f" le contrôle des horodatages par les battements y est NOT "
+                f"TESTABLE, et un arrêt du collecteur n'y serait vu que par "
+                f"l'absence de ticks.")
+        if h.get("ticks") and h["doublons_exacts"] > 0.01 * h["ticks"]:
+            limites.append(
+                f"Doublons exacts ({h['doublons_exacts'] / h['ticks']:.1%} "
+                f"des ticks : même instant, même prix) : le nombre de ticks "
+                f"des bougies (tick_count) et les débits les comptent ; les "
+                f"débits sont aussi donnés en ticks distincts. Les prix, "
+                f"l'OHLC et les trajectoires n'en sont pas changés.")
         if p["horodates"] and p["seconde_ronde"] >= 0.9 * p["horodates"]:
             limites.append(
                 "Horodatages d'ouverture du broker à la seconde entière : "
@@ -1542,7 +1709,8 @@ def csv_signaux(fiches: Sequence[Mapping[str, Any]]) -> bytes:
     L'issue du contrat n'y figure pas : elle n'entre pas dans le statut."""
     colonnes = ("id", "paire", "decision_utc", "debut_utc", "fin_utc",
                 "n_ticks", "minutes", "couverture", "ecart_max_ms",
-                "minutes_ecoutees", "code", "motif", "joue")
+                "minutes_ecoutees", "minutes_sans_historique", "code",
+                "motif", "joue")
     lignes = [";".join(colonnes)]
     for f in fiches:
         lignes.append(";".join(str(x) for x in (
@@ -1550,7 +1718,9 @@ def csv_signaux(fiches: Sequence[Mapping[str, Any]]) -> bytes:
             _horodatage(f["debut"]), _horodatage(f["fin"]), f["n_ticks"],
             f["minutes"], f["couverture"],
             "" if f["ecart_max_ms"] is None else f["ecart_max_ms"],
-            "" if f["ecoutees"] is None else f["ecoutees"], f["code"],
+            "" if f["ecoutees"] is None else f["ecoutees"],
+            "" if f.get("sans_historique") is None else f["sans_historique"],
+            f["code"],
             f["motif"], "" if f["joue"] is None else int(f["joue"]))))
     return ("\n".join(lignes) + "\n").encode("utf-8")
 

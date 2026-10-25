@@ -382,7 +382,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 14
+VERSION_EXPERIENCES = 15
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:
