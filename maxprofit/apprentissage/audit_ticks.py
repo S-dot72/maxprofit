@@ -900,9 +900,9 @@ class AuditTicks:
                     debut_serie, fin_serie,
                     f"{duree} min sans battement en base, ticks présents : "
                     f"contrôle des battements non testable", duree)
-        # Le débit, jugé contre la paire elle-même, en ticks DISTINCTS : le
-        # collecteur écarte les doublons depuis le 25/10, et un jour doublé
-        # face à un jour simple n'est pas un débit anormal.
+        # Le débit, jugé contre la paire elle-même, en ticks DISTINCTS : un
+        # jour à flux doublé face à un jour simple n'est pas un débit
+        # anormal.
         par_jour: dict[int, list[int]] = {}
         for m, r in resumes.items():
             par_jour.setdefault(_jour(m), []).append(r["distincts"])
@@ -1662,8 +1662,9 @@ class AuditTicks:
                 f"des bougies (tick_count) et les débits les comptent ; les "
                 f"débits sont aussi donnés en ticks distincts. Les prix, "
                 f"l'OHLC et les trajectoires n'en sont pas changés. Le "
-                f"collecteur les écarte depuis son déploiement du 25/10/2026 "
-                f"(colonne « flux doublé » : la frontière, jour par jour).")
+                f"collecteur les a écartés quelques heures le 25/10/2026, "
+                f"correction retirée en attendant l'enquête (colonne « flux "
+                f"doublé » : la fenêtre, jour par jour).")
         if p["horodates"] and p["seconde_ronde"] >= 0.9 * p["horodates"]:
             limites.append(
                 "Horodatages d'ouverture du broker à la seconde entière : "

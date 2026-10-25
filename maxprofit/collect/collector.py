@@ -93,31 +93,6 @@ class CandleAggregator:
         self._closed: List[Candle] = []
         self._ticks: Dict[str, List[Tick]] = {}
         self._ticks_closed: List[List[Tick]] = []
-        #: (horodatage, prix) déjà reçus dans la minute en cours, par paire.
-        #:
-        #: ⚠ CHAQUE TICK ARRIVAIT DEUX FOIS. Le collecteur et le courtier
-        #: vivent dans le même processus, chacun avec son socket abonné aux
-        #: mêmes paires, et la bibliothèque empile les ticks des deux sockets
-        #: dans UN tampon global (`global_value.pairs[paire]['ticks']`), celui
-        #: que vide le collecteur. Mesuré par /ticks du 18 au 25/10 : 47,6 %
-        #: de doublons exacts — même instant, même prix — sur toutes les
-        #: paires, sauf quand le courtier n'était plus abonné. Les prix n'en
-        #: étaient pas faussés ; le nombre de ticks des bougies doublait, et
-        #: les chemins pesaient ~20 % de plus.
-        #:
-        #: Les écarter ICI garde la règle de l'agrégateur : bougie et chemin
-        #: viennent des mêmes ticks, comptés une fois. Un doublon d'une minute
-        #: déjà close était déjà écarté comme tick en retard. Deux ticks
-        #: distincts au même instant et au même prix ne se distinguent pas :
-        #: la table `ticks` les confondait déjà sur sa clé (paire, instant).
-        #:
-        #: Rupture datée (déploiement du 25/10/2026) : avant, `tick_count` et
-        #: les chemins comptent les doublons ; /ticks montre la frontière jour
-        #: par jour (colonne « flux doublé »).
-        self._vus: Dict[str, set] = {}
-        #: Écartés depuis le démarrage, pour le journal : en mémoire seulement.
-        self.doublons_ecartes = 0
-        self.tardifs_ecartes = 0
 
     def add(self, tick: Tick) -> None:
         bucket = bucket_of_ms(tick.ts_ms, self.tf_sec)
@@ -138,13 +113,7 @@ class CandleAggregator:
             self._commencer_ticks(tick)
             return
         if bucket < b.ts_sec:
-            self.tardifs_ecartes += 1
             return  # tick en retard sur une bougie déjà fermée : ignoré
-        vus = self._vus[tick.pair]
-        if (tick.ts_ms, tick.price) in vus:
-            self.doublons_ecartes += 1
-            return  # le même tick, reçu par le second socket : ignoré
-        vus.add((tick.ts_ms, tick.price))
         b.high = max(b.high, tick.price)
         b.low = min(b.low, tick.price)
         b.close = tick.price
@@ -153,7 +122,6 @@ class CandleAggregator:
             self._ticks[tick.pair].append(tick)
 
     def _commencer_ticks(self, tick: Tick) -> None:
-        self._vus[tick.pair] = {(tick.ts_ms, tick.price)}
         if self.garder_ticks:
             self._ticks[tick.pair] = [tick]
 
@@ -190,7 +158,6 @@ class CandleAggregator:
         rows = self.drain_closed()
         rows += [self._candle(p, b, complete=False) for p, b in self._cur.items()]
         self._cur.clear()
-        self._vus.clear()
         if self.garder_ticks:
             self._ticks_closed.extend(p for p in self._ticks.values() if p)
             self._ticks.clear()
@@ -796,9 +763,6 @@ class Collector:
         if now - self._t_backup >= self.cfg.backup_sec:
             self.backup()
             self._t_backup = now
-            log.info("Ticks écartés depuis le démarrage : %d doublon(s), %d "
-                     "en retard.", self.agg.doublons_ecartes,
-                     self.agg.tardifs_ecartes)
         if now - self._t_sync >= self.cfg.sync_sec:
             turso.synchroniser(self.conn)
             self._t_sync = now
