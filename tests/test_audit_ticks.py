@@ -286,6 +286,80 @@ def test_une_fenetre_sans_battement_a_un_horodatage_incertain(tmp_path):
     assert r["controles"]["signaux"]["codes"]["TIMESTAMP_UNCERTAIN"] == 1
 
 
+def test_un_trou_de_l_historique_des_battements_n_est_pas_un_arret(tmp_path):
+    """Premier rapport réel : 586 signaux exclus parce que la BASE n'avait
+    pas les battements de 4,7 jours où les 20 paires avaient leurs ticks.
+    Un collecteur arrêté n'écrit pas de ticks : ce trou-là est non testable,
+    pas un horodatage douteux."""
+    g = "GBPUSD_otc"
+    flux = _flux(minutes=240) + _flux(pair=g, minutes=90)
+    conn = _base(tmp_path, flux, battements=False)
+    for s in range(T0 - 60, T0 + 1800, 30):        # 30 min de battements
+        MarketWriter(conn).heartbeat(s, 1)
+    conn.commit()
+    audit, r = _auditer(conn, paires=(P, g), minutes=240, signaux={
+        P: [_signal(T0 + 7200)], g: [_signal(T0 + 3600)]})
+    t, s = r["controles"]["trous"], r["controles"]["signaux"]
+    # Écoutées jusqu'à 00:30 (dernier battement 00:29:30, tolérance 90 s).
+    # EURUSD : 209 min sans battement, ticks continus → sans historique.
+    # GBPUSD : ticks sur 59 des 209 minutes du trou → toujours suspect.
+    assert t["minutes_sans_historique"] == 209
+    assert t["minutes_sans_battement"] == 59
+    assert s["codes"]["OK"] == 1 and s["codes"]["TIMESTAMP_UNCERTAIN"] == 1
+    assert s["complets_sans_historique"] == 1
+    fiche = next(f for f in audit.fiches_signaux if f["paire"] == P)
+    assert fiche["code"] == "OK" and fiche["sans_historique"] == 30
+    assert _comptes(r)[("WARNING", "historique des battements absent")] == 1
+    assert _comptes(r)[("WARNING", "ticks sans battement du collecteur")] == 1
+    assert t["battements_par_jour"] == {str(T0): [60, 480]}
+    assert any("Historique des battements absent" in x for x in r["limites"])
+    assert "minutes_sans_historique" in at.csv_signaux(
+        audit.fiches_signaux).decode().splitlines()[0]
+    assert "sans historique des battements" in texte(r)
+
+
+def test_l_ordre_d_arrivee_est_une_classe_explicable(tmp_path):
+    """L'agrégateur prend la clôture à l'ARRIVÉE, l'encodeur trie par
+    horodatage : une clôture qui est un autre tick de la minute n'est pas
+    une erreur de stockage. Un bas qui diffère en reste une."""
+    flux = _flux()
+    conn = _base(tmp_path, flux)
+    m = T0 + 600
+    minute = [t.price for t in flux if m * 1000 <= t.ts_ms < (m + 60) * 1000]
+    autre = next(x for x in reversed(minute) if x != minute[-1])
+    conn.execute("UPDATE candles SET close = ? WHERE pair = ? AND ts_sec = ?",
+                 (autre, P, m))
+    conn.execute("UPDATE candles SET low = low - 0.001 WHERE pair = ? AND "
+                 "ts_sec = ?", (P, m + 60))
+    conn.commit()
+    _a, r = _auditer(conn)
+    k = r["controles"]["concordance"]
+    assert k["classes"]["ordre d'arrivée"] == 1
+    assert k["champs_ordre"] == {"c": 1}
+    assert k["classes"]["écart inexpliqué"] == 1
+    assert k["champs_inexpliques"] == {"l": 1}
+    assert _comptes(r)[("INFO", "ordre d'arrivée ≠ horodatages")] == 1
+    assert "Pris à l'arrivée" in texte(r)
+
+
+def test_les_doublons_comptent_en_ticks_distincts(tmp_path):
+    """Chaque tick reçu deux fois (deux sockets sur un même tampon) : les
+    prix ne changent pas, les comptes doublent. Les débits et le seuil de la
+    minute pauvre se lisent en ticks distincts."""
+    flux = [t for t in _flux(pas_ms=15_000) for _ in range(2)]
+    conn = _base(tmp_path, flux)
+    _a, r = _auditer(conn)
+    h, t = r["controles"]["horodatages"], r["controles"]["trous"]
+    assert h["doublons_exacts"] == h["ticks"] // 2
+    assert h["minutes_doublees"] == 60 and r["paires"][P]["doublees"] == 1.0
+    assert t["ticks_par_minute"][2] == 8 and h["ticks_distincts_min"][2] == 4
+    assert t["minutes_pauvres"] == 60, "4 ticks distincts < 5"
+    assert r["statuts"]["horodatages"] == "WARNING"
+    assert r["controles"]["concordance"]["classes"] == {"identique": 60}
+    assert any("Doublons exacts" in x for x in r["limites"])
+    assert "ticks DISTINCTS" in texte(r)
+
+
 # --------------------------------------------------------------------------- #
 # Prix d'exécution
 # --------------------------------------------------------------------------- #
@@ -334,6 +408,7 @@ def test_les_prix_du_broker_retrouves_dans_le_flux(tmp_path):
     assert d["signal_clic"][1] == 500 and d["clic_acceptation"][1] == 1000
     assert d["acceptation_ouverture"][1] == 150, "500 − 350 de décalage"
     assert "ordres_ticks.csv" in [nom for _c, nom, _l in fichiers(audit)]
+    assert "artefacts d'horodatage" in texte(r), "ouvertures à la seconde"
 
 
 def test_la_convention_de_signe_des_ecarts(tmp_path):

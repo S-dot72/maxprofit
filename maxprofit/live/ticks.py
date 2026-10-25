@@ -174,7 +174,9 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         "horodatages": (
             f"résolution {_ms(h['granularite_ms'])} ; {h['hors_minute']} "
             f"hors de sa minute, {h['decroissants']} décroissant(s) ; "
-            f"doublons exacts {_part(h['doublons_exacts'], h['ticks'])} ; "
+            f"doublons exacts {_part(h['doublons_exacts'], h['ticks'])} "
+            f"(minutes à flux doublé "
+            f"{_part(h.get('minutes_doublees', 0), t['minutes_avec_ticks'])}) ; "
             f"gels de {GEL_SEC} s ou plus sur "
             f"{_part(h['minutes_gelees'], t['minutes_avec_ticks'])} des "
             f"minutes"),
@@ -191,7 +193,10 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
             f"minute {k['classes'].get(DECALAGE, 0)}"),
         "trous": (
             f"{_pc(t['part_manquante_ecoutee'])} des minutes écoutées sans "
-            f"ticks ; {t['interruptions_longues']} interruption(s) longue(s)"),
+            f"ticks ; {t['interruptions_longues']} interruption(s) longue(s)"
+            + (f" ; {_n(t['minutes_sans_historique'])} minute(s) de ticks sans "
+               f"historique des battements (hors contrôle)"
+               if t.get("minutes_sans_historique") else "")),
         "signaux": (
             f"{s['signaux'][1]}/{s['signaux'][0]} fenêtres de 30 min "
             f"complètes ({_part(s['signaux'][1], s['signaux'][0])})"),
@@ -221,11 +226,19 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"({_part(t['minutes_avec_ticks'], t['minutes_attendues'])}) ; "
         f"absentes alors que le collecteur battait "
         f"{_n(t['manquantes_ecoutees'])}, collecteur muet "
-        f"{_n(t['manquantes_muettes'])} ; ticks {_n(h['ticks'])}.",
+        f"{_n(t['manquantes_muettes'])}, sans historique des battements "
+        f"{_n(t.get('manquantes_sans_historique', 0))} ; ticks "
+        f"{_n(h['ticks'])}.",
         f"Ticks par minute (distribution observée, aucune cadence imposée) : "
         f"p10 {_v(tpm[0])}, p25 {_v(tpm[1])}, médiane {_v(tpm[2])}, p75 "
-        f"{_v(tpm[3])}, p90 {_v(tpm[4])} ; minutes à moins de 5 ticks : "
+        f"{_v(tpm[3])}, p90 {_v(tpm[4])} ; en ticks DISTINCTS (doublons "
+        f"exacts ôtés) : " + _quintiles(h.get("ticks_distincts_min"))
+        + f" ; minutes à moins de 5 ticks distincts : "
         f"{t['minutes_pauvres']}.",
+        "Battements du collecteur en base, par jour (trouvés/attendus) : "
+        + (" · ".join(f"{_d(int(j), False)} {v[0]}/{v[1]}"
+                      for j, v in t.get("battements_par_jour", {}).items())
+           or "—") + ".",
         f"Interruptions de {INTERRUPTION_LONGUE_MIN} min ou plus : "
         f"{t['interruptions_longues']} ({_n(t['interruptions_min'])} min) ; "
         f"principales : {principales}."]
@@ -238,7 +251,9 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"Granularité {_ms(h['granularite_ms'])} (à la seconde ronde "
         f"{_pc(h['part_seconde_ronde'])}) ; même instant {h['doublons_instant']}"
         f" (dont {h['doublons_exacts']} doublons exacts, gardés) ; minutes de "
-        f"ticks sans battement du collecteur {t['minutes_sans_battement']}.",
+        f"ticks sans battement du collecteur {t['minutes_sans_battement']}, "
+        f"dans un trou de l'historique des battements (non testable) "
+        f"{t.get('minutes_sans_historique', 0)}.",
         f"Écart entre ticks consécutifs : p25 ≤ {_ms(e['p25'])}, médiane ≤ "
         f"{_ms(e['p50'])}, p75 ≤ {_ms(e['p75'])}, p90 ≤ {_ms(e['p90'])}, p99 ≤ "
         f"{_ms(e['p99'])}, max {_ms(e['max'])} ; minutes avec un gel de "
@@ -267,7 +282,10 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"ticks (couverture)."
         + (" Champs en défaut : " + ", ".join(
             f"{x} {v}" for x, v in k["champs_inexpliques"].items())
-           if k["champs_inexpliques"] else ""))
+           if k["champs_inexpliques"] else "")
+        + (" Pris à l'arrivée (ordre d'arrivée) : " + ", ".join(
+            f"{x} {v}" for x, v in k["champs_ordre"].items()) + "."
+           if k.get("champs_ordre") else ""))
 
     # 5. Signaux
     codes = s["codes"]
@@ -278,7 +296,9 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"Admissibles {s['signaux'][0]}, exploitables {codes.get(COMPLETE, 0)},"
         f" exclus {s['signaux'][0] - codes.get(COMPLETE, 0)} ; joués (règle "
         f"de l'heure) {s['joues'][1]}/{s['joues'][0]} ; trop près d'un bord "
-        f"de la fenêtre auditée : {s['hors_fenetre']}.",
+        f"de la fenêtre auditée : {s['hors_fenetre']} ; exploitables dans un "
+        f"trou de l'historique des battements (contrôle des battements non "
+        f"testable) : {s.get('complets_sans_historique', 0)}.",
         "Exclusions (premier motif rencontré) : " + " · ".join(
             f"{code} {codes.get(code, 0)}" for code in CODES
             if codes.get(code)) + ("." if any(
@@ -389,21 +409,42 @@ def _texte_executions(p: Mapping) -> list[str]:
         "Délais (p10 / médiane / p90, ms) : " + " ; ".join(
             f"{nom.replace('_', ' → ')} {_v(v[0])} / {_v(v[1])} / {_v(v[2])}"
             for nom, v in d.items()) + ".")
+    if p["horodates"] and p["seconde_ronde"] == p["horodates"]:
+        lignes.append(
+            "⚠ L'ouverture du broker est horodatée à la seconde entière pour "
+            "tous les ordres : l'instant réel est jusqu'à 999 ms plus tard. "
+            "« vs flux à l'ouverture (broker) », « acceptation → ouverture » "
+            "et « signal → ouverture » portent cette troncature (d'où des "
+            "délais négatifs) : ce sont des artefacts d'horodatage, pas des "
+            "délais ni des coûts.")
     return lignes
+
+
+def _quintiles(q: Sequence | None) -> str:
+    if not q:
+        return "—"
+    return (f"p10 {_v(q[0])}, p25 {_v(q[1])}, médiane {_v(q[2])}, p75 "
+            f"{_v(q[3])}, p90 {_v(q[4])}")
 
 
 def _tableaux(r: Mapping) -> list[str]:
     def ligne(nom, v):
         tm = v["ticks_min"][2]
+        dist = (v.get("distincts_min") or [None] * 5)[2]
+        dbl = v.get("doublees")
         p99 = v["ecarts_ms"][3]
         return (f"{nom:7} {_pc(v['couverture'], 0):>6} "
                 f"{'—' if tm is None else tm:>6} "
+                f"{'—' if dist is None else dist:>5} "
+                f"{'—' if dbl is None else f'{100 * dbl:.0f} %':>5} "
                 f"{_ms(p99) if p99 is not None else '—':>8} {v['gels']:4} "
                 f"{v['pauvres']:4} {v['inexpliques']:5} "
                 f"{v['manquantes_ecoutees']:6}")
-    entete = "        couv.  tk/min  écart99 gels pauv inexp manq.é"
+    entete = ("        couv.  tk/min  dist.  dbl. écart99 gels pauv inexp "
+              "manq.é")
     lignes = ["", "<b>7. Par paire, par jour, par heure</b> (couverture des "
-              "minutes attendues ; médiane des ticks par minute ; 99e "
+              "minutes attendues ; médiane des ticks par minute, puis des "
+              "ticks distincts ; part des minutes à flux doublé ; 99e "
               "percentile de l'écart entre ticks)", "<pre>" + entete]
     for paire, v in r["paires"].items():
         lignes.append(ligne(paire.replace("_otc", "")[:7], v)

@@ -58,11 +58,43 @@ la première mesure ; leur justification est ci-dessous.
 | Horodatages | FAIL : granularité ≥ 1 s, tick hors de sa minute, ordre décroissant ; WARNING : doublons exacts > 1 % des ticks ou gels ≥ 10 s sur > 1 % des minutes | Une étude sous la minute exige la ms ; un gel de 10 s représente ~20 ticks manquants au débit observé à la conception. |
 | Compression | FAIL : chemin illisible, réencodage différent du stocké, ou `MarketReader.ticks()` différent du décodage, sur l'échantillon contrôlé | « Sans perte » doit être démontré sur les données, pas supposé. |
 | Concordance M1 | FAIL : écarts inexpliqués > 0,1 % des minutes comparées ; WARNING : au moins un, une minute de ticks sans bougie, ou > 2 % d'écarts explicables | Bougie et chemin viennent des mêmes ticks : tout écart inexpliqué est une erreur de stockage. |
-| Trous | sur les minutes où le collecteur battait : FAIL > 5 % sans ticks, WARNING > 1 % | Au-delà de 5 %, une fenêtre de 30 min a plus d'une chance sur deux d'être touchée. |
+| Trous | sur les minutes où le collecteur battait : FAIL > 5 % sans ticks, WARNING > 1 % ; les minutes sans historique des battements (§2 bis) sortent du contrôle | Au-delà de 5 %, une fenêtre de 30 min a plus d'une chance sur deux d'être touchée. |
 | Couverture des signaux | FAIL < 50 % de fenêtres complètes, WARNING < 80 % | En dessous de 50 %, l'échantillon exploitable cesse d'être représentatif. |
 | Prix d'exécution | prix d'ouverture ET de clôture retrouvés dans le flux à ± 1 s : FAIL < 70 %, WARNING < 90 % ; NOT TESTABLE sous 10 ordres | Seul contrôle externe au flux. |
 | Ticks tardifs | NOT TESTABLE | Aucun compteur persistant. |
 | Heure de réception | NOT TESTABLE | Non stockée. |
+
+## 2 bis. Règles ajoutées après le premier rapport réel (25/10)
+
+Le premier `/ticks` réel (18/10 17:19 → 25/10 17:19, code c0a1fbd) a montré
+trois classements faux. Les règles ci-dessous les corrigent ; elles sont
+postérieures à cette mesure, et le disent.
+
+- **Historique des battements absent ≠ collecteur arrêté.** Constat : 586 des
+  596 exclusions de signaux (TIMESTAMP_UNCERTAIN) tombaient dans deux trous de
+  la table `uptime` (13 h, puis 4,7 jours) pendant lesquels les 20 paires
+  avaient leurs ticks sans interruption. Le collecteur écrit ticks et
+  battements depuis la même boucle (`Collector._taches_periodiques`) : des
+  ticks continus prouvent qu'il tournait, les battements manquent à la base.
+  Règle : un trou de battements d'au moins 2 h (`HISTORIQUE_ABSENT_SEC`), les
+  bords de la fenêtre comptant comme des battements, couvert par les ticks de
+  la paire sur au moins 90 % de ses minutes (`HISTORIQUE_COUVERT`), rend ses
+  minutes « sans historique » : le contrôle par les battements y est NOT
+  TESTABLE (anomalie « historique des battements absent »), ni réussi ni
+  échoué. Un trou plus court, ou peu couvert (cas d'un horodatage décalé
+  d'une heure dans une vraie panne), reste « ticks sans battement ».
+- **Ordre d'arrivée.** L'agrégateur prend l'ouverture et la clôture de la
+  bougie dans l'ordre où les ticks ARRIVENT ; l'encodeur trie le chemin par
+  horodatage. Nombre de ticks, haut et bas égaux, et une ouverture ou une
+  clôture de bougie qui est un autre tick de la minute : écart explicable
+  « ordre d'arrivée » (anomalie INFO, gardée au registre parce qu'elle
+  montre que des ticks arrivent hors de l'ordre de leurs horodatages).
+- **Doublons exacts.** 47,6 % des ticks avaient un jumeau (même instant,
+  même prix). Les débits sont aussi donnés en ticks DISTINCTS, une minute
+  est « à flux doublé » à 40 % de doublons ou plus (`DOUBLES_MIN`), et le
+  seuil de la minute pauvre (`INSUFFICIENT_COVERAGE`) se lit en ticks
+  distincts. Les prix, l'OHLC et les trajectoires n'en sont pas changés ;
+  le `tick_count` des bougies les compte.
 
 ## 3. Règles de complétude d'une fenêtre de signal
 
@@ -75,11 +107,11 @@ dans cet ordre (le premier échec donne le code) :
 | DECOMPRESSION_ERROR | une minute de la fenêtre est illisible |
 | INTERNAL_GAP | au moins une minute absente |
 | INVALID_ORDER | un tick hors de sa minute ou un ordre décroissant |
-| TIMESTAMP_UNCERTAIN | une minute de ticks sans battement du collecteur, ou horodatages à la seconde |
+| TIMESTAMP_UNCERTAIN | une minute de ticks sans battement du collecteur hors trou de l'historique des battements (§2 bis), ou horodatages à la seconde |
 | START_BOUNDARY_MISSING | premier tick à plus de 5 s du début |
 | END_BOUNDARY_MISSING | dernier tick à plus de 5 s de la fin |
 | FEED_FREEZE | un écart de 10 s ou plus entre deux ticks |
-| INSUFFICIENT_COVERAGE | une minute à moins de 5 ticks |
+| INSUFFICIENT_COVERAGE | une minute à moins de 5 ticks distincts |
 | M1_MISMATCH | une minute dont la concordance M1 est inexpliquée |
 | NO_TICK_AT_DECISION | aucun tick dans les 5 s qui précèdent la décision |
 
