@@ -186,7 +186,8 @@ class Apprenti:
                         audit_ticks.ajouter_paire(
                             paire, bougies, lecteur.tick_paths(
                                 paire, audit_ticks.debut, audit_ticks.fin),
-                            de_la_paire, respirer=respirer)
+                            de_la_paire, respirer=respirer,
+                            relire=lecteur.ticks)
                     except Exception as erreur:      # noqa: BLE001
                         log.exception("Audit des ticks en échec sur %s",
                                       paire)
@@ -289,11 +290,11 @@ class Apprenti:
             ancien=((getattr(ancien, "laboratoire", None) or {})
                     .get("entrees")),
             fin=fin, jours_collectes=qualite.jours_collectes)
-        # L'étape 0 des ticks : le résumé est gardé avec le laboratoire, la
-        # fiche des anomalies en mémoire seulement (le CSV de /ticks).
+        # L'étape 0 des ticks : le résumé est gardé avec le laboratoire, les
+        # fiches CSV (anomalies, signaux, ordres) en mémoire seulement.
         if resultat_ticks is not None:
             nouveau.laboratoire["ticks"] = resultat_ticks[0]
-            course.anomalies_ticks = resultat_ticks[1]
+            course.fichiers_ticks = resultat_ticks[1]
         # Les trois stratégies simples (/simples) : le choix figé de leur
         # fenêtre vient du rejeu précédent.
         from maxprofit.live.simples import simples
@@ -362,9 +363,9 @@ class Apprenti:
             return None, repr(erreur)
 
     def _fin_de_l_audit(self, audit, erreur, conn, lecteur):
-        """Les ordres réels comparés au flux, puis (résumé, anomalies)."""
+        """Les ordres réels comparés au flux, puis (résumé, fiches CSV)."""
         from maxprofit.live.protocole import commit
-        from maxprofit.live.ticks import jours_audites, lire_ordres
+        from maxprofit.live.ticks import fichiers, jours_audites, lire_ordres
         if audit is None:
             return None if erreur is None else (
                 {"erreur": erreur}, [])
@@ -373,7 +374,7 @@ class Apprenti:
             return (audit.resultat(commit=commit() or "",
                                    parametres_extra={"jours":
                                                      jours_audites()}),
-                    audit.anomalies_triees())
+                    fichiers(audit))
         except Exception as erreur:              # noqa: BLE001
             log.exception("Audit des ticks en échec")
             return {"erreur": repr(erreur)}, []

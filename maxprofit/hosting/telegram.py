@@ -424,8 +424,8 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._reference8: Callable[[], Awaitable[str]] | None = None
         self._entrees: Callable[[], Awaitable[str]] | None = None
         self._simples: Callable[[], Awaitable[str]] | None = None
-        self._ticks: Callable[[], Awaitable[tuple[str, bytes | None]]] \
-            | None = None
+        self._ticks: Callable[[], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
         self._decision: Callable[[], Awaitable[str]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
@@ -662,17 +662,17 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
             else:
-                resume, fichier = await self._ticks()
+                resume, fiches = await self._ticks()
                 await self.client.envoyer(chat, resume, CLAVIER)
-                if fichier:
+                for contenu, nom, legende in fiches:
                     try:
                         await self.client.envoyer_document(
-                            chat, fichier, "anomalies_ticks.csv",
-                            "Une ligne par anomalie, la plus grave d'abord")
+                            chat, contenu, nom, legende)
                     except Exception as erreur:          # noqa: BLE001
-                        log.error("Fiche des ticks non envoyée : %s", erreur)
+                        log.error("Fiche %s non envoyée : %s", nom, erreur)
                         await self.client.envoyer(
-                            chat, f"Fiche non envoyée : {erreur}", CLAVIER)
+                            chat, f"Fiche {nom} non envoyée : {erreur}",
+                            CLAVIER)
         elif texte.startswith("/simples"):
             if self._simples is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)

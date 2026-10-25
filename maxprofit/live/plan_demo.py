@@ -3494,18 +3494,17 @@ def entrees(course) -> str:
     return texte((a.laboratoire or {}).get("entrees") if a else None)
 
 
-def ticks(course) -> tuple[str, bytes | None]:
-    """`/ticks` : l'étape 0, la qualité des ticks (lecture seule), et la fiche
-    CSV des anomalies si le rejeu a tourné depuis le démarrage."""
-    from maxprofit.apprentissage.audit_ticks import csv_anomalies
+def ticks(course) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/ticks` : l'étape 0, l'audit forensique des ticks (lecture seule),
+    et ses fiches CSV (anomalies, signaux, ordres) si le rejeu a tourné
+    depuis le démarrage."""
     from maxprofit.live.ticks import texte
     if course is None:
-        return "Course indisponible.", None
+        return "Course indisponible.", []
     a = course.etat.apprentissage
-    anomalies = getattr(course, "anomalies_ticks", None)
-    fichier = csv_anomalies(anomalies) if anomalies else None
+    fichiers = list(getattr(course, "fichiers_ticks", None) or [])
     return texte((a.laboratoire or {}).get("ticks") if a else None,
-                 fichier is not None), fichier
+                 bool(fichiers)), fichiers
 
 
 def simples(course) -> str:
