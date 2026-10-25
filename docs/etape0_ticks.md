@@ -101,11 +101,9 @@ postérieures à cette mesure, et le disent.
   chacun avec son socket abonné aux mêmes paires, et la bibliothèque empile
   les ticks des deux sockets dans un seul tampon global, celui que vide le
   collecteur. Une déduplication (instant, prix) dans `CandleAggregator` a été
-  déployée le 25/10/2026 (#89) puis RETIRÉE le même jour : elle ne doit
-  revenir qu'après l'enquête (docs/enquete_doublons.md), dans une
-  modification distincte. Pendant ces quelques heures, chemins et
-  `tick_count` ne comptent pas les doublons ; la colonne « flux doublé » de
-  /ticks situe la fenêtre.
+  fusionnée le 25/10/2026 à 21:50 UTC (#89) puis RETIRÉE à 21:55 UTC
+  (#90) : au plus quelques minutes en service. Elle ne doit revenir qu'après
+  l'enquête (docs/enquete_doublons.md), dans une modification distincte.
 
 ## 3. Règles de complétude d'une fenêtre de signal
 
