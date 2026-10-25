@@ -483,6 +483,7 @@ def test_le_rapport_et_les_fiches(tmp_path):
     assert "interruption longue" in registre
     assert "pas encore mesurée" in texte(None)
     assert "a échoué" in texte({"erreur": "boom"})
+    assert "version précédente" in texte({"controles": {"trous": {}}})
 
 
 def test_la_commande_est_au_menu():

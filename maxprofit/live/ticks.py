@@ -148,6 +148,10 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         return (f"🔬 Qualité des ticks : l'audit a échoué au dernier rejeu "
                 f"({_e(r['erreur'])}). Le rejeu, lui, a continué ; détails "
                 f"dans les journaux du service.")
+    if r and "controles" in r and "compression" not in r["controles"]:
+        return ("🔬 Qualité des ticks : le résultat gardé vient d'une version "
+                "précédente de l'audit ; le rejeu en cours le recalcule au "
+                "nouveau format (quelques minutes après un déploiement).")
     if not r or "controles" not in r:
         return ("🔬 Qualité des ticks : pas encore mesurée — le prochain rejeu "
                 "du laboratoire la calculera (AUDIT_TICKS_JOURS, 7 jours par "
