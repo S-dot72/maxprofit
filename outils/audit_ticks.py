@@ -17,7 +17,11 @@ lèverait.
 Sorties, dans `--sortie` (par défaut le dossier courant) :
   audit_ticks.json       le résultat complet, comme le garde le bot ;
   audit_ticks.txt        le rapport lisible ;
-  anomalies_ticks.csv    une ligne par anomalie, la plus grave d'abord.
+  anomalies_ticks.csv    le registre des anomalies, la plus grave d'abord ;
+  signaux_ticks.csv      chaque signal : couverture et motif d'exclusion ;
+  ordres_ticks.csv       chaque ordre réel face au flux.
+
+Méthode, inventaire, codes et conventions : docs/etape0_ticks.md.
 
 Les signaux ZoneH1 sont rejoués avec la stratégie par défaut et la garde de
 calibration de la course, sur les bougies des trois jours qui précèdent la
@@ -38,10 +42,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from maxprofit.apprentissage.audit_ticks import csv_anomalies  # noqa: E402
 from maxprofit.core.config import charger_env_local            # noqa: E402
 from maxprofit.live.ticks import (                             # noqa: E402
-    lire_battements, lire_ordres, nouvel_audit)
+    fichiers, lire_battements, lire_ordres, nouvel_audit)
 from maxprofit.store.market import MarketReader                # noqa: E402
 
 #: Historique lu avant la fenêtre pour que ZoneH1 y trouve ses zones H1.
@@ -57,7 +60,9 @@ def ouvrir_en_lecture_seule():
     return conn
 
 
-def auditer(conn, debut: int, fin: int, paires=None) -> tuple[dict, list]:
+def auditer(conn, debut: int, fin: int, paires=None):
+    """(résultat, audit) : le résultat tel que le garde le bot, et l'audit
+    lui-même pour ses fiches."""
     from maxprofit.apprentissage.historique import exemples_historiques
     from maxprofit.live.plan_demo import (
         dans_la_plage_de_calibration, seuil_contre_heure)
@@ -82,11 +87,11 @@ def auditer(conn, debut: int, fin: int, paires=None) -> tuple[dict, list]:
                 strategie.p.tolerance_pct, f))
         audit.ajouter_paire(paire, bougies,
                             lecteur.tick_paths(paire, audit.debut, audit.fin),
-                            signaux)
+                            signaux, relire=lecteur.ticks)
     audit.comparer_ordres(lire_ordres(conn), lecteur.ticks)
     return (audit.resultat(commit=commit() or "local",
                            parametres_extra={"outil": "outils/audit_ticks.py"}),
-            audit.anomalies_triees())
+            audit)
 
 
 def main(argv=None) -> int:
@@ -106,7 +111,7 @@ def main(argv=None) -> int:
     paires = [p.strip() for p in args.paires.split(",") if p.strip()]
     conn = ouvrir_en_lecture_seule()
     try:
-        resultat, anomalies = auditer(conn, debut, fin, paires)
+        resultat, audit = auditer(conn, debut, fin, paires)
     finally:
         conn.close()
     from maxprofit.live.ticks import texte
@@ -117,10 +122,12 @@ def main(argv=None) -> int:
     lisible = html.unescape(
         re.sub(r"</?(b|pre|code)>", "", texte(resultat)))
     (sortie / "audit_ticks.txt").write_text(lisible, encoding="utf-8")
-    (sortie / "anomalies_ticks.csv").write_bytes(csv_anomalies(anomalies))
+    noms = ["audit_ticks.json", "audit_ticks.txt"]
+    for contenu, nom, _legende in fichiers(audit):
+        (sortie / nom).write_bytes(contenu)
+        noms.append(nom)
     print(lisible)
-    print(f"\nÉcrit dans {sortie.resolve()} : audit_ticks.json, "
-          f"audit_ticks.txt, anomalies_ticks.csv")
+    print(f"\nÉcrit dans {sortie.resolve()} : {', '.join(noms)}")
     return 0
 
 
