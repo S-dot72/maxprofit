@@ -139,6 +139,7 @@ class EtatCollecte:
             "age_battement_sec": age,
             "schema_version": version,
             "compteurs": compteurs,
+            "tailles": lecteur.tailles(),
             "couverture": couverture,
             "couverture_totale": couverture_totale,
         }

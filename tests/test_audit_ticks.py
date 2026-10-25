@@ -346,8 +346,17 @@ def test_les_doublons_comptent_en_ticks_distincts(tmp_path):
     """Chaque tick reçu deux fois (deux sockets sur un même tampon) : les
     prix ne changent pas, les comptes doublent. Les débits et le seuil de la
     minute pauvre se lisent en ticks distincts."""
-    flux = [t for t in _flux(pas_ms=15_000) for _ in range(2)]
+    flux = _flux(pas_ms=15_000)
     conn = _base(tmp_path, flux)
+    # Les données d'avant le 25/10 : l'agrégateur, qui écarte désormais les
+    # doublons, les comptait deux fois dans la bougie et dans le chemin.
+    par_minute: dict[int, list] = {}
+    for t in flux:
+        par_minute.setdefault(t.ts_ms // 60_000, []).extend((t, t))
+    MarketWriter(conn).insert_tick_paths(
+        [encoder(x) for x in par_minute.values()])  # le plus fourni gagne
+    conn.execute("UPDATE candles SET tick_count = tick_count * 2")
+    conn.commit()
     _a, r = _auditer(conn)
     h, t = r["controles"]["horodatages"], r["controles"]["trous"]
     assert h["doublons_exacts"] == h["ticks"] // 2
