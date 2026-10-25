@@ -268,32 +268,6 @@ def test_un_tick_en_retard_ne_modifie_pas_une_bougie_deja_close():
     assert en_cours.high == 1.3, "un tick en retard a été absorbé dans la bougie en cours"
 
 
-def test_un_tick_recu_deux_fois_ne_compte_qu_une_fois():
-    """Le courtier et le collecteur ont chacun leur socket, et la
-    bibliothèque met les ticks des deux dans le même tampon : chaque tick
-    arrivait deux fois (47,6 % de doublons mesurés par /ticks). Bougie et
-    chemin le comptent une fois ; deux prix au même instant restent deux."""
-    agg = CandleAggregator(tf_sec=60, garder_ticks=True)
-    flux = [Tick("EURUSD_otc", T0_MS, 1.0), Tick("EURUSD_otc", T0_MS, 1.0),
-            Tick("EURUSD_otc", T0_MS + 500, 1.2),
-            Tick("EURUSD_otc", T0_MS + 500, 1.1),       # même instant, autre prix
-            Tick("EURUSD_otc", T0_MS + 500, 1.2),       # doublon, en désordre
-            Tick("EURUSD_otc", T0_MS + 1000, 1.3)]
-    for t in flux:
-        agg.add(t)
-    agg.add(Tick("EURUSD_otc", T0_MS + 60_000, 1.4))
-    agg.add(Tick("EURUSD_otc", T0_MS + 1000, 1.3))      # doublon en retard
-    (bougie,) = agg.drain_closed()
-    assert bougie.tick_count == 4 and bougie.close == 1.3
-    (chemin,) = agg.drain_ticks()
-    assert [(t.ts_ms - T0_MS, t.price) for t in chemin] == [
-        (0, 1.0), (500, 1.2), (500, 1.1), (1000, 1.3)]
-    assert agg.doublons_ecartes == 2 and agg.tardifs_ecartes == 1
-    (en_cours,) = agg.drain_all()
-    agg.add(Tick("EURUSD_otc", T0_MS + 60_000, 1.4))
-    assert agg.drain_all()[0].tick_count == 1, "repart à zéro après drain_all"
-
-
 def test_drain_all_marque_les_bougies_en_cours_comme_incompletes():
     """À la déconnexion, la minute n'a pas été observée en entier. Mieux vaut
     une donnée étiquetée douteuse qu'une donnée manquante silencieusement."""

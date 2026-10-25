@@ -96,17 +96,16 @@ postérieures à cette mesure, et le disent.
   distincts. Les prix, l'OHLC et les trajectoires n'en sont pas changés ;
   le `tick_count` des bougies les compte. Le débit anormal se juge aussi en
   ticks distincts.
-- **Cause et correction (collecteur, déploiement du 25/10/2026).** Le
-  collecteur et le courtier partagent le processus, chacun avec son socket
-  abonné aux mêmes paires, et la bibliothèque empile les ticks des deux
-  sockets dans un seul tampon global, celui que vide le collecteur.
-  `CandleAggregator` écarte désormais un tick identique (instant, prix) à un
-  tick déjà reçu dans la minute en cours. Rupture datée : avant, chemins et
-  `tick_count` comptent les doublons ; la colonne « flux doublé » de /ticks
-  montre la frontière. Les fusions de bases ne changent rien à la règle :
-  une ligne de chemin est remplacée en entier (« le plus fourni gagne »),
-  jamais concaténée ; seule une minute écrite par l'ancien ET le nouveau
-  collecteur (minute du déploiement) peut garder la version doublée.
+- **Cause probable, correction suspendue.** Hypothèse (non prouvée sur des
+  séquences brutes) : le collecteur et le courtier partagent le processus,
+  chacun avec son socket abonné aux mêmes paires, et la bibliothèque empile
+  les ticks des deux sockets dans un seul tampon global, celui que vide le
+  collecteur. Une déduplication (instant, prix) dans `CandleAggregator` a été
+  déployée le 25/10/2026 (#89) puis RETIRÉE le même jour : elle ne doit
+  revenir qu'après l'enquête (docs/enquete_doublons.md), dans une
+  modification distincte. Pendant ces quelques heures, chemins et
+  `tick_count` ne comptent pas les doublons ; la colonne « flux doublé » de
+  /ticks situe la fenêtre.
 
 ## 3. Règles de complétude d'une fenêtre de signal
 
