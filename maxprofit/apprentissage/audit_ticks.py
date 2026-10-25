@@ -302,8 +302,8 @@ NATURES: dict[str, tuple[str, str, str, str, str]] = {
         "ticks continus prouvent qu'il tournait ; les battements manquent à "
         "la base (bascule ou synchronisation de bases)"),
     "débit anormal": (
-        "trous", "médiane du jour hors de [0,5 ; 2] fois la médiane de la "
-        "paire sur la fenêtre", "qualité du flux à vérifier ce jour-là",
+        "trous", "médiane du jour, en ticks distincts, hors de [0,5 ; 2] "
+        "fois la médiane de la paire sur la fenêtre", "qualité du flux à vérifier ce jour-là",
         "moyenne", "un marché plus calme réduit aussi le débit"),
     "prix d'ouverture absent du flux à ± 1 s": (
         "prix", "le prix d'ouverture du broker n'est égal à aucun tick à "
@@ -900,11 +900,13 @@ class AuditTicks:
                     debut_serie, fin_serie,
                     f"{duree} min sans battement en base, ticks présents : "
                     f"contrôle des battements non testable", duree)
-        # Le débit, jugé contre la paire elle-même.
+        # Le débit, jugé contre la paire elle-même, en ticks DISTINCTS : le
+        # collecteur écarte les doublons depuis le 25/10, et un jour doublé
+        # face à un jour simple n'est pas un débit anormal.
         par_jour: dict[int, list[int]] = {}
         for m, r in resumes.items():
-            par_jour.setdefault(_jour(m), []).append(r["n"])
-        mediane = _quantile([r["n"] for r in resumes.values()], 0.5)
+            par_jour.setdefault(_jour(m), []).append(r["distincts"])
+        mediane = _quantile([r["distincts"] for r in resumes.values()], 0.5)
         if not mediane:
             return
         for jour, valeurs in sorted(par_jour.items()):
@@ -1659,7 +1661,9 @@ class AuditTicks:
                 f"des ticks : même instant, même prix) : le nombre de ticks "
                 f"des bougies (tick_count) et les débits les comptent ; les "
                 f"débits sont aussi donnés en ticks distincts. Les prix, "
-                f"l'OHLC et les trajectoires n'en sont pas changés.")
+                f"l'OHLC et les trajectoires n'en sont pas changés. Le "
+                f"collecteur les écarte depuis son déploiement du 25/10/2026 "
+                f"(colonne « flux doublé » : la frontière, jour par jour).")
         if p["horodates"] and p["seconde_ronde"] >= 0.9 * p["horodates"]:
             limites.append(
                 "Horodatages d'ouverture du broker à la seconde entière : "

@@ -155,6 +155,13 @@ def univers_trade(cfg) -> tuple[str, ...]:
 #: L'adresse publique que Render donne à chaque service.
 ENV_ADRESSE_PUBLIQUE = "RENDER_EXTERNAL_URL"
 
+#: Le stockage de la base, en Mo : 0,5 Go sur l'offre gratuite de Neon.
+ENV_QUOTA_STOCKAGE = "QUOTA_STOCKAGE_MO"
+QUOTA_STOCKAGE_MO_DEFAUT = 512
+NOMS_TABLES = {"tick_paths": "chemins de ticks", "candles": "bougies",
+               "payouts": "payouts", "uptime": "battements",
+               "executions": "ordres", "ticks": "ticks (v1)"}
+
 #: Sous les quinze minutes au-delà desquelles l'offre gratuite endort le
 #: service faute de requête entrante.
 INTERVALLE_EVEIL_SEC = 600
@@ -693,6 +700,9 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
             lignes.append(
                 "Sous-minute : ⚠ DÉSACTIVÉE (STOCKER_TICKS=0) — bougies M1 "
                 "seules, aucune analyse sous la minute possible")
+    taille = _ligne_stockage(details.get("tailles") or {})
+    if taille:
+        lignes.append(taille)
     couv = details.get("couverture")
     if couv and couv.get("fenetre_sec"):
         # Les 24 dernières heures D'ABORD : c'est la seule qui réagit à ce
@@ -729,6 +739,28 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
             lignes.append(f"Campagne : {origine}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
+
+
+def _ligne_stockage(tailles: dict) -> str | None:
+    """« Stockage : 312 Mo sur 512 (61 %) — chemins de ticks 190 Mo, … ».
+    Chaque relève reçoit tout l'historique : c'est ce chiffre qui dit combien
+    de temps une base gratuite peut encore le contenir."""
+    total = tailles.get("total")
+    if not total:
+        return None
+    try:
+        quota = float(os.environ.get(ENV_QUOTA_STOCKAGE, "")
+                      or QUOTA_STOCKAGE_MO_DEFAUT)
+    except ValueError:
+        quota = QUOTA_STOCKAGE_MO_DEFAUT
+    mo = total / 2 ** 20
+    alerte = "⚠ " if quota and mo >= 0.8 * quota else ""
+    detail = ", ".join(
+        f"{NOMS_TABLES.get(t, t)} {v / 2 ** 20:.0f} Mo"
+        for t, v in list((tailles.get("tables") or {}).items())[:3])
+    return (f"Stockage : {alerte}{mo:.0f} Mo sur {quota:.0f} "
+            f"({100 * mo / quota:.0f} %)" if quota else
+            f"Stockage : {mo:.0f} Mo") + (f" — {detail}" if detail else "")
 
 
 def _duree_h(secondes: float) -> str:

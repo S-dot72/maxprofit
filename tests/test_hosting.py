@@ -68,6 +68,24 @@ def test_collecte_vivante_renvoie_200(db):
     assert corps["age_battement_sec"] < health.SEUIL_PANNE_SEC
     assert corps["compteurs"]["ticks"] == 5
     assert corps["schema_version"] >= 1
+    assert corps["tailles"]["total"] > 0, "la place occupée, lue au catalogue"
+
+
+def test_la_ligne_de_stockage_dit_la_place_et_le_quota(monkeypatch):
+    """Chaque relève reçoit tout l'historique : /etat dit combien la base
+    pèse face au quota de stockage, et ce qui pèse le plus."""
+    from maxprofit.hosting.service import _ligne_stockage
+    mo = 2 ** 20
+    tailles = {"total": 420 * mo, "tables": {
+        "tick_paths": 300 * mo, "candles": 90 * mo, "payouts": 20 * mo,
+        "uptime": 10 * mo}}
+    monkeypatch.delenv("QUOTA_STOCKAGE_MO", raising=False)
+    assert _ligne_stockage(tailles) == (
+        "Stockage : ⚠ 420 Mo sur 512 (82 %) — chemins de ticks 300 Mo, "
+        "bougies 90 Mo, payouts 20 Mo")
+    monkeypatch.setenv("QUOTA_STOCKAGE_MO", "3072")
+    assert _ligne_stockage(tailles).startswith("Stockage : 420 Mo sur 3072")
+    assert _ligne_stockage({"total": None, "tables": {}}) is None
 
 
 def test_collecte_arretee_renvoie_503(db):

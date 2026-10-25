@@ -94,7 +94,19 @@ postérieures à cette mesure, et le disent.
   est « à flux doublé » à 40 % de doublons ou plus (`DOUBLES_MIN`), et le
   seuil de la minute pauvre (`INSUFFICIENT_COVERAGE`) se lit en ticks
   distincts. Les prix, l'OHLC et les trajectoires n'en sont pas changés ;
-  le `tick_count` des bougies les compte.
+  le `tick_count` des bougies les compte. Le débit anormal se juge aussi en
+  ticks distincts.
+- **Cause et correction (collecteur, déploiement du 25/10/2026).** Le
+  collecteur et le courtier partagent le processus, chacun avec son socket
+  abonné aux mêmes paires, et la bibliothèque empile les ticks des deux
+  sockets dans un seul tampon global, celui que vide le collecteur.
+  `CandleAggregator` écarte désormais un tick identique (instant, prix) à un
+  tick déjà reçu dans la minute en cours. Rupture datée : avant, chemins et
+  `tick_count` comptent les doublons ; la colonne « flux doublé » de /ticks
+  montre la frontière. Les fusions de bases ne changent rien à la règle :
+  une ligne de chemin est remplacée en entier (« le plus fourni gagne »),
+  jamais concaténée ; seule une minute écrite par l'ancien ET le nouveau
+  collecteur (minute du déploiement) peut garder la version doublée.
 
 ## 3. Règles de complétude d'une fenêtre de signal
 

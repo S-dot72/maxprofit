@@ -234,6 +234,34 @@ class MarketReader:
     def counts(self) -> dict[str, int]:
         return _counts(self.conn)
 
+    def tailles(self) -> dict:
+        """La place occupée, en octets : {"total": …, "tables": {…}}, la plus
+        grosse table d'abord. Lue dans le catalogue — rien n'est parcouru, la
+        sonde peut l'appeler. `total` vaut None si le moteur ne le dit pas.
+
+        Elle existe parce que le quota de stockage d'une base gratuite (0,5 Go
+        chez Neon) se constatait au refus d'écrire, et que chaque relève reçoit
+        TOUT l'historique : la base grossit d'une bascule à l'autre."""
+        from maxprofit.store import postgres
+        try:
+            if postgres.est_postgres(self.conn):
+                total = self.conn.execute(
+                    "SELECT pg_database_size(current_database())").fetchone()
+                tables = self.conn.execute(
+                    "SELECT c.relname, pg_total_relation_size(c.oid) "
+                    "FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace WHERE n.nspname = 'public' "
+                    "AND c.relkind = 'r'").fetchall()
+                return {"total": int(total[0]) if total and total[0] else None,
+                        "tables": dict(sorted(
+                            ((str(t), int(v)) for t, v in tables),
+                            key=lambda kv: -kv[1]))}
+            pages = self.conn.execute("PRAGMA page_count").fetchone()[0]
+            page = self.conn.execute("PRAGMA page_size").fetchone()[0]
+            return {"total": int(pages) * int(page), "tables": {}}
+        except Exception:                                # noqa: BLE001
+            return {"total": None, "tables": {}}
+
     def couverture(self, fenetre_sec: int | None = None,
                    trou_max_sec: int = 90, maintenant: int | None = None) -> dict:
         """Part du temps réellement collectée, depuis les battements de cœur.
