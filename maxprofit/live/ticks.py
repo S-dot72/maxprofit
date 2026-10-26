@@ -266,6 +266,9 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"relue(s) par MarketReader.ticks() ({_n(z['relectures'][1])} ticks) :"
         f" {z['relectures'][2]} différence(s)."]
 
+    # 3 bis. L'enquête doublons
+    lignes += _texte_doublons(r.get("doublons"))
+
     # 4. Concordance
     lignes += ["", "<b>4. Concordance M1</b> (bougies et chemins viennent des "
                "mêmes ticks : cohérence du stockage, pas exactitude du flux)"]
@@ -360,6 +363,20 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"• {_e(x)} : <code>{_e(v)}</code>"
         for x, v in rep["requetes"].items()]
     return "\n".join(lignes)
+
+
+def _texte_doublons(x: Mapping | None) -> list[str]:
+    """La comparaison des politiques de déduplication, telle quelle : une
+    enquête, pas une correction (docs/enquete_doublons.md)."""
+    if not x or not x.get("minutes"):
+        return []
+    from maxprofit.apprentissage.doublons import texte as texte_doublons
+    corps = texte_doublons(x).splitlines()[1:]
+    return (["", "<b>3 bis. Doublons — enquête</b> (politiques comparées en "
+             "mémoire sur les mêmes chemins ; rien n'est écrit, le collecteur "
+             "n'est pas touché ; « expérimentale » = (instant, prix) déjà vu "
+             "dans la minute, une heuristique, pas une preuve)"]
+            + [_e(ligne) for ligne in corps])
 
 
 def _texte_executions(p: Mapping) -> list[str]:

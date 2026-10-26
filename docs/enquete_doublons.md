@@ -137,10 +137,10 @@ Module pur `apprentissage/doublons.py` (en mémoire, aucune écriture) et outil
   minutes simples (un seul flux), qui majore ce que l'heuristique écarterait à
   tort.
 
-**Sur les données réelles : PAS ENCORE EXÉCUTÉ.** Cette session n'a pas accès
-à la base. Les nombres réels viendront soit de l'outil lancé par toi, soit
-d'une section ajoutée à `/ticks` après ta validation (lecture seule, mais
-c'est un déploiement). Sur données synthétiques (tests seulement, pas une
+**Sur les données réelles :** intégrée à `/ticks` le 26/10, à la demande
+(section « 3 bis. Doublons — enquête »), sur les mêmes chemins que l'audit,
+en mémoire. Les nombres minute par minute arrivent au rejeu qui suit le
+déploiement. L'outil reste disponible hors du bot. Sur données synthétiques (tests seulement, pas une
 preuve) :
 - la déduplication expérimentale ne change ni l'OHLC, ni l'ordre temporel ;
 - elle divise `tick_count` par deux sur les minutes doublées ;

@@ -59,7 +59,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from maxprofit.apprentissage import microstructure
+from maxprofit.apprentissage import doublons, microstructure
 from maxprofit.core.errors import BotError
 from maxprofit.core.types import Candle, Tick
 
@@ -482,6 +482,9 @@ class AuditTicks:
         self.complets_sans_historique = 0
         self.par_jour_signaux: dict[int, list[int]] = {}
         self.par_heure_signaux: dict[int, list[int]] = {}
+        # L'enquête doublons : les politiques comparées en mémoire, sur les
+        # mêmes chemins (docs/enquete_doublons.md).
+        self.doublons = doublons.ComparaisonDoublons()
         # Phase F
         self.trajectoires: list[dict] = []
         self.temoins: list[dict] = []
@@ -611,6 +614,7 @@ class AuditTicks:
                 continue
             if self.encoder is not None and k % ECHANTILLON_REENCODAGE == 0:
                 self._reencoder(paire, m, chemin, ticks)
+            self.doublons.ajouter_minute(paire, m, ticks, bougies_m.get(m))
             r = self._minute(paire, m, ticks, chemin.echelle,
                              dernier_ms if derniere_minute == m - 60
                              else None)
@@ -1443,6 +1447,7 @@ class AuditTicks:
                                                 -kv[1]))],
                 "premieres": anomalies[:20]},
             "exploration": exploration,
+            "doublons": self.doublons.resultat(),
             "inventaire": self._inventaire(controles, exploration),
             "limites": self._limites(controles),
             "reproductibilite": {
