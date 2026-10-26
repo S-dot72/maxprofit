@@ -70,6 +70,7 @@ from maxprofit.core.types import Candle, Direction
 from maxprofit.execution.courtier import (
     CourtierDemo, execution_depuis_deal, trouver_deal)
 from maxprofit.execution.journal import JournalExecution
+from maxprofit.live.configuration import MISE_MINIMALE
 from maxprofit.plan import (
     Arret,
     Echelle,
@@ -784,6 +785,8 @@ class CoursePlanDemo:
         #: dire oblige à interroger `/etat` au hasard : on découvre un
         #: réancrage trois jours après, ou jamais.
         self._alerter = alerter
+        #: L'alerte « mise relevée au minimum » n'est donnée qu'une fois.
+        self._mise_minimale_signalee = False
         #: Appelé quand un état doit être figé sans attendre la fin du tour.
         #: Posé par `fabriquer_course`, qui seul connaît la connexion.
         self._sauver = None
@@ -1539,7 +1542,33 @@ class CoursePlanDemo:
         un capital qu'on n'a plus.
         """
         gain = self.etat.plan.gain_par_session_pct / 100 * self.etat.solde
-        return Echelle(payout_pct=92, gain_vise=gain, pas_max=self.pas_max)
+        echelle = Echelle(payout_pct=92, gain_vise=gain, pas_max=self.pas_max)
+        premiere = echelle.mises()[0]
+        if premiere >= MISE_MINIMALE:
+            return echelle
+        # ⚠ LE BROKER REFUSE TOUTE MISE SOUS 1 $, sans motif. Le 26/10, le
+        # solde tombé à ~74 $ a donné une première mise de 0,98 $ : trois
+        # refus d'affilée, et USDJPY_otc mise en quarantaine pour une faute
+        # qui était la nôtre. La garde de /demarrer ne vérifie que le capital
+        # de LANCEMENT ; les mises suivent le solde, qui descend.
+        #
+        # On relève le gain visé juste assez pour que la première mise vaille
+        # le minimum : toute l'échelle grandit dans la même proportion, et la
+        # session reste cohérente (ses mises engagées sont celles-ci). Le
+        # risque pris dépasse alors un peu le plan — on le dit, une fois.
+        relevee = Echelle(payout_pct=92, gain_vise=gain * MISE_MINIMALE / premiere,
+                          pas_max=self.pas_max)
+        if not self._mise_minimale_signalee:
+            self._mise_minimale_signalee = True
+            self._prevenir(
+                f"⚠️ <b>Mise relevée au minimum du broker</b> : sur le solde "
+                f"de {self.etat.solde:.2f} $, la première mise serait de "
+                f"{premiere:.2f} $, sous les {MISE_MINIMALE:.0f} $ acceptés. "
+                f"Elle passe à {MISE_MINIMALE:.2f} $ : une session ratée coûte "
+                f"{sum(relevee.mises()):.2f} $ au lieu de "
+                f"{sum(echelle.mises()):.2f} $. Pour rester dans le plan : "
+                f"/capital plus élevé ou /risque plus agressif.")
+        return relevee
 
     def _faire_l_autopsie(self, session) -> None:
         """Ce que la session perdue dit, et ce qu'elle ne dit pas.

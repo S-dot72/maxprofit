@@ -2757,3 +2757,28 @@ def test_une_session_au_bout_de_son_echelle_est_close_pas_plantee(course):
     assert session.etat is EtatSession.PERDUE
     assert c.etat.session is None
     assert c.courtier.mises_recues == [], "aucun ordre pour un pas inexistant"
+
+
+def test_une_mise_sous_le_MINIMUM_du_broker_est_relevee_a_1_dollar(course):
+    """Le 26/10 : solde ~74 $, risque 1/6, première mise 0,98 $ — trois refus
+    sans motif, et USDJPY_otc en quarantaine pour une faute qui était la
+    nôtre. La garde de /demarrer ne voyait que le capital de lancement."""
+    c = course([])
+    alertes = []
+    c._prevenir = alertes.append
+    normale = c._echelle().mises()[0]
+    c.etat.solde = c.etat.solde * 0.98 / normale     # première mise à 0,98 $
+    echelle = c._echelle()
+    assert echelle.mises()[0] == pytest.approx(1.0)
+    assert all(m >= 1.0 for m in echelle.mises())
+    c._echelle()
+    assert len(alertes) == 1 and "minimum du broker" in alertes[0]
+
+
+def test_au_dessus_du_minimum_l_echelle_n_est_pas_touchee(course):
+    c = course([])
+    alertes = []
+    c._prevenir = alertes.append
+    gain = c.etat.plan.gain_par_session_pct / 100 * c.etat.solde
+    assert c._echelle().gain_vise == pytest.approx(gain)
+    assert alertes == []
