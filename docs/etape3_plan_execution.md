@@ -21,10 +21,12 @@ démontrée, et chaque résultat de ce niveau le dit.
 
 **Niveau 2 — disponibilité établie par le code et les données.** Ce qu'on
 peut démontrer, sans supposer :
-- **[Vérifié, code]** Une minute close est écrite en une transaction :
-  d'abord son chemin de ticks, puis sa bougie, puis la validation, puis le
-  réveil de la course (`Collector.flush`, ordre inchangé depuis le 27/09,
-  84762e5 ; toute l'histoire des ticks est postérieure).
+- **[Vérifié, code]** Une minute close est écrite dans cet ordre : d'abord
+  son chemin de ticks, puis sa bougie, puis la validation (`valider`), puis
+  le réveil de la course (`Collector.flush`, ordre inchangé depuis le 27/09,
+  84762e5 ; toute l'histoire des ticks est postérieure). Je ne prétends pas
+  que chemin et bougie forment une seule transaction : seul compte que le
+  chemin est écrit avant le réveil.
 - **[Vérifié, code]** La course n'évalue la bougie du signal qu'après cette
   écriture (réveil sur `BOUGIES_ECRITES`). Le chemin de la minute du signal
   est donc en base avant la décision.
@@ -111,7 +113,8 @@ pré-inscrite de ZoneH1).
 **Notation pour un signal** :
 - d : décision ; s = +1 pour un CALL, −1 pour un PUT ;
 - L : niveau de la zone ; μ = 0,0002 · L (tolérance de ZoneH1) ;
-- δ : pas de cotation de la paire ;
+- δ : pas de cotation de la paire, soit le plus petit écart de prix non nul
+  observé sur la paire pendant l'exploration, figé ensuite ;
 - sous-fenêtre W de w ∈ {60, 180, 300, 900} s ;
 - ticks (distincts ou bruts) (t_k, p_k), k = 1…n, d − w ≤ t_k < d, triés ;
 - Δp_k = (p_k − p_{k−1}) / δ, en points ;
@@ -143,15 +146,17 @@ une indicatrice de manque.
 - B2 `amplitude` = (max p − min p) / δ.
 - B3 `nulles` = #{Δp_k = 0} / (n − 1).
 - B4 `efficience` = |p_n − p_1| / (δ · Σ|Δp_k|) ; manquante si Σ = 0.
-- B5 `ratio_vol` = (vol₆₀ / √60) / (vol₉₀₀ / √900).
+- B5 `ratio_vol` = (vol du dernier cinquième de W / √(w/5)) / (vol_W / √w) ;
+  manquante si vol_W = 0.
 - B6 `concentration` = part de Σ|Δp| portée par les 5 % plus grands |Δp|.
 
 **C — retournements** (signes σ des Δp ≠ 0)
 - C1 `retournements` = #{σ_j ≠ σ_{j−1}}.
 - C2 `persistance` = longueur moyenne des suites de même signe.
 - C3 `part_sens` = Σ max(0, s·Δp_k) / Σ|Δp_k|.
-- C4 `amplitude_retournement` = moyenne de |p| entre deux points de
-  retournement consécutifs, en points.
+- C4 `amplitude_retournement` = moyenne de |p(r_{j+1}) − p(r_j)| / δ, où les
+  r_j sont les ticks où le signe change ; manquante s'il y a moins de deux
+  retournements.
 - C5 `delai_retournement` = médiane du temps entre deux retournements, en s.
 
 **D — interactions avec la zone** (bornes L ± μ)
@@ -218,8 +223,11 @@ d'arrivée ou de la réception.
     puis figé.
   - La date de verdict est fixée au gel.
 - **Pas de mélange aléatoire** de signaux voisins entre périodes.
-- **Les résultats déjà vus** (phase F, après l'entrée) ne portent sur aucune
-  variable avant la décision : ils ne contaminent pas l'exploration.
+- **Ce qui a déjà été vu** :
+  - les issues T0, T2 et T3 agrégées sur toute la période (`/entrees`) ;
+  - la phase F : trajectoires au tick **après** l'entrée.
+  Aucune variable de ticks avant la décision n'a été regardée. La référence
+  et les variables sont fixées ici sans réglage sur les issues.
 
 ## 7. Incertitude
 
@@ -253,13 +261,17 @@ ne tient qu'avec les blocs paire × jour est « fragile ».
 
 | Verdict | Critères, tous en confirmation, niveau 2 |
 |---|---|
-| **Confirmée** | p Holm < 0,05 pour Δℓ > 0 ; **et** effet pratique : tercile retenu ≥ +2 points de taux de gain dans le sens pré-inscrit ; **et** Δℓ > 0 dans au moins 2 semaines sur 3 ; **et** signe inchangé pour : ticks bruts / distincts, k = 0 / 2 / 5 s, blocs paire × jour / jour |
+| **Confirmée** | p Holm < 0,05 pour Δℓ > 0 ; **et** effet pratique : tercile retenu ≥ +2 points de taux de gain dans le sens pré-inscrit ; **et** Δℓ > 0 dans au moins 2 des 3 tiers chronologiques de la confirmation ; **et** signe inchangé pour : ticks bruts / distincts, k = 0 / 2 / 5 s, blocs paire × jour / jour |
 | **Rejetée** | borne haute à 95 % de l'effet du tercile < +2 points (aucun effet utile possible), **ou** borne haute de Δℓ ≤ 0 |
 | **Indéterminée** | ni l'un ni l'autre (l'intervalle contient 0 et l'effet utile), **ou** moins de 500 signaux de niveau 2 en confirmation, **ou** résultat « fragile » |
 
-Le seuil de +2 points est choisi parce que le point mort au payout de 92 %
-est 52,08 %. Une hypothèse confirmée devient une **pré-inscription**, jamais
-un filtre direct de la course.
+Le seuil de +2 points est fixé a priori :
+- au payout de 92 %, le point mort est de 52,08 % ;
+- chaque point de taux de gain vaut 1,92 % de la mise en espérance ;
+- +2 points font donc environ +3,8 % de la mise par ordre.
+
+Une hypothèse confirmée devient une **pré-inscription**, jamais un filtre
+direct de la course.
 
 ## 10. Protocole d'exécution : aucune écriture, charge limitée sur Neon
 
