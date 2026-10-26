@@ -219,6 +219,17 @@ def texte(d: dict, releve: dict | None = None) -> str:
                 f"{nom} {(delais[nom] or 0):.1f} j"
                 for nom in ("haut", "central", "bas") if nom in delais)
             + " (croissance haute → délai court).")
+        # Neon peut compter TOUTES les bases du projet, bases système
+        # comprises : le délai le plus court des deux est le prudent.
+        if t.get("toutes_bases") and t["toutes_bases"] > t["base"]:
+            toutes = ds.delais({"base": t["toutes_bases"]}, c["scenarios"],
+                               quota)
+            lignes.append(
+                f"Si Neon compte toutes les bases ({_mo(t['toutes_bases'])}) "
+                f": reste {_mo(toutes['reste_octets'])}, soit " + " · ".join(
+                    f"{nom} {(toutes[nom] or 0):.1f} j"
+                    for nom in ("haut", "central", "bas") if nom in toutes)
+                + ".")
 
     lignes += ["", "<b>3. Payouts — répétitions</b> [Vérifié : SQL de fenêtre "
                    "sur toute la table]"]
@@ -255,8 +266,7 @@ def texte(d: dict, releve: dict | None = None) -> str:
         "Par jour (lignes / répétées) : " + " · ".join(
             f"{_d(j)} {nl}/{r}" for j, nl, r in p["par_jour"][-10:]) + ".",
         "Paires les plus répétées : " + ", ".join(
-            f"{nom.replace('_otc', '')} {r}/{nl}"
-            for nom, nl, r in p["par_paire"][:8]) + "."]
+            f"{nom} {r}/{nl}" for nom, nl, r in p["par_paire"][:8]) + "."]
     lignes += ["", "<b>4. Scénarios de compaction</b> [comptés, JAMAIS "
                    "appliqués ; octets = borne haute, la place n'est rendue "
                    "qu'après réécriture de la table]"]

@@ -163,6 +163,7 @@ def test_le_texte_avec_les_tailles_de_postgresql():
     t = hs.texte(d, {"base": 410 * mo, "limite_mo": 512})
     assert "neon.max_cluster_size" in t and "Relève : 410.0 Mo" in t
     assert "Jours avant saturation" in t and "4.8 j" in t
+    assert "Si Neon compte toutes les bases (424.0 Mo)" in t and "4.4 j" in t
     assert "Mesure impossible" in t
 
 

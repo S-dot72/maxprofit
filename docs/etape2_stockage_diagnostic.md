@@ -33,7 +33,50 @@ d'insertion : la base actuelle a reçu l'historique par synchronisation au
 24/10, mais le volume d'une journée de données est le même, quel que soit le
 moment où il est arrivé.
 
-## Ce qui est déjà connu (avant `/stockage`)
+## Résultats mesurés — `/stockage` du 26/10 09:20 UTC (code f1aa617)
+
+| Mesure | Valeur | Statut |
+|---|---|---|
+| Base | 423,5 Mo | Vérifié |
+| Toutes les bases du serveur | 438,5 Mo | Vérifié |
+| Limite | non exposée par le serveur (`neon.max_cluster_size` vide) | **Inconnu** |
+| tick_paths | 208,9 Mo (table 172,4, index 36,3) ; 453 280 lignes vivantes, 28 mortes | Vérifié |
+| payouts | 102,7 Mo (table 35,2, **index 67,5**) ; 550 334 lignes, 0 morte | Vérifié |
+| candles | 102,7 Mo (table 53,3, index 49,3) ; 511 807 lignes, 59 mortes | Vérifié |
+| autres tables | < 1,2 Mo au total | Vérifié |
+| Relève | 409,2 Mo, limite non exposée | Vérifié |
+| Croissance par jour (23, 24, 25/10) | 22,7 · 21,4 · 22,7 Mo (chemins ~13,9, bougies ~6,0, payouts ~3,5, battements ~0,2) | Probable (lignes × octets par ligne) |
+| Croissance physique mesurée | pas encore : il faut 24 h de relevés en mémoire sans redémarrage | — |
+
+**Délai avant saturation, si la limite est de 512 Mo [Hypothèse]** :
+- si Neon ne compte que la base : 88,5 Mo restants, soit 3,9 à 4,1 jours ;
+- si Neon compte toutes les bases du projet (438,5 Mo) : 73,5 Mo restants,
+  soit **3,2 à 3,4 jours** (autour du 29/10 après-midi).
+Le premier cas suppose que les bases système ne comptent pas ; rien ne
+permet de le confirmer en SQL.
+
+**Ce que les mesures excluent** :
+- **Lignes mortes** : quasi nulles dans les trois grosses tables. Un VACUUM
+  ne libérerait rien.
+- **Payouts** : la compaction ne rapporterait rien (livrable B : 183 lignes
+  répétées sur 550 334).
+
+**Ce qui reste comme leviers, en Mo** — non mesuré tant qu'on ne l'a pas
+fait :
+- **Index** : 153 Mo d'index sur 414 Mo. [Hypothèse] Les index (paire,
+  instant) se remplissent mal, parce que les insertions se répartissent sur
+  20 à 183 paires, et les mises à jour des bougies (upsert) les font
+  gonfler. Une reconstruction (REINDEX, sans toucher aux données) en
+  rendrait peut-être 30 à 60 Mo, provisoirement : ils regonflent.
+  Mesurable sans risque **sur la relève** d'abord.
+- **Index redondant des payouts** : deux index portent les mêmes colonnes
+  dans un ordre différent, la clé primaire `(ts_sec, pair)` et
+  `idx_payouts_pair (pair, ts_sec)`. En faire un seul serait une migration,
+  pour un gain d'environ un tiers des 67,5 Mo.
+- **Croissance structurelle** : environ 22 Mo par jour. Même avec tous ces
+  gains, 512 Mo ne tiennent pas plus de trois semaines d'historique complet.
+
+## Ce qui était connu avant `/stockage`
 
 - **Vérifié** (`/etat` du 26/10) : 416 Mo affichés sur 512 (81 %) ; chemins de
   ticks 205 Mo, payouts 102 Mo, bougies 101 Mo.
