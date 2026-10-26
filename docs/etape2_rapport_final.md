@@ -95,14 +95,12 @@ sont calculées qu'à partir de ticks antérieurs à la décision − G (livrabl
 - **Non stockés** : heure de réception, ordre d'arrivée, socket d'origine.
 - **Battements** : absents de la base avant le 24/10.
 - **Trous** : 480 minutes de ticks sans bougie le 24/10 (02:02-02:25).
-- **CADJPY** : plus collectée depuis le 26/10 01:02, absente des 19 paires
-  souscrites. Le code (`Collector.refresh_pairs`) ne laisse que trois causes :
-  - paire **fermée** au dernier relevé du broker ;
-  - paire **inconnue** du catalogue ;
-  - paire **coupée par le plafond d'abonnements**, abaissé après un refus du
-    broker et qui le reste jusqu'au redémarrage : ce plafond tronque
-    `PAIRES_FIXES` par la fin.
-  `/paires` dira laquelle (correctif prêt, non déployé).
+- **CADJPY** : revenue après le redémarrage du 26/10 (`/paires` : 19 suivies,
+  plafond d'abonnements « aucun »). La paire épinglée absente est désormais
+  EURJPY, **fermée par le broker** à 19:51 UTC, un cas légitime. L'audit
+  distingue maintenant « paire fermée au broker » et trou de collecte,
+  d'après `payouts.is_open`. Le prochain `/ticks` dira si CADJPY était fermée
+  de 01:02 à 02:34, sans qu'on ait à supposer la cause.
 - **Ordres** : l'étiquette « refusé par le broker » de l'audit était
   **fausse en partie** [Vérifié, code]. La course inscrit chaque ordre AVANT
   de l'envoyer, et une ligne non acceptée peut être :
@@ -111,9 +109,12 @@ sont calculées qu'à partir de ticks antérieurs à la décision − G (livrabl
     payout) ;
   - une réservation introuvable chez le broker ;
   - un vrai refus, avec motif et contexte.
-  Le motif est dans la colonne `refus`, que l'audit ne lisait pas. C'est
-  corrigé (non déployé) : la fiche et le rapport donneront le motif des 5
-  ordres O0026 à O0030.
+  Le motif est dans la colonne `refus`, que l'audit lit désormais.
+  - Cause établie par le commit 6df9d2f du 26/10 pour au moins trois d'entre
+    eux : solde tombé vers 74 $, première mise de 0,98 $, sous le minimum du
+    broker (« refus sans motif »).
+  - Correctif : la mise est relevée au minimum de 1 $.
+  - Le prochain `/ticks` donnera le motif enregistré de chacun des 5.
 - **`/classement`** : il annonce une part du temps au plafond et mesure une
   part de relevés, avec environ 20 points d'écart en médiane.
 

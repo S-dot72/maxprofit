@@ -189,6 +189,13 @@ REQUETES: dict[str, str] = {
                 "tf_sec = 60 AND ts_sec >= ? AND ts_sec < ? ORDER BY ts_sec"),
     "battements": ("SELECT ts_sec FROM uptime WHERE ts_sec >= ? AND "
                    "ts_sec < ? ORDER BY ts_sec"),
+    # L'état d'ouverture de la paire chez le broker : le relevé en vigueur
+    # au début de la fenêtre, puis ses changements (points de changement de
+    # (payout, ouverture), table `payouts`).
+    "ouverture_avant": ("SELECT ts_sec, is_open FROM payouts WHERE pair = ? "
+                        "AND ts_sec < ? ORDER BY ts_sec DESC LIMIT 1"),
+    "ouvertures": ("SELECT ts_sec, is_open FROM payouts WHERE pair = ? AND "
+                   "ts_sec >= ? AND ts_sec < ? ORDER BY ts_sec"),
     "ordres": ("SELECT pair, sens, signal_ts_ms, clic_ts_ms, accepte_ts_ms, "
                "prix_attendu, prix_entree, prix_sortie, ouverture_ts_ms, "
                "expiration_ts_ms, decalage_broker_ms, expiration_sec, "
@@ -285,6 +292,11 @@ NATURES: dict[str, tuple[str, str, str, str, str]] = {
         "ticks", "fenêtres de signal touchées exclues", "élevée",
         "la cause (collecteur, abonnement, flux) n'est établie que par les "
         "battements"),
+    "paire fermée au broker": (
+        "trous", "minutes sans ticks pendant que le broker déclarait la paire "
+        "fermée (dernier relevé de payouts : is_open = 0)",
+        "aucun : pas de cotation, ce n'est pas un trou de collecte", "élevée",
+        "l'ouverture est relevée toutes les 5 min : bornes à 5 min près"),
     "paire sans aucun tick dans la fenêtre": (
         "trous", "aucun chemin pour la paire sur toute la fenêtre",
         "paire inexploitable au tick", "élevée",
@@ -429,6 +441,7 @@ class _Compteurs:
         self.manquantes_ecoutees = 0
         self.manquantes_muettes = 0
         self.manquantes_sans_historique = 0
+        self.manquantes_fermees = 0
         self.bougie_sans_chemin = 0
         self.chemin_sans_bougie = 0
         self.interruptions = 0
@@ -458,6 +471,7 @@ class _Compteurs:
             + self.concordance.get(DECALAGE, 0),
             "manquantes_ecoutees": self.manquantes_ecoutees,
             "manquantes_muettes": self.manquantes_muettes,
+            "manquantes_fermees": self.manquantes_fermees,
             "bougie_sans_chemin": self.bougie_sans_chemin,
             "chemin_sans_bougie": self.chemin_sans_bougie,
             "interruptions": [self.interruptions, self.interruptions_min],
@@ -502,6 +516,8 @@ class AuditTicks:
         self.sans_battement = 0
         #: Minutes de ticks dans un trou de l'historique des battements.
         self.sans_historique = 0
+        #: Paires dont l'état d'ouverture chez le broker a été lu.
+        self.ouvertures_lues = 0
         self._trous_battements: list[tuple[int, int]] | None = None
         # Compression
         self.illisibles = 0
@@ -596,6 +612,26 @@ class AuditTicks:
                 sortie.update(minutes)
         return sortie
 
+    def _fermees(self, ouvertures: Sequence[tuple[int, int]] | None
+                 ) -> set[int]:
+        """Les minutes de la fenêtre où le broker déclarait la paire fermée
+        à un moment de la minute. Avant le premier relevé, l'état est inconnu
+        et la minute n'est pas réputée fermée."""
+        if ouvertures is None:
+            return set()
+        self.ouvertures_lues += 1
+        releves = sorted((int(t), int(o)) for t, o in ouvertures)
+        sortie: set[int] = set()
+        for k, (t, ouverte) in enumerate(releves):
+            if ouverte:
+                continue
+            fin = releves[k + 1][0] if k + 1 < len(releves) else self.fin
+            m = max(self.debut, t // 60 * 60)
+            while m < min(fin, self.fin):
+                sortie.add(m)
+                m += 60
+        return sortie
+
     @staticmethod
     def _series(minutes: Iterable[int]) -> list[tuple[int, int]]:
         """Les suites de minutes consécutives : (première, fin exclue)."""
@@ -619,12 +655,16 @@ class AuditTicks:
                       chemins: Sequence[Any], signaux: Sequence[Any] = (),
                       respirer: Callable[[], None] | None = None,
                       relire: Callable[[str, int, int], Sequence[Tick]]
-                      | None = None) -> None:
+                      | None = None,
+                      ouvertures: Sequence[tuple[int, int]] | None = None
+                      ) -> None:
         """`bougies` : les M1 de la paire (au-delà de la fenêtre, ignorées
         par les contrôles ; les 60 avant un signal donnent son amplitude) ;
         `chemins` : ses chemins de la fenêtre, dans l'ordre ; `signaux` : ses
         signaux ZoneH1 (`ts_sec` = instant de décision) ; `relire` :
-        `MarketReader.ticks`, pour le contrôle de relecture."""
+        `MarketReader.ticks`, pour le contrôle de relecture ; `ouvertures` :
+        (instant, ouverte) des relevés de payouts, le premier en vigueur au
+        début de la fenêtre — None si non lus."""
         self.paires.setdefault(paire, _Compteurs())
         toutes = {b.ts_sec: b for b in bougies if b.tf_sec == 60}
         bougies_m = {m: b for m, b in toutes.items()
@@ -662,7 +702,9 @@ class AuditTicks:
         if relire is not None:
             self._relire(paire, resumes, par_minute, relire)
         sans_historique = self._sans_historique(resumes)
-        self._trous_et_debit(paire, resumes, bougies_m, sans_historique)
+        fermees = self._fermees(ouvertures)
+        self._trous_et_debit(paire, resumes, bougies_m, sans_historique,
+                             fermees)
         self._signaux(paire, resumes, illisibles, signaux, par_minute,
                       toutes, sans_historique)
         self._temoins(paire, resumes, par_minute)
@@ -878,24 +920,39 @@ class AuditTicks:
 
     def _trous_et_debit(self, paire: str, resumes: Mapping[int, dict],
                         bougies_m: Mapping[int, Candle],
-                        sans_historique: set[int] | None = None) -> None:
+                        sans_historique: set[int] | None = None,
+                        fermees: set[int] | None = None) -> None:
         ecoutees = self._minutes_ecoutees()
         sans_historique = sans_historique or set()
+        fermees = fermees or set()
         absentes: list[int] = []
 
         def clore() -> None:
             if len(absentes) >= INTERRUPTION_LONGUE_MIN:
-                ecoute = (sum(1 for x in absentes if x in ecoutees)
+                ferme = sum(1 for x in absentes if x in fermees)
+                if ferme == len(absentes):
+                    # Le broker ne cotait pas : ce n'est pas un trou.
+                    self._anomalie(
+                        "INFO", "paire fermée au broker", paire, absentes[0],
+                        absentes[-1] + 60,
+                        f"{len(absentes)} min sans ticks, paire fermée au "
+                        f"broker tout du long", len(absentes))
+                    absentes.clear()
+                    return
+                ecoute = (sum(1 for x in absentes
+                              if x in ecoutees and x not in fermees)
                           if ecoutees is not None else 0)
                 for c in self._compteurs(paire, absentes[0]):
                     c.interruptions += 1
                     c.interruptions_min += len(absentes)
                 self._anomalie(
-                    "WARNING" if ecoute * 2 >= len(absentes) else "INFO",
+                    "WARNING" if ecoute * 2 >= len(absentes) - ferme
+                    else "INFO",
                     "interruption longue", paire, absentes[0],
                     absentes[-1] + 60,
                     f"{len(absentes)} min sans ticks, collecteur à l'écoute "
-                    f"{ecoute} min", len(absentes))
+                    f"{ecoute} min" + (f", paire fermée au broker {ferme} min"
+                                       if ferme else ""), len(absentes))
             absentes.clear()
 
         for m in range(self.debut, self.fin, 60):
@@ -906,7 +963,9 @@ class AuditTicks:
             for c in self._compteurs(paire, m):
                 if m in bougies_m:
                     c.bougie_sans_chemin += 1
-                if ecoutees is not None and m in ecoutees:
+                if m in fermees:
+                    c.manquantes_fermees += 1
+                elif ecoutees is not None and m in ecoutees:
                     c.manquantes_ecoutees += 1
                 elif m in sans_historique:
                     c.manquantes_sans_historique += 1
@@ -1416,6 +1475,8 @@ class AuditTicks:
             "manquantes_ecoutees": g.manquantes_ecoutees,
             "manquantes_muettes": g.manquantes_muettes,
             "manquantes_sans_historique": g.manquantes_sans_historique,
+            "manquantes_fermees": g.manquantes_fermees,
+            "ouvertures_lues": self.ouvertures_lues,
             "part_manquante_ecoutee": part,
             "paires_sans_ticks": sans_ticks,
             "minutes_sans_battement": self.sans_battement,
