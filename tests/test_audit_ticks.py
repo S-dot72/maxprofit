@@ -429,6 +429,49 @@ def test_les_prix_du_broker_retrouves_dans_le_flux(tmp_path):
     assert "artefacts d'horodatage" in texte(r), "ouvertures à la seconde"
 
 
+def test_un_ordre_non_accepte_n_est_pas_forcement_un_refus(tmp_path):
+    """La course inscrit l'ordre AVANT de l'envoyer. Une ligne non acceptée
+    peut être une réservation jamais envoyée, ou introuvable chez le broker :
+    le motif enregistré (`refus`) dit lequel, et l'audit le rend."""
+    from maxprofit.execution.journal import RESERVE
+    assert at.RESERVATION_EN_COURS == RESERVE
+    conn = _base(tmp_path, _flux(minutes=60))
+    refus = [
+        (RESERVE, "{}"),
+        ("non envoyé : SourceIndisponible: Aucun tick disponible", "{}"),
+        ("non confirmé par le broker", "{}"),
+        ("Not enough money", '{"refus_contexte": {"mise": 3.31, '
+                             '"payout_flux_pct": 92, "expiration_sec": 900, '
+                             '"erreur_websocket": ""}}'),
+    ]
+    for k, (motif, brut) in enumerate(refus):
+        s_ = T0 + 600 + 60 * k
+        conn.execute(
+            "INSERT INTO executions (campagne, pair, sens, mise, "
+            "signal_ts_ms, clic_ts_ms, prix_attendu, payout_flux_pct, "
+            "expiration_sec, accepte, refus, brut) VALUES "
+            "('c', ?, 'call', 3.31, ?, ?, 0, 0, 900, 0, ?, ?)",
+            (P, s_ * 1000, s_ * 1000, motif, brut))
+    conn.commit()
+    audit, r = _auditer(conn)
+    p = r["controles"]["prix"]
+    assert p["exclus"] == {
+        "réservation en suspens (issue inconnue)": 1,
+        "non envoyé (arrêté par la course avant l'envoi)": 1,
+        "réservé, introuvable chez le broker": 1,
+        "refusé par le broker": 1}
+    details = {x[4]: x[5] for x in p["non_acceptes"]}
+    assert details["refusé par le broker"] == (
+        "Not enough money | mise 3.31, payout_flux_pct 92, "
+        "expiration_sec 900")
+    assert "Aucun tick" in details[
+        "non envoyé (arrêté par la course avant l'envoi)"]
+    csv = fichiers(audit)[2][0].decode()
+    assert csv.splitlines()[0].endswith("clic_utc;mise;detail")
+    assert "Not enough money" in csv
+    assert "non envoyé (arrêté par la course" in texte(r)
+
+
 def test_la_convention_de_signe_des_ecarts(tmp_path):
     """Prix obtenu − référence ; coût = l'écart pour un CALL, son opposé pour
     un PUT : payer plus cher un CALL est défavorable, vendre plus cher un

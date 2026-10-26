@@ -32,7 +32,7 @@ COLONNES_ORDRES = ("pair", "sens", "signal_ts_ms", "clic_ts_ms",
                    "accepte_ts_ms", "prix_attendu", "prix_entree",
                    "prix_sortie", "ouverture_ts_ms", "expiration_ts_ms",
                    "decalage_broker_ms", "expiration_sec", "accepte",
-                   "resultat", "brut")
+                   "resultat", "brut", "refus", "mise")
 
 
 def jours_audites() -> int:
@@ -391,6 +391,11 @@ def _texte_executions(p: Mapping) -> list[str]:
         f"{_v(p['synchronisation_ms'][0], ' ms')}, médiane "
         f"{_v(p['synchronisation_ms'][1], ' ms')}, p90 "
         f"{_v(p['synchronisation_ms'][2], ' ms')}."]
+    for oid, paire, sens, clic, motif, detail in p.get("non_acceptes", [])[:10]:
+        lignes.append(
+            f"• {oid} {paire.replace('_otc', '')} {sens or ''} "
+            f"{_d(clic / 1000) if clic else '—'} : {_e(motif)} — "
+            f"{_e(detail)}")
     for cle, nom in (("ouverture", "Prix d'ouverture du broker"),
                      ("cloture", "Prix de clôture du broker")):
         v = p[cle]

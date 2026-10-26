@@ -54,6 +54,7 @@ les battements et les ordres, et lui passe le décodeur et l'encodeur de
 from __future__ import annotations
 
 import hashlib
+import json
 import zlib
 from collections import Counter
 from datetime import datetime, timezone
@@ -191,8 +192,8 @@ REQUETES: dict[str, str] = {
     "ordres": ("SELECT pair, sens, signal_ts_ms, clic_ts_ms, accepte_ts_ms, "
                "prix_attendu, prix_entree, prix_sortie, ouverture_ts_ms, "
                "expiration_ts_ms, decalage_broker_ms, expiration_sec, "
-               "accepte, resultat, brut FROM executions ORDER BY "
-               "signal_ts_ms"),
+               "accepte, resultat, brut, refus, mise FROM executions "
+               "ORDER BY signal_ts_ms"),
 }
 
 #: Les codes de complétude d'une fenêtre de signal, dans l'ordre où ils sont
@@ -318,6 +319,43 @@ NATURES: dict[str, tuple[str, str, str, str, str]] = {
 }
 
 HEURE_MS = 3_600_000
+#: La marque d'une réservation dont l'issue n'est pas encore connue
+#: (`execution.journal.RESERVE` ; recopiée : la règle des couches interdit
+#: l'import, un test vérifie qu'elles restent égales).
+RESERVATION_EN_COURS = "réservé : envoi en cours"
+
+
+def categorie_non_accepte(refus: str | None) -> str:
+    """Une ligne du journal non acceptée n'est pas forcément un refus du
+    broker : la course inscrit chaque ordre AVANT de l'envoyer
+    (`JournalExecution.reserver`), et annule la réservation si l'ordre ne
+    part pas. Le texte de `refus` dit lequel des cas."""
+    texte = (refus or "").strip()
+    if texte == RESERVATION_EN_COURS:
+        return "réservation en suspens (issue inconnue)"
+    if texte.startswith("non envoyé"):
+        return "non envoyé (arrêté par la course avant l'envoi)"
+    if texte == "non confirmé par le broker":
+        return "réservé, introuvable chez le broker"
+    if texte.startswith("exception"):
+        return "exception à l'envoi"
+    return "refusé par le broker"
+
+
+def _detail_refus(o: Mapping[str, Any]) -> str:
+    """Le motif enregistré, et le contexte qu'a gardé le courtier."""
+    morceaux = [str(o.get("refus") or "motif non enregistré")[:200]]
+    try:
+        brut = json.loads(o.get("brut") or "{}")
+    except (TypeError, ValueError):
+        brut = {}
+    contexte = brut.get("refus_contexte") if isinstance(brut, dict) else None
+    if isinstance(contexte, dict):
+        morceaux.append(", ".join(
+            f"{cle} {contexte[cle]}" for cle in (
+                "mise", "payout_flux_pct", "expiration_sec",
+                "erreur_websocket") if contexte.get(cle) not in (None, "")))
+    return " | ".join(m for m in morceaux if m)
 LIBELLES_PRIX = {"ouverture": "d'ouverture", "cloture": "de clôture"}
 
 
@@ -1111,7 +1149,10 @@ class AuditTicks:
                 "resultat": o.get("resultat"), "motif": None}
             self.fiches_ordres.append(fiche)
             if not o.get("accepte"):
-                fiche["motif"] = "refusé par le broker"
+                fiche["motif"] = categorie_non_accepte(o.get("refus"))
+                fiche["detail"] = _detail_refus(o)
+                fiche["clic_ms"] = o.get("clic_ts_ms")
+                fiche["mise"] = o.get("mise")
                 continue
             if o.get("prix_entree") is None or o.get("ouverture_ts_ms") is None:
                 fiche["motif"] = "prix ou instant d'ouverture absent"
@@ -1483,7 +1524,13 @@ class AuditTicks:
                         "exclus": dict(motifs),
                         "horodates": len(horodates),
                         "seconde_ronde": sum(f["seconde_ronde"]
-                                             for f in horodates)}
+                                             for f in horodates),
+                        # Chaque ordre non accepté, avec le motif enregistré :
+                        # un ordre jamais envoyé n'est pas un refus du broker.
+                        "non_acceptes": [
+                            [f["id"], f["paire"], f.get("sens"),
+                             f.get("clic_ms"), f["motif"], f["detail"]]
+                            for f in fiches if f.get("detail") is not None]}
         for cle in ("ouverture", "cloture"):
             vus = [f[cle] for f in fiches if f.get(cle)]
             comparables = [v for v in vus if v["ticks"]]
@@ -1744,7 +1791,8 @@ def csv_ordres(fiches: Sequence[Mapping[str, Any]]) -> bytes:
                 "cloture_retrouvee_1s", "cout_vs_flux_signal",
                 "cout_vs_flux_acceptation", "cout_vs_flux_ouverture",
                 "cout_vs_attendu", "signal_clic_ms", "clic_acceptation_ms",
-                "acceptation_ouverture_ms", "resultat")
+                "acceptation_ouverture_ms", "resultat", "clic_utc", "mise",
+                "detail")
     j = FENETRES_PRIX_MS.index(FENETRE_PRIX_JUGEE_MS)
     lignes = [";".join(colonnes)]
     for f in fiches:
@@ -1769,5 +1817,9 @@ def csv_ordres(fiches: Sequence[Mapping[str, Any]]) -> bytes:
             "" if d.get("clic_acceptation") is None
             else d["clic_acceptation"],
             "" if d.get("acceptation_ouverture") is None
-            else d["acceptation_ouverture"], f.get("resultat") or "")))
+            else d["acceptation_ouverture"], f.get("resultat") or "",
+            _horodatage(f["clic_ms"] / 1000) if f.get("clic_ms") else "",
+            "" if f.get("mise") is None else f["mise"],
+            str(f.get("detail") or "").replace(";", ",").replace(
+                "\n", " "))))
     return ("\n".join(lignes) + "\n").encode("utf-8")
