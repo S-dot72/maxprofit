@@ -1,177 +1,318 @@
-# Étape 3 — Plan d'exécution (à approuver avant tout code)
+# Étape 3 — Plan d'exécution, version 2 (à approuver avant tout code)
 
 Analyse hors ligne et en lecture seule. Aucune modification de la stratégie,
 des signaux, des échéances, du collecteur ni de T0/T1/T2/T3. Aucune écriture
 de séries de ticks en base. Un résultat négatif bien établi est un résultat.
 
-## 1. Code existant réutilisé
+La version 2 répond à la revue du 26/10 : la disponibilité de l'information,
+la compatibilité des composants, la définition du résultat, la qualité et le
+coût, les familles complètes, la référence, le découpage, l'incertitude, les
+comparaisons multiples, les critères de verdict et le protocole d'exécution.
 
-| Besoin | Réutilisé |
-|---|---|
-| Signaux ZoneH1 et issues à 60…900 s | `apprentissage.historique.exemples_historiques` (paramètres pré-inscrits, échéance 900 s) |
-| Contexte M1 à la décision | même module : `distance_niveau`, `elan_15m`, `elan_30m`, `mouvement_heure`, `volatilite_relative`, `depuis_contact`, `alternances_10`… ; features ZoneH1 `niveau`, `touches`, `entrees_deja_offertes` |
-| Ticks décodés par minute, qualité des fenêtres | `apprentissage.audit_ticks.AuditTicks` (déjà parcouru par le rejeu quotidien de `/ticks`) |
-| Règle de déduplication (instant, prix) et sa borne | `apprentissage.doublons` |
-| Intervalles par blocs paire × jour | `apprentissage.microstructure.ic_blocs` |
-| Payout en vigueur à la décision | `store.market.MarketReader.payout_at` (lu par `live`) |
-| Registre des essais (nombre de comparaisons) | journal des hypothèses de `live.protocole` |
-| Pré-inscription au gel | `live.preinscriptions` |
+## 0. Disponibilité : l'heure du marché n'est pas l'heure de réception
 
-## 2. Données réellement disponibles
+L'heure de réception et l'ordre d'arrivée ne sont pas stockés. Une marge de
+2 s avant la décision **n'est pas** une garantie : elle est retirée comme
+règle de disponibilité. Deux niveaux d'analyse remplacent cette marge.
 
-- **Tables utilisées** :
-  - `tick_paths` (paire, minute, chemin compressé à la ms) ;
-  - `candles` (OHLC M1, `tick_count` gonflé par les doublons) ;
-  - `payouts` (payout et ouverture à chaque changement) ;
-  - `uptime` (battements, seulement depuis le 24/10) ;
-  - `executions`.
-- **Pas stockés** : les signaux (recalculés), l'heure de réception, l'ordre
-  d'arrivée, le socket d'origine, achat/vente, volume.
-- **Historique de ticks** : environ 16 jours pour 20 paires, environ 453 000
-  minutes. La date exacte du premier jour exploitable sera mesurée par la
-  première passe, sans être supposée.
+**Niveau 1 — historique indicatif.** Les variables lisent tous les ticks
+d'instant antérieur à la décision. Leur disponibilité réelle n'est pas
+démontrée, et chaque résultat de ce niveau le dit.
 
-## 3. Calculable sans nouvelle collecte
+**Niveau 2 — disponibilité établie par le code et les données.** Ce qu'on
+peut démontrer, sans supposer :
+- **[Vérifié, code]** Une minute close est écrite en une transaction :
+  d'abord son chemin de ticks, puis sa bougie, puis la validation, puis le
+  réveil de la course (`Collector.flush`, ordre inchangé depuis le 27/09,
+  84762e5 ; toute l'histoire des ticks est postérieure).
+- **[Vérifié, code]** La course n'évalue la bougie du signal qu'après cette
+  écriture (réveil sur `BOUGIES_ECRITES`). Le chemin de la minute du signal
+  est donc en base avant la décision.
+- **[Vérifié, code]** Un tick arrivé après la clôture de sa minute est écarté
+  par l'agrégateur, du chemin comme de la bougie (règle présente depuis le
+  20/09). « Horodaté dans une minute close » veut donc dire « reçu avant la
+  clôture de cette minute ».
+- **[Vérifié, code]** La décision du rejeu est la fin de la bougie du signal
+  (`Exemple.ts_sec = début de bougie + 60`). La course décide quelques
+  secondes plus tard, donc le niveau 2 ne voit pas plus que la course.
+- **Ce qui casserait l'équivalence** : un chemin réécrit plus tard, par un
+  redémarrage (minute partielle complétée), une fusion ou une
+  synchronisation (« le plus fourni gagne »). L'audit de concordance le
+  détecte, car la bougie que la stratégie a vue ne correspond plus au
+  chemin.
 
-Les familles A à D du livrable D, calculées sur ticks **distincts**
-d'instant strictement antérieur à décision − G (G = 2 s) :
-- **A — approche** : distances, vitesse, accélération, contacts, temps dans
-  la zone, pénétration, temps depuis le dernier contact.
-- **B — régime** : volatilité réalisée, amplitude, part de variations
-  nulles, efficience, ratio de volatilité 1/15 min, concentration.
-- **C — retournements** : retournements, persistance, part dans le sens du
-  trade, bruit.
-- **D — zone** : traversées, sorties et réintégrations.
-- **E — qualité** : couverture, plus long gel, âge du dernier tick, part de
-  doublons, proximité d'un gel ou d'une fermeture. Elle **sert à qualifier**
-  les fenêtres, pas à prédire.
+**Règle du niveau 2** : un signal y entre si **toutes** les minutes de sa
+fenêtre avant la décision sont en concordance « identique » ou « ordre
+d'arrivée » (même ensemble de ticks, seule l'ouverture ou la clôture prise à
+l'arrivée diffère). Sont exclus les signaux dont une minute est « minute
+coupée », « bougie incomplète », « chemin plus ou moins fourni »,
+« divergence inexpliquée » ou absente.
 
-Sous-fenêtres de 1, 3, 5 et 15 min, fixées maintenant.
+**Conclusion par niveau** : une hypothèse ne peut être déclarée confirmée
+qu'au niveau 2. Le niveau 1 sert à vérifier que l'exclusion ne biaise pas.
 
-## 4. Impossible avec l'historique actuel
+**Robustesse** : on refait chaque calcul en retirant les k dernières
+secondes de la fenêtre (k = 0, 2, 5 s). Ce sont les ticks dont l'inclusion
+dépend le plus de l'ordre d'arrivée autour de la clôture. C'est un test, pas
+une règle de disponibilité.
 
-- Latence de réception et variables fondées sur l'ordre d'arrivée.
-- Attribution d'un tick à un flux.
-- Ticks tardifs écartés.
-- Achat/vente, volume.
-- « Largeur de zone » : ZoneH1 a une tolérance fixe de 0,02 % du prix, donc
-  la largeur se réduit au niveau de prix.
-- Limites basse/haute de la zone : un seul niveau, la zone est niveau ±
-  marge.
+## 1. Compatibilité des composants réutilisés (vérifiée par des tests avant tout calcul)
 
-## 5. Volume
+| Composant | Convention | Test prévu |
+|---|---|---|
+| `exemples_historiques` | décision = fin de la bougie du signal ; issues = clôtures M1 à décision + h | modifier les bougies d'après la décision ne change aucune variable de contexte de référence ; les champs `e_*` (mesurés à l'entrée) et `imm_*` (après la décision) sont exclus de la référence |
+| `AuditTicks` | minute = son début ; la fenêtre avant décision = minutes [d − w, d) | les minutes lues sont toutes closes à d |
+| `doublons` | doublons cherchés dans la minute (une copie porte le même instant) | variables calculées en ticks bruts et en ticks distincts |
+| `payout_at` | relevé d'instant ≤ d, écrit au moment du relevé | aucun relevé postérieur à d n'est lu |
 
-- **Signaux** : environ 108 par jour dont la fenêtre de 30 min est complète,
-  soit environ 1 700 sur l'historique disponible.
-- **Ticks** : environ 1 800 ticks distincts par fenêtre de 15 min, environ
-  3 millions au total.
-- **Calcul** : faible (le même ordre que la passe doublons, environ 0,2 ms
-  par minute de ticks).
-- **Lecture** : c'est elle qui coûte. Relire tout l'historique, c'est environ
-  0,2 à 0,3 Go de transfert réseau, à faire **une fois**.
+La déduplication par (paire, instant, prix) reste un **traitement d'analyse**
+:
+- l'historique n'est pas modifié ;
+- chaque résultat est donné en ticks distincts ET en ticks bruts ;
+- une conclusion qui change selon le traitement est classée « fragile ».
 
-## 6. Saturation et charge
+## 2. Résultat
 
-- **Aucune écriture de ticks.** Les variables sont calculées dans le rejeu
-  quotidien de `/ticks`, sur les chemins qu'il a **déjà décodés** : aucun
-  transfert de plus au jour le jour.
-- **Une passe unique sur tout l'historique**, avant toute conservation
-  glissante ou archive des ticks, sinon ces jours seraient perdus pour
-  l'étude.
-- **Essai sur un échantillon d'abord** (1 paire, 1 jour) pour mesurer le
-  temps et la mémoire avant la passe complète.
-- **La période de confirmation exige que la collecte continue.** Elle dépend
-  donc de la décision de continuité du stockage, toujours ouverte.
+**Principal, fixé maintenant** : issue T0 à **900 s** (l'échéance
+pré-inscrite de ZoneH1).
+- **Gain** : la clôture M1 à d + 900 est du bon côté du prix d'entrée,
+  c'est-à-dire la clôture de la bougie du signal.
+- **Égalité** (prix inchangé) : exclue de la métrique principale, comptée
+  et publiée. En sensibilité, elle est comptée comme perte (règle
+  défavorable).
+- **Issue manquante** (bougie absente à d + 900) : signal exclu, compté par
+  motif.
+- **Payout** : en vigueur à d (`payout_at`). Il ne sert qu'aux résultats
+  économiques (secondaires). S'il manque, l'EV de ce signal n'est pas
+  calculée, sans valeur supposée.
+- **Échéances 240 et 600 s** : secondaires, exploratoires, dans la
+  correction BH.
 
-## 7. Tests de qualité, avant toute comparaison gagnants/perdants
+## 3. Qualité et coût, mesurés avant toute comparaison
 
-- **Classes de fenêtre** VALID / PARTIAL / INVALID, aux règles du livrable D,
-  figées dans le code et testées.
-- **Anti-fuite** :
-  - un test perturbe tous les ticks postérieurs à décision − G, puis les
-    issues : aucune variable ne doit changer ;
-  - un autre ajoute un tick juste avant la décision : il doit être exclu par
-    la garde.
-- **Doublons** : chaque variable de fréquence est calculée en ticks
-  distincts et en ticks bruts. Les écarts sont publiés.
-- **Cohérence** :
-  - issue au tick = issue M1, attendu 100 % comme dans l'audit ;
-  - résultat recalculé = résultat du journal pour les ordres comparables.
-- **Reproductibilité** : empreinte des chemins lus, version du code,
-  paramètres, période.
+**Passe de mesure** (sans issue lue) :
+- par paire et par jour : minutes présentes, trous, fermetures au broker,
+  fenêtres VALID / PARTIAL / INVALID, part du niveau 2 ;
+- période réellement exploitable par signal : **pas de « 16 jours » supposés**.
 
-## 8. Hypothèses à pré-inscrire
+**Classes de fenêtre, figées maintenant** (15 min avant d) :
+- **VALID** : couverture 100 %, aucun écart ≥ 10 s, dernier tick à ≤ 5 s de
+  d, aucune minute fermée au broker ;
+- **PARTIAL** : couverture ≥ 80 %, aucun écart ≥ 30 s ;
+- **INVALID** : sinon.
+- Aucune interpolation.
 
-**Découpage chronologique, fixé maintenant, avant toute lecture
-gagnants/perdants** :
-- exploration : décisions avant le **21/10 00:00 UTC** ;
-- validation : du 21/10 00:00 au **gel**, proposé au 28/10 00:00 ;
-- confirmation : décisions **à partir du gel + 1 jour**, sur des jours
-  collectés après le gel, jusqu'à **500 signaux VALID** au moins (environ 5 à
-  6 jours si la collecte continue).
+**Coût** :
+- un essai sur 1 paire × 1 jour mesure le temps et la mémoire ;
+- arrêt si la passe complète dépasse 30 min de calcul ou 150 Mo de mémoire.
 
-**Référence**, connue à la décision :
-- paire, créneau de 4 h UTC, sens ;
+## 4. Variables candidates (familles A à E)
+
+**Notation pour un signal** :
+- d : décision ; s = +1 pour un CALL, −1 pour un PUT ;
+- L : niveau de la zone ; μ = 0,0002 · L (tolérance de ZoneH1) ;
+- δ : pas de cotation de la paire ;
+- sous-fenêtre W de w ∈ {60, 180, 300, 900} s ;
+- ticks (distincts ou bruts) (t_k, p_k), k = 1…n, d − w ≤ t_k < d, triés ;
+- Δp_k = (p_k − p_{k−1}) / δ, en points ;
+- z_k = s · (p_k − L) / μ : distance signée en marges, positive du côté
+  favorable au trade.
+
+**Règle commune** : une variable vaut « manquante » si elle n'est pas
+définie (n trop petit, division par zéro). Une variable manquante n'est
+jamais imputée par un résultat ; elle reçoit la médiane de l'exploration et
+une indicatrice de manque.
+
+**A — approche de la zone**
+- A1 `dist_fin` = z_n.
+- A2 `dist_debut` = z_1.
+- A3 `vitesse` = (z_n − z_1) / ((t_n − t_1) / 60 000), en marges par minute ;
+  manquante si n < 2.
+- A4 `acceleration` = vitesse de la 2e moitié de W − vitesse de la 1re ;
+  manquante si une moitié a moins de 2 ticks.
+- A5 `contacts` = #{k : |z_k| ≤ 1 et |z_{k−1}| > 1}.
+- A6 `temps_zone` = Σ (t_{k+1} − t_k) · 1[|z_k| ≤ 1], le dernier tick valant
+  jusqu'à d, en s.
+- A7 `penetration` = max(0, max_k(−z_k)).
+- A8 `depuis_contact` = (d − max{t_k : |z_k| ≤ 1}) / 1000, en s ; manquante
+  sans contact.
+- A9 `apres_contact` = z_n − z au dernier contact.
+
+**B — régime**
+- B1 `vol` = √(Σ Δp_k²).
+- B2 `amplitude` = (max p − min p) / δ.
+- B3 `nulles` = #{Δp_k = 0} / (n − 1).
+- B4 `efficience` = |p_n − p_1| / (δ · Σ|Δp_k|) ; manquante si Σ = 0.
+- B5 `ratio_vol` = (vol₆₀ / √60) / (vol₉₀₀ / √900).
+- B6 `concentration` = part de Σ|Δp| portée par les 5 % plus grands |Δp|.
+
+**C — retournements** (signes σ des Δp ≠ 0)
+- C1 `retournements` = #{σ_j ≠ σ_{j−1}}.
+- C2 `persistance` = longueur moyenne des suites de même signe.
+- C3 `part_sens` = Σ max(0, s·Δp_k) / Σ|Δp_k|.
+- C4 `amplitude_retournement` = moyenne de |p| entre deux points de
+  retournement consécutifs, en points.
+- C5 `delai_retournement` = médiane du temps entre deux retournements, en s.
+
+**D — interactions avec la zone** (bornes L ± μ)
+- D1 `traversees` = #{signe(z_k) ≠ signe(z_{k−1}), z ≠ 0}.
+- D2 `sorties_retours` = nombre de sorties de |z| ≤ 1 suivies d'un retour
+  dans W.
+- D3 `temps_au_dela` = Σ (t_{k+1} − t_k) · 1[z_k < −1], temps passé au-delà
+  de la zone contre le trade, en s.
+
+**E — qualité** : elle qualifie les fenêtres, ne prédit pas, et n'est
+jamais un filtre de marché.
+- E1 couverture ;
+- E2 plus long écart (y compris d − t_n) ;
+- E3 âge du dernier tick ;
+- E4 part de doublons bruts ;
+- E5 gel ≥ 10 s à ± 15 min ;
+- E6 fermeture au broker à ± 15 min ;
+- E7 minute à flux doublé ;
+- E8 niveau de disponibilité (1 ou 2).
+
+E sert à classer les fenêtres et à mesurer le **biais de sélection** :
+on compare les signaux VALID et les autres sur la référence et les issues.
+
+**Exclu par construction** : tout ce qui suit la décision (rupture de zone
+future, MFE, MAE, retour, résultat), et tout ce qui dépend de l'ordre
+d'arrivée ou de la réception.
+
+**Total** : 23 variables de marché × 4 sous-fenêtres = 92 candidates.
+
+## 5. Référence sans microstructure
+
+**Variables**, toutes connues à la décision et figées maintenant :
+- paire (indicatrices) ;
+- créneau UTC de 4 h ;
+- sens ;
 - `touches`, `entrees_deja_offertes` ;
-- payout en vigueur ;
-- `distance_niveau`, `elan_15m`, `volatilite_relative`, `mouvement_heure`,
-  `depuis_contact`, `alternances_10`.
+- payout en vigueur, avec une indicatrice de manque ;
+- contexte M1 : `distance_niveau`, `elan_15m`, `volatilite_relative`,
+  `mouvement_heure`, `depuis_contact`, `alternances_10`.
 
-**Au gel** :
-- au plus **4 hypothèses principales**, une par famille A à D, choisies en
-  validation ;
-- pour chacune, le sens de l'effet et les terciles fixés sur l'exploration.
+**Modèle** :
+- régression logistique pénalisée (L2, λ = 1 sur variables standardisées),
+  en Python pur ;
+- λ fixé a priori, pas réglé sur la validation ;
+- standardisation et imputation (médiane + indicatrice) calculées sur
+  l'**exploration seule**, puis appliquées telles quelles.
 
-Tout le reste est exploratoire et compté dans le registre des essais.
+**Modèles comparés** :
+- hypothèses principales : référence + **une** variable ;
+- exploration : référence + chaque variable, une à une ;
+- puis référence + combinaison restreinte des familles retenues.
 
-**Métriques** :
-- principale : amélioration de la log-loss hors échantillon, référence +
-  famille face à la référence. Modèle : régression logistique régularisée,
-  en Python pur (le bot n'a pas numpy).
-- secondaires : Brier, calibration, taux de gain par tercile, EV au payout
-  réel, couverture.
+## 6. Séparation chronologique (fixée maintenant, avant lecture des issues)
 
-**Incertitude** : bootstrap par blocs paire × jour, 1 000 tirages, graine 7.
-Correction Holm sur les principales, Benjamini-Hochberg sur le reste.
+- **Exploration** : décisions avant le **21/10 00:00 UTC**. Distributions,
+  formulation des hypothèses, terciles.
+- **Validation** : du 21/10 00:00 au **gel**, fixé au **28/10 00:00 UTC**.
+  Sélection d'au plus 4 hypothèses principales, une par famille A à D, avec
+  leur sens et leurs terciles.
+- **Confirmation** : décisions à partir du **29/10 00:00 UTC** (un jour de
+  battement après le gel). Jours collectés après le gel, jusqu'à au moins
+  **500 signaux de niveau 2**.
+  - Le modèle est réestimé une seule fois, sur exploration + validation,
+    puis figé.
+  - La date de verdict est fixée au gel.
+- **Pas de mélange aléatoire** de signaux voisins entre périodes.
+- **Les résultats déjà vus** (phase F, après l'entrée) ne portent sur aucune
+  variable avant la décision : ils ne contaminent pas l'exploration.
 
-## 9. Critères de réussite et d'arrêt
+## 7. Incertitude
 
-- **Confirmé** :
-  - la log-loss s'améliore en confirmation, intervalle à 95 % au-dessus de 0
-    après Holm ;
-  - le tercile retenu gagne au moins 2 points ;
-  - la meilleure log-loss tient dans au moins 2 semaines sur 3 ;
-  - le résultat résiste à la garde G (0, 2, 5 s) et aux ticks bruts /
-    distincts.
-- **Arrêt ou « données insuffisantes »** :
-  - un test anti-fuite échoue : arrêt jusqu'à correction ;
+**Statistique** : l'amélioration par signal Δℓ_i = ℓ_réf,i − ℓ_mod,i (en
+nats, positive = mieux), moyennée sur la période évaluée.
+
+**Bootstrap par blocs paire × jour** :
+- tirage des blocs avec remise ;
+- 1 000 tirages, graine 7 ;
+- intervalle percentile à 95 % ;
+- p-valeur unilatérale = part des tirages ≤ 0.
+
+**Pourquoi des blocs** : les signaux d'une même paire un même jour partagent
+un régime.
+
+**Sensibilité** : blocs **par jour** (toutes paires confondues), parce que
+les signaux d'une même heure sont corrélés entre paires. Une conclusion qui
+ne tient qu'avec les blocs paire × jour est « fragile ».
+
+## 8. Comparaisons multiples
+
+- **Principales** : 4 au plus, Holm au seuil global de 5 %.
+- **Exploratoires** : 92 variables × échéances secondaires, Benjamini-Hochberg
+  à 10 %. Le nombre total d'essais est publié.
+- **Seuils et sous-fenêtres** : tous les essais, même abandonnés, entrent au
+  registre (journal du protocole).
+- **Interactions** : seulement après les familles seules, chacune avec son
+  hypothèse écrite avant le calcul, et comptées dans les essais.
+
+## 9. Verdicts
+
+| Verdict | Critères, tous en confirmation, niveau 2 |
+|---|---|
+| **Confirmée** | p Holm < 0,05 pour Δℓ > 0 ; **et** effet pratique : tercile retenu ≥ +2 points de taux de gain dans le sens pré-inscrit ; **et** Δℓ > 0 dans au moins 2 semaines sur 3 ; **et** signe inchangé pour : ticks bruts / distincts, k = 0 / 2 / 5 s, blocs paire × jour / jour |
+| **Rejetée** | borne haute à 95 % de l'effet du tercile < +2 points (aucun effet utile possible), **ou** borne haute de Δℓ ≤ 0 |
+| **Indéterminée** | ni l'un ni l'autre (l'intervalle contient 0 et l'effet utile), **ou** moins de 500 signaux de niveau 2 en confirmation, **ou** résultat « fragile » |
+
+Le seuil de +2 points est choisi parce que le point mort au payout de 92 %
+est 52,08 %. Une hypothèse confirmée devient une **pré-inscription**, jamais
+un filtre direct de la course.
+
+## 10. Protocole d'exécution : aucune écriture, charge limitée sur Neon
+
+- **Lectures**
+  - SELECT seulement, listés (`REQUETES`), sur une connexion passée en
+    `READ ONLY` pour la passe complète.
+  - Aucune table créée, aucune migration, aucune ligne écrite : c'est le
+    choix par défaut (option b ci-dessous).
+- **Passe complète, une fois**
+  - Paire par paire, par tranches d'un jour.
+  - Environ 0,2 à 0,3 Go de transfert réseau.
+  - Lancée après l'essai sur échantillon.
+  - À faire **avant** toute conservation glissante ou archive des ticks.
+- **Au quotidien** : les variables sont calculées dans le rejeu de `/ticks`,
+  sur les chemins **déjà décodés**, donc sans transfert supplémentaire.
+- **Mémoire** : une paire à la fois, comme l'audit.
+- **Sorties** : CSV d'une ligne par signal (variables, qualité, niveau,
+  issue) envoyé par Telegram. Aucune écriture en base.
+- **Preuves de lecture seule** : tests sur SQLite (empreinte du fichier
+  inchangée) ; toutes les requêtes commencent par SELECT.
+- **Reproductibilité** : empreinte des chemins, version du code,
+  paramètres, période, graine.
+- **Arrêts** :
+  - un test anti-fuite échoue ;
   - moins de 80 % de fenêtres VALID ;
-  - moins de 500 signaux de confirmation ;
-  - perte de l'historique des ticks avant la passe complète.
-- **Conséquence d'un succès** : une candidate confirmée devient une
-  pré-inscription, jamais un filtre direct de la course.
+  - coût hors des bornes du §3 ;
+  - historique de ticks perdu avant la passe complète.
 
-## 10. Fichiers créés ou modifiés (après approbation)
+## 11. Fichiers (après approbation)
 
 | Fichier | Rôle |
 |---|---|
-| `maxprofit/apprentissage/microstructure_pre.py` (nouveau) | variables A à E par signal, garde G, classes de qualité ; pur |
-| `maxprofit/apprentissage/etude_micro.py` (nouveau) | découpage, référence, logistique régularisée, log-loss / Brier, bootstrap, Holm / BH ; pur |
-| `maxprofit/apprentissage/audit_ticks.py` | appel de `microstructure_pre` sur les fenêtres des signaux, avec les chemins déjà décodés |
-| `maxprofit/live/etude3.py` (nouveau) et commande `/micro` | rapport, fiche CSV par signal |
+| `maxprofit/apprentissage/microstructure_pre.py` (nouveau) | variables A à E, niveaux 1 et 2, classes de qualité ; pur |
+| `maxprofit/apprentissage/etude_micro.py` (nouveau) | découpage, référence, logistique L2, Δℓ, Brier, bootstrap, Holm / BH, verdicts ; pur |
+| `maxprofit/apprentissage/audit_ticks.py` | appel sur les fenêtres des signaux, chemins déjà décodés |
+| `maxprofit/live/etude3.py` (nouveau), commande `/micro` | rapport et CSV |
 | `maxprofit/live/apprenti.py` | passe complète une fois, puis fenêtre quotidienne |
-| `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py` (nouveaux) | définitions, anti-fuite, qualité, déduplication, découpage, statistiques |
-| `docs/etape3_*.md` (6 livrables) | au fil des résultats, sans écraser les précédents |
+| `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py` | définitions, anti-fuite, compatibilité (§1), qualité, statistiques |
+| `docs/etape3_*.md` | les six livrables, sans écraser les précédents |
 
-## Décisions à prendre
+## 12. Décisions à prendre
 
-1. **Approuver le plan**, en particulier le découpage, la référence, la
-   métrique et les critères.
-2. **Autoriser la passe unique sur tout l'historique**, environ 0,2 à 0,3 Go
-   de transfert réseau.
-3. **Où garder les lignes calculées** (une par signal, environ 1 ko) :
-   - **(a)** nulle part, on recalcule : il faut garder les ticks ;
-   - **(b)** en CSV par Telegram, archivé par toi ;
-   - **(c)** une petite table dérivée, environ 2 Mo puis 0,1 Mo par jour.
-     C'est une écriture en base : à autoriser explicitement.
-4. **Continuité du stockage** : elle conditionne la période de confirmation.
+1. **Approuver ce plan**, en particulier :
+   - les niveaux de disponibilité ;
+   - le résultat à 900 s ;
+   - le découpage (exploration avant le 21/10, gel le 28/10, confirmation à
+     partir du 29/10) ;
+   - la référence ;
+   - les verdicts.
+2. **Autoriser la passe complète** (0,2 à 0,3 Go de transfert, une fois).
+3. **Où garder les lignes calculées** :
+   - **(b)** CSV par Telegram, par défaut, sans écriture ;
+   - **ou (c)** une petite table dérivée, environ 2 Mo puis 0,1 Mo par jour,
+     à autoriser explicitement.
+4. **Continuité du stockage** : elle conditionne la confirmation (à partir
+   du 29/10).
