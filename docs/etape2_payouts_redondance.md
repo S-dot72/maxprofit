@@ -100,7 +100,57 @@ moyens). La place n'est rendue au système qu'après réécriture de la table
 (VACUUM FULL). Un VACUUM simple la rend réutilisable pour les écritures
 futures, sans réduire la taille comptée.
 
-## Recommandation
+## Résultats — `/stockage` du 26/10 09:20 UTC
+
+- **Totaux** : 550 334 lignes, 183 paires, du 06/09 19:17 au 26/10 09:17.
+- **Changements** : payout seul 527 515, ouverture seule 21 205, les deux
+  1 248. Le payout affiché change presque à chaque relevé de 5 min : 380 338
+  changements à moins de 5 min du précédent, 123 957 entre 5 et 15 min.
+- **Catégories** :
+  1. répétées : **183 (0,03 %)**, toutes le 18/10, une par paire. C'est la
+     signature d'un événement unique : la fusion du 18/10 ou un amorçage
+     manqué [Probable] ;
+  2. répétées au même horodatage : 0 ;
+  3. identiques non consécutives : 538 834. Ce sont des changements (le
+     payout oscille entre quelques valeurs), pas des répétitions ;
+  4. doublons de clé métier : 0 ; relevés à moins de 60 s : 1 513, dont 62
+     répétés ;
+  5. validité indéterminable : 0.
+- **Scénarios comptés** : changements seuls 183 lignes, ancrage par heure
+  126, ancrage par jour 134. Moins de 0,04 Mo dans tous les cas.
+- **Reconstruction** :
+  - 0 valeur différente ;
+  - 13 paires sur 183 finissent sur une répétition ; leur dernière
+    observation reculerait jusqu'à 1 004 h.
+- **`/classement`** :
+  - les top 20 sont identiques dans les trois mesures ;
+  - mais la part des relevés et la part du temps au plafond s'écartent
+    d'environ 20 points en médiane (27 au maximum). Les pourcentages
+    affichés par `/classement` ne sont pas des parts de temps.
+- **`rejeu_plan`** : 757 écarts de plus d'un jour entre relevés tels quels,
+  727 en changements seuls. Le défaut existe déjà, la compaction n'y change
+  presque rien.
+
+## Recommandation (décision chiffrée)
+
+**Aucune compaction recommandée.** Il n'y a rien à gagner : 183 lignes, moins
+de 0,04 Mo. Et le peu qu'on retirerait effacerait des dates d'observation :
+pour 13 paires, la dernière observation reculerait jusqu'à 1 004 h. La
+question est close.
+
+Les 102,7 Mo des payouts sont de vrais changements de valeur. Les leviers
+sont ailleurs, et aucun n'est lancé :
+- **l'index redondant** : 67,5 Mo d'index pour 35,2 Mo de données ;
+- **la portée de l'enregistrement** : les 183 paires du catalogue, dont
+  actions et matières premières, alors que `/classement` ne fait concourir
+  que 21 paires de devises flottantes. Restreindre l'écriture aux paires
+  utiles diviserait la croissance des payouts par huit environ. C'est une
+  modification du collecteur, et la règle « historique COMPLET » du §2.3
+  (`store/migrations.py`) devrait être révisée : à décider ;
+- **le libellé de `/classement`** : à corriger pour qu'il mesure le temps au
+  plafond, comme il l'annonce, ou qu'il dise qu'il compte des relevés.
+
+## Recommandation initiale (avant mesure)
 
 Conclusion provisoire : **données insuffisantes pour conclure** tant que
 `/stockage` n'a pas tourné.
