@@ -148,6 +148,50 @@ preuve) :
 - elle supprime le signalement d'EXP-001 d'un jour doublé parmi des jours
   simples.
 
+## 6 bis. Premières données réelles (`/ticks` du 26/10 00:23, code a61311b)
+
+Agrégats seulement : ce rapport ne donne pas les comptes minute par minute que
+l'outil produirait. Fenêtre du 18/10 21:58 au 25/10 21:58, 20 paires.
+
+- **[données]** Ticks DISTINCTS par minute : médiane 122 (p10 120, p90 134),
+  et 123 le 20/10, jour majoritairement en flux simple (37 % de minutes
+  doublées), comme les jours doublés à 99-100 %. **Le second flux n'ajoute
+  aucun tick distinct** : les ticks en plus sont des copies exactes
+  d'événements déjà reçus. Cela ne dit rien des coïncidences légitimes à
+  l'intérieur d'un flux simple : la borne des faux positifs reste à mesurer.
+- **[données]** Minutes doublées : 90,7 % ; par heure, 86 % de 08h à 21h (un
+  jour sur sept en flux simple), 95 % à 23h : la fenêtre simple va du 20/10
+  vers 08:00 au 20/10 23:20.
+- **[données]** Battements : 0 en base du 18/10 au 23/10, 2 448 le 24/10,
+  2 621 le 25/10. (Corrige une lecture du premier rapport : il n'y avait pas
+  de battements le 19/10 de 06:06 à 08:04 ; les séries de « ticks sans
+  battement » y étaient coupées par les interruptions de certaines paires.)
+- **[données → association]** « Ordre d'arrivée » : 253 minutes, en 34
+  minutes d'horloge communes à plusieurs paires, **aucune** dans la fenêtre
+  simple (9,1 % du temps audité). Si les grappes tombaient au hasard, on en
+  attendrait 3,1 dans cette fenêtre ; la probabilité de n'en voir aucune est
+  d'environ 4 % (une seule fenêtre simple : indice, pas preuve).
+- **[données]** Deux familles de grappes :
+  - petites (1 à 5 paires), collées à un gel de TOUTES les paires (10 s ou
+    plus, 14 cas sur 19 gels généraux) : une reconnexion, après laquelle des
+    ticks arrivent hors d'ordre ;
+  - grandes (14 à 19 paires, 11 grappes), **sans aucun gel** à ± 3 min.
+- **[hypothèse]** Dans les grandes grappes, le flux n'est pas interrompu mais
+  son ordre est perturbé. C'est la signature attendue d'un des deux sockets
+  qui prend du retard pendant que l'autre continue (§4,
+  `test_un_socket_en_retard_change_la_cloture_a_la_frontiere`) ; en flux
+  simple, le même retard serait un gel. **[non établi]** sans l'ordre
+  d'arrivée, qui n'est pas stocké.
+- **[données]** Les 6 écarts encore inexpliqués tombent tous à la même
+  minute, le 20/10 à 23:20 : celle du déploiement qui a rétabli le double
+  flux. **[hypothèse]** Pendant un déploiement, l'ancien et le nouveau
+  processus écrivent la même minute. La bougie fusionne les deux (ouverture
+  gardée, bas = MIN, nombre de ticks = MAX), le chemin vient d'un seul : un
+  bas et une ouverture absents du chemin, ce qu'on observe (`o 6`, `l 3`).
+- **[données]** Les gels de toutes les paires existent dans les deux régimes
+  (46 des 351 gels dans la fenêtre simple, pour 9,1 % du temps) : la
+  redondance des deux sockets ne protège pas d'une coupure côté broker.
+
 ## 8. Tests (`tests/test_enquete_doublons.py`)
 
 - **Caractérisation du code actuel :**
@@ -175,8 +219,10 @@ preuve) :
 
 ## Recommandation (à valider, rien n'est fait)
 
-1. **D'abord les nombres réels** : la borne des faux positifs et les copies
-   par (instant, prix), mesurées sur les données existantes.
+1. **D'abord les nombres réels minute par minute** : la borne des faux
+   positifs et les copies par (instant, prix). Les agrégats du 26/10 (§6 bis)
+   montrent déjà que le second flux n'apporte aucun tick distinct ; il manque
+   la part des coïncidences dans un flux simple.
 2. **Point de correction.**
    - **Séparer les tampons, ou retirer l'abonnement redondant du courtier.**
      Cela traite la cause, mais supprime la redondance actuelle. Aujourd'hui,
