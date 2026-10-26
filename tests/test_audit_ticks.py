@@ -106,6 +106,8 @@ def test_des_donnees_saines_passent(tmp_path):
     assert z["reencodees"] == [6, 0], "une minute sur dix"
     assert z["relectures"][0] == 1 and z["relectures"][2] == 0
     assert r["controles"]["concordance"]["classes"] == {"identique": 60}
+    assert r["doublons"]["regimes"]["simple"]["minutes"] == 60
+    assert r["doublons"]["borne_faux_positifs"] == 0
     assert r["paires"][P]["couverture"] == 1.0
     assert r["jours"][str(T0)]["attendues"] == 60, "jour du bord : partiel"
     assert not [k for k in _comptes(r) if k[0] == "FAIL"]
@@ -367,6 +369,13 @@ def test_les_doublons_comptent_en_ticks_distincts(tmp_path):
     assert r["controles"]["concordance"]["classes"] == {"identique": 60}
     assert any("Doublons exacts" in x for x in r["limites"])
     assert "ticks DISTINCTS" in texte(r)
+    # L'enquête doublons, sur les mêmes chemins (section 3 bis).
+    d = r["doublons"]
+    assert d["regimes"]["doublee"]["minutes"] == 60
+    assert d["politiques"]["experimentale"]["ticks"] == h["ticks"] // 2
+    assert d["politiques"]["prouvee"]["statut"] == NT
+    assert d["ohlc_change"] == {"o": 0, "h": 0, "l": 0, "c": 0}
+    assert "3 bis. Doublons" in texte(r) and "[Borne]" in texte(r)
 
 
 # --------------------------------------------------------------------------- #

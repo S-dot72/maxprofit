@@ -32,6 +32,7 @@ décodés, et facultativement la bougie de la minute.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -75,13 +76,6 @@ def dedoublonner(ticks: Sequence[Tick], politique: str) -> list[Tick] | None:
             vus.add(cle)
             sortie.append(t)
     return sortie
-
-
-def _casier(ecart_ms: int) -> int:
-    for borne in BORNES_ECARTS_MS:
-        if ecart_ms <= borne:
-            return borne
-    return -1
 
 
 def _quantile_histo(histo: Mapping[int, int], q: float) -> int | None:
@@ -132,10 +126,14 @@ class ComparaisonDoublons:
 
     def ajouter_minute(self, paire: str, minute: int, ticks: Sequence[Tick],
                        bougie: Candle | None = None) -> None:
+        """Une minute de ticks stockés. Tourne dans le rejeu sur chaque
+        chemin : une passe sur les ticks, le reste sur des listes d'entiers."""
         if not ticks:
             return
         n = len(ticks)
-        cles = Counter((t.ts_ms, t.price) for t in ticks)
+        ts = [t.ts_ms for t in ticks]
+        prix = [t.price for t in ticks]
+        cles = Counter(zip(ts, prix))
         exacts = n - len(cles)
         part = exacts / n
         regime = ("simple" if part < PART_SIMPLE else
@@ -143,41 +141,53 @@ class ComparaisonDoublons:
         self.minutes[regime] += 1
         self.ticks_regime[regime] += n
         self.exacts_regime[regime] += exacts
-        for copies in cles.values():
-            self.multiplicites[min(copies, 3)] += 1
+        copies = Counter(min(c, 3) for c in cles.values())
+        self.multiplicites.update(copies)
         if regime == "doublee":
-            self.orphelins_doublees[0] += sum(1 for c in cles.values()
-                                              if c == 1)
+            self.orphelins_doublees[0] += copies.get(1, 0)
             self.orphelins_doublees[1] += len(cles)
-        instants = Counter(t.ts_ms for t in ticks)
-        prix_par_instant: dict[int, set] = {}
-        for t in ticks:
-            if instants[t.ts_ms] > 1:
-                prix_par_instant.setdefault(t.ts_ms, set()).add(t.price)
-        self.meme_instant_autre_prix += sum(
-            len(v) - 1 for v in prix_par_instant.values())
+        # Même instant, prix différents : distincts par instant moins un.
+        par_instant = Counter(t for t, _p in cles)
+        self.meme_instant_autre_prix += sum(c - 1 for c in par_instant.values()
+                                            if c > 1)
         jour = minute // 86400 * 86400
         v = self.minutes_doublees_par_jour.setdefault(jour, [0, 0])
         v[0] += 1
         v[1] += regime == "doublee"
 
+        # La politique expérimentale : la première occurrence de chaque
+        # (instant, prix), dans l'ordre.
+        if exacts:
+            vus: set = set()
+            garde = []
+            for k, cle in enumerate(zip(ts, prix)):
+                if cle not in vus:
+                    vus.add(cle)
+                    garde.append(k)
+            ts_e = [ts[k] for k in garde]
+            prix_e = [prix[k] for k in garde]
+        else:
+            ts_e, prix_e = ts, prix
+        flux = {"aucune": (ts, prix), "experimentale": (ts_e, prix_e)}
         ohlc: dict[str, tuple] = {}
         pauvres: dict[str, bool] = {}
         for nom, pol in self.politiques.items():
-            flux = dedoublonner(ticks, nom) or []
-            pol.ticks += len(flux)
-            ts = [t.ts_ms for t in flux]
-            for a, b in zip(ts, ts[1:]):
-                pol.ecarts[_casier(b - a)] += 1
-                pol.decroissants += b < a
-            pauvres[nom] = len(flux) < TICKS_MIN
+            t_, p_ = flux[nom]
+            m = len(t_)
+            pol.ticks += m
+            ecarts = [b - a for a, b in zip(t_, t_[1:])]
+            pol.decroissants += sum(1 for e in ecarts if e < 0)
+            pol.ecarts.update(BORNES_ECARTS_MS[i]
+                              if (i := bisect_left(BORNES_ECARTS_MS, e))
+                              < len(BORNES_ECARTS_MS) else -1
+                              for e in ecarts)
+            pauvres[nom] = m < TICKS_MIN
             pol.pauvres += pauvres[nom]
             if bougie is not None:
                 pol.concordance_n[0] += 1
-                pol.concordance_n[1] += bougie.tick_count == len(flux)
-            pol.par_jour.setdefault((paire, jour), []).append(len(flux))
-            prix = [t.price for t in flux]
-            ohlc[nom] = (prix[0], max(prix), min(prix), prix[-1])
+                pol.concordance_n[1] += bougie.tick_count == m
+            pol.par_jour.setdefault((paire, jour), []).append(m)
+            ohlc[nom] = (p_[0], max(p_), min(p_), p_[-1])
         for i, champ in enumerate("ohlc"):
             if ohlc["aucune"][i] != ohlc["experimentale"][i]:
                 self.ohlc_change[champ] += 1
@@ -271,7 +281,8 @@ def texte(r: Mapping[str, Any]) -> str:
             for k, v in r["multiplicites"].items()) + ".",
         f"[Borne] Faux positifs de l'heuristique, au plus "
         f"{_pc(r['borne_faux_positifs'])} des ticks d'un flux simple "
-        f"(enregistrements identiques dans les minutes simples).",
+        f"({g['simple']['doublons_exacts']} enregistrement(s) identique(s) "
+        f"sur {g['simple']['ticks']} ticks des minutes simples).",
         f"[Fait observé] Minutes doublées : {_pc(r['orphelins_doublees'])} "
         f"des ticks distincts n'ont pas de jumeau.",
         f"[Fait observé] Même instant, autre prix (jamais écartés) : "
