@@ -211,6 +211,40 @@ def test_les_trous_selon_que_le_collecteur_battait_ou_non(tmp_path):
     assert any("battement" in x for x in r["limites"])
 
 
+def test_une_paire_fermee_au_broker_n_est_pas_un_trou(tmp_path):
+    """EURJPY fermée par le broker le 26/10 19:51, CADJPY absente de 01:02 à
+    02:34 : une minute sans ticks parce que le broker ne cote pas n'est pas
+    un trou de collecte. La table des payouts dit quand la paire était
+    fermée (is_open) ; la cause s'établit sans être inventée."""
+    from maxprofit.live.ticks import lire_ouvertures
+    trous = set(range(10, 45))                     # 35 min sans ticks
+    conn = _base(tmp_path, _flux(trous=trous))
+    conn.executemany(
+        "INSERT INTO payouts (ts_sec, pair, payout_pct, is_open) "
+        "VALUES (?, ?, ?, ?)",
+        [(T0 - 300, P, 92, 1), (T0 + 600, P, 92, 0), (T0 + 2700, P, 92, 1)])
+    conn.commit()
+    ouvertures = lire_ouvertures(conn, P, T0, T0 + 3600)
+    assert ouvertures == [(T0 - 300, 1), (T0 + 600, 0), (T0 + 2700, 1)]
+    lecteur = MarketReader(conn)
+    audit = nouvel_audit(T0, T0 + 3600)
+    audit.noter_battements(lire_battements(conn, audit.debut, audit.fin))
+    audit.ajouter_paire(P, lecteur.candles(P, 60, T0 - 3600, T0 + 3600),
+                        lecteur.tick_paths(P, T0, T0 + 3600),
+                        ouvertures=ouvertures)
+    r = audit.resultat()
+    t = r["controles"]["trous"]
+    assert t["manquantes_fermees"] == 35 and t["manquantes_ecoutees"] == 0
+    assert r["statuts"]["trous"] == "PASS", "fermée n'est pas trouée"
+    assert t["interruptions_longues"] == 0
+    assert _comptes(r)[("INFO", "paire fermée au broker")] == 1
+    assert "paire fermée au broker 35" in texte(r)
+    # Sans relevé d'ouverture lu, rien n'est réputé fermé.
+    _a, r2 = _auditer(conn)
+    assert r2["controles"]["trous"]["manquantes_ecoutees"] == 35
+    assert "paire fermée au broker non contrôlé" in texte(r2)
+
+
 def test_une_paire_sans_ticks_et_des_ticks_sans_battement(tmp_path):
     conn = _base(tmp_path, _flux(minutes=60), battements=False)
     ecrivain = MarketWriter(conn)

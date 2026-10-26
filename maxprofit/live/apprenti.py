@@ -183,11 +183,15 @@ class Apprenti:
                 exemples += de_la_paire
                 if audit_ticks is not None:
                     try:
+                        from maxprofit.live.ticks import lire_ouvertures
                         audit_ticks.ajouter_paire(
                             paire, bougies, lecteur.tick_paths(
                                 paire, audit_ticks.debut, audit_ticks.fin),
                             de_la_paire, respirer=respirer,
-                            relire=lecteur.ticks)
+                            relire=lecteur.ticks,
+                            ouvertures=lire_ouvertures(
+                                conn, paire, audit_ticks.debut,
+                                audit_ticks.fin))
                     except Exception as erreur:      # noqa: BLE001
                         log.exception("Audit des ticks en échec sur %s",
                                       paire)

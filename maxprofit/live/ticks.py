@@ -57,6 +57,22 @@ def lire_battements(conn, debut: int, fin: int) -> list[int]:
         REQUETES["battements"], (int(debut), int(fin))).fetchall()]
 
 
+def lire_ouvertures(conn, paire: str, debut: int,
+                    fin: int) -> list[tuple[int, int]] | None:
+    """(instant, ouverte) de la paire chez le broker : le relevé en vigueur
+    au début de la fenêtre, puis ses changements. None si la table est
+    illisible : la distinction « fermée / trou » n'est alors pas faite."""
+    try:
+        avant = conn.execute(REQUETES["ouverture_avant"],
+                             (paire, int(debut))).fetchone()
+        lignes = conn.execute(REQUETES["ouvertures"],
+                              (paire, int(debut), int(fin))).fetchall()
+    except Exception:                                    # noqa: BLE001
+        return None
+    sortie = [(int(avant[0]), int(avant[1]))] if avant else []
+    return sortie + [(int(t), int(o)) for t, o in lignes]
+
+
 def lire_ordres(conn) -> list[dict]:
     """Tous les ordres du journal, refusés compris (ils comptent dans les
     exclusions). Une table absente ou trop ancienne rend une liste vide : le
@@ -225,7 +241,9 @@ def texte(r: Mapping | None, fichier: bool = False) -> str:
         f"({_e(t['definition'])}) ; observées {_n(t['minutes_avec_ticks'])} "
         f"({_part(t['minutes_avec_ticks'], t['minutes_attendues'])}) ; "
         f"absentes alors que le collecteur battait "
-        f"{_n(t['manquantes_ecoutees'])}, collecteur muet "
+        f"{_n(t['manquantes_ecoutees'])}, paire fermée au broker "
+        + (f"{_n(t['manquantes_fermees'])}" if t.get("ouvertures_lues")
+           else "non contrôlé") + f", collecteur muet "
         f"{_n(t['manquantes_muettes'])}, sans historique des battements "
         f"{_n(t.get('manquantes_sans_historique', 0))} ; ticks "
         f"{_n(h['ticks'])}.",

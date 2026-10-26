@@ -105,6 +105,18 @@ postérieures à cette mesure, et le disent.
   (#90) : au plus quelques minutes en service. Elle ne doit revenir qu'après
   l'enquête (docs/enquete_doublons.md), dans une modification distincte.
 
+- **Paire fermée au broker ≠ trou de collecte** (ajout du 26/10).
+  - Constat : EURJPY fermée par le broker le 26/10 à 19:51, CADJPY absente
+    de 01:02 à 02:34, alors que le collecteur tournait.
+  - Le collecteur ne s'abonne pas à une paire que le broker déclare fermée
+    (`Collector._paires_epinglees`). La table `payouts` garde cet état
+    (`is_open`) à chaque changement.
+  - Une minute sans ticks où le dernier relevé en vigueur dit la paire fermée
+    est comptée « paire fermée au broker » (anomalie INFO), hors du contrôle
+    des trous.
+  - Requêtes `ouverture_avant` et `ouvertures`. Les bornes sont à 5 min près
+    (relevés toutes les 5 min).
+
 ## 3. Règles de complétude d'une fenêtre de signal
 
 Fenêtre = [décision − 15 min, décision + 15 min[, 30 minutes. Complète si,

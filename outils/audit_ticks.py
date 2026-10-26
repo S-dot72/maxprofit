@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from maxprofit.core.config import charger_env_local            # noqa: E402
 from maxprofit.live.ticks import (                             # noqa: E402
-    fichiers, lire_battements, lire_ordres, nouvel_audit)
+    fichiers, lire_battements, lire_ordres, lire_ouvertures, nouvel_audit)
 from maxprofit.store.market import MarketReader                # noqa: E402
 
 #: Historique lu avant la fenêtre pour que ZoneH1 y trouve ses zones H1.
@@ -87,7 +87,9 @@ def auditer(conn, debut: int, fin: int, paires=None):
                 strategie.p.tolerance_pct, f))
         audit.ajouter_paire(paire, bougies,
                             lecteur.tick_paths(paire, audit.debut, audit.fin),
-                            signaux, relire=lecteur.ticks)
+                            signaux, relire=lecteur.ticks,
+                            ouvertures=lire_ouvertures(
+                                conn, paire, audit.debut, audit.fin))
     audit.comparer_ordres(lire_ordres(conn), lecteur.ticks)
     return (audit.resultat(commit=commit() or "local",
                            parametres_extra={"outil": "outils/audit_ticks.py"}),
