@@ -328,6 +328,11 @@ async def _servir(args) -> int:
                 argument)
             bot._classement = lambda argument: asyncio.to_thread(
                 proposer_les_paires, cfg, argument)
+            # Étape 2 : le diagnostic du stockage, en lecture seule.
+            from maxprofit.hosting.stockage import rapport as rapport_stockage
+            bot._stockage = lambda: asyncio.to_thread(
+                rapport_stockage, cfg.db, None,
+                getattr(getattr(rotation, "releve", None), "url", None))
             bot._bilan = lambda: asyncio.to_thread(
                 bilan, getattr(_course.get("sup"), "_course", None))
             bot._echeances = lambda: asyncio.to_thread(
@@ -410,6 +415,11 @@ async def _servir(args) -> int:
             boucle.call_later(args.duration, _arreter)
 
         taches = [asyncio.create_task(superviseur.boucler(), name="superviseur")]
+        # Relevés de taille de la base, en mémoire, pour la croissance
+        # physique MESURÉE de /stockage. Lecture seule ; rien n'est écrit.
+        from maxprofit.hosting.stockage import echantillonner_en_boucle
+        taches.append(asyncio.create_task(
+            echantillonner_en_boucle(cfg.db), name="taille"))
         adresse = os.environ.get(ENV_ADRESSE_PUBLIQUE, "").strip()
         if adresse:
             taches.append(asyncio.create_task(

@@ -290,6 +290,7 @@ COMMANDES = [
     ("simulation", "Martingale 3 / 2 pas / sans, simulées sur l'historique"),
     ("bilan", "Taux de réussite réel des ordres, par période et par paire"),
     ("classement", "Les N meilleures paires à coller dans PAIRES_FIXES"),
+    ("stockage", "Place occupée, croissance, répétitions des payouts"),
     ("echeances", "Taux de réussite à 5, 10 et 15 min comparés"),
     ("laboratoire", "Variantes de la stratégie jugées sur des jours jamais vus"),
     ("experiences", "La référence jouée face à une variable à la fois"),
@@ -413,6 +414,7 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._bilan: Callable[[], Awaitable[str]] | None = None
         self._simulation: Callable[[], Awaitable[str]] | None = None
         self._classement: Callable[[str], Awaitable[str]] | None = None
+        self._stockage: Callable[[], Awaitable[str]] | None = None
         self._echeances: Callable[[], Awaitable[str]] | None = None
         self._laboratoire: Callable[[], Awaitable[str]] | None = None
         self._experiences: Callable[[], Awaitable[str]] | None = None
@@ -616,6 +618,15 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
             else:
                 await self.client.envoyer(chat, await self._echeances(),
+                                          CLAVIER)
+        elif texte.startswith("/stockage"):
+            if self._stockage is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "💾 Mesure en cours (lecture seule, une minute "
+                    "environ)…", CLAVIER)
+                await self.client.envoyer(chat, await self._stockage(),
                                           CLAVIER)
         elif texte.startswith("/classement"):
             if self._classement is None:
