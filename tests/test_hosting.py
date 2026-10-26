@@ -515,3 +515,31 @@ def test_le_service_s_appelle_lui_meme_pour_ne_pas_s_endormir():
         return len(appels)
 
     assert asyncio.run(scenario()) >= 3
+
+
+def test_paires_dit_pourquoi_une_epinglee_manque(tmp_path):
+    """CADJPY a disparu des paires suivies le 26/10 : /paires dit ce que le
+    code permet d'en dire, à partir de l'état du collecteur et du dernier
+    relevé de payout (lecture seule)."""
+    from types import SimpleNamespace
+    from maxprofit.hosting.service import _paires
+    chemin = tmp_path / "m.db"
+    conn = open_read_write(chemin)
+    conn.executemany(
+        "INSERT INTO payouts (ts_sec, pair, payout_pct, is_open) "
+        "VALUES (?, ?, ?, ?)",
+        [(1_792_990_920, "CADJPY_otc", 72, 0),
+         (1_792_990_920, "NZDJPY_otc", 92, 1)])
+    conn.commit()
+    conn.close()
+    collecteur = SimpleNamespace(
+        subscribed=["EURUSD_otc"],
+        cfg=SimpleNamespace(paires_fixes=(
+            "EURUSD_otc", "CADJPY_otc", "NZDJPY_otc", "XXXYYY_otc")),
+        _plafond_abonnements=2)
+    texte = asyncio.run(_paires(SimpleNamespace(collecteur=collecteur),
+                                chemin))
+    assert "plafond d'abonnements : 2" in texte
+    assert "CADJPY_otc (rang 2/4) : FERMÉE au dernier relevé" in texte
+    assert "NZDJPY_otc (rang 3/4) : coupée par le plafond" in texte
+    assert "XXXYYY_otc (rang 4/4) : aucun relevé de payout" in texte

@@ -76,6 +76,42 @@ fait :
 - **Croissance structurelle** : environ 22 Mo par jour. Même avec tous ces
   gains, 512 Mo ne tiennent pas plus de trois semaines d'historique complet.
 
+## Console Neon (captures du 26/10, après la mesure de 09:20)
+
+| Champ | Valeur | Statut |
+|---|---|---|
+| Offre | **Free plan**, 1 projet, 1 branche (`production`) | Vérifié |
+| Calcul | 0,25 ↔ 2 CU ; 13 CU-h depuis le 19/10 | Vérifié |
+| Storage | **464,83 MB** (0,46 GB) | Vérifié |
+| History | 16,93 MB (rétention 6 h) | Vérifié |
+| Network transfer | **2,39 GB** depuis le 19/10 | Vérifié |
+
+- **Ce que compte Neon** [Probable] : la somme de **toutes les bases**, en
+  Mo décimaux. À 09:20, « toutes les bases » faisait 438,5 Mio, soit
+  459,8 Mo ; environ 5 Mo de croissance jusqu'à la capture mènent bien à
+  464,83 Mo. La métrique qui déclenche la limite est donc le total du
+  projet, pas notre seule base.
+- **La valeur de la limite n'apparaît pas sur ces écrans** [Inconnu]. L'offre
+  gratuite annonce 0,5 Go par projet (à confirmer sur la page de l'offre).
+  Selon l'unité :
+  - 500 Mo décimaux : **environ 35 Mo restants, soit environ 1,5 jour**
+    (vers le 28/10 au matin) ;
+  - 512 Mio (536,9 Mo) : environ 72 Mo restants, soit environ 3 jours.
+  Il faut prévoir le pire cas. Que l'historique (16,93 Mo) compte ou non
+  dans la limite est inconnu.
+- **Transfert réseau, second risque** [Hypothèse sur la limite] : 2,39 Go en
+  6 à 7 jours, soit 0,35 à 0,4 Go par jour. L'offre gratuite plafonne le
+  transfert mensuel (5 Go à ma connaissance, à confirmer). À ce rythme, le
+  plafond tomberait vers le 1er ou 2 novembre, bien avant le renouvellement
+  du cycle (19/11).
+  - Sources probables : les rejeux quotidiens (lecture de 7 jours de chemins
+    de ticks et de l'historique des bougies), la synchronisation de la relève
+    (qui relit la dernière heure toutes les 20 min), les lectures de la
+    course.
+  - Un `pg_dump` complet en coûterait environ 0,46 Go.
+- **Calcul** : 13 CU-h en 7 jours n'est pas une contrainte à ce rythme (à
+  confirmer face à l'allocation de l'offre).
+
 ## Ce qui était connu avant `/stockage`
 
 - **Vérifié** (`/etat` du 26/10) : 416 Mo affichés sur 512 (81 %) ; chemins de

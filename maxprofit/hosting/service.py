@@ -321,7 +321,7 @@ async def _servir(args) -> int:
             bot._etat = lambda: _resume(superviseur, etat_collecte,
                                         _course.get("sup"), rotation)
             bot._installer_jeton = superviseur.installer_jeton
-            bot._paires = lambda: _paires(superviseur)
+            bot._paires = lambda: _paires(superviseur, cfg.db)
             bot._diagnostic = lambda: _diagnostic(superviseur)
             bot._rapatrier = lambda argument: asyncio.to_thread(
                 rapatrier, getattr(_course.get("sup"), "_course", None),
@@ -870,15 +870,77 @@ async def _diagnostic(superviseur: Superviseur) -> str:
     return "\n".join(lignes)
 
 
-async def _paires(superviseur: Superviseur) -> str:
+def _derniers_payouts(chemin, paires) -> dict:
+    """Le dernier relevé de payout de chaque paire : (instant, payout,
+    ouverte). Lecture seule, une requête indexée par paire."""
+    from maxprofit.store.db import open_read_only
+    sortie: dict = {}
+    try:
+        conn = open_read_only(chemin)
+    except Exception:                                    # noqa: BLE001
+        return sortie
+    try:
+        for paire in paires:
+            ligne = conn.execute(
+                "SELECT ts_sec, payout_pct, is_open FROM payouts "
+                "WHERE pair = ? ORDER BY ts_sec DESC LIMIT 1",
+                (paire,)).fetchone()
+            if ligne is not None:
+                sortie[paire] = (int(ligne[0]), int(ligne[1]), int(ligne[2]))
+    except Exception:                                    # noqa: BLE001
+        pass
+    finally:
+        conn.close()
+    return sortie
+
+
+def _pourquoi_absentes(collecteur, souscrites, etats) -> list[str]:
+    """Les paires épinglées non suivies, et ce que le code permet d'en dire
+    (`Collector.refresh_pairs`) : fermée au broker, inconnue du catalogue, ou
+    coupée par le plafond d'abonnements après un refus du broker."""
+    fixes = list(getattr(getattr(collecteur, "cfg", None), "paires_fixes",
+                         ()) or ())
+    if not fixes:
+        return []
+    import time as _time
+    plafond = getattr(collecteur, "_plafond_abonnements", None)
+    lignes = ["", f"Épinglées (PAIRES_FIXES) : {len(fixes)} ; plafond "
+                  f"d'abonnements : {plafond if plafond is not None else 'aucun'}"]
+    for rang, nom in enumerate(fixes, start=1):
+        if nom in souscrites:
+            continue
+        etat = etats.get(nom)
+        if etat is None:
+            cause = "aucun relevé de payout : inconnue du catalogue ?"
+        elif not etat[2]:
+            cause = "FERMÉE au dernier relevé du broker"
+        elif plafond is not None and rang > plafond:
+            cause = ("coupée par le plafond d'abonnements (refus du broker), "
+                     "jusqu'au prochain redémarrage")
+        else:
+            cause = "ouverte au dernier relevé : cause non établie"
+        releve = ("" if etat is None else
+                  f" — dernier relevé {_time.strftime('%d/%m %H:%M', _time.gmtime(etat[0]))}"
+                  f" UTC, payout {etat[1]} %")
+        lignes.append(f"• {nom} (rang {rang}/{len(fixes)}) : {cause}{releve}")
+    return lignes
+
+
+async def _paires(superviseur: Superviseur, chemin=None) -> str:
     """Ce à quoi la collecte est réellement abonnée.
 
     Répond à la question qu'aucun compteur global ne tranche : le collecteur
     tourne peut-être, mais suit-il les bonnes paires ? Le week-end, seules les
-    paires OTC cotent, et le seuil de payout peut n'en laisser aucune.
+    paires OTC cotent, et le seuil de payout peut n'en laisser aucune. Les
+    paires épinglées absentes sont listées avec leur dernier relevé.
     """
     collecteur = superviseur.collecteur
     souscrites = list(getattr(collecteur, "subscribed", []) or [])
+    fixes = list(getattr(getattr(collecteur, "cfg", None), "paires_fixes",
+                         ()) or ())
+    manquantes = [p for p in fixes if p not in souscrites]
+    etats = (await asyncio.to_thread(_derniers_payouts, chemin, manquantes)
+             if manquantes and chemin is not None else {})
     if not souscrites:
         return ("<b>Aucune paire suivie</b>\n\n"
                 "Soit la collecte n'a pas démarré, soit aucune paire n'atteint "
@@ -888,6 +950,7 @@ async def _paires(superviseur: Superviseur) -> str:
     lignes += [f"• {nom}" for nom in souscrites[:30]]
     if len(souscrites) > 30:
         lignes.append(f"… et {len(souscrites) - 30} autres")
+    lignes += _pourquoi_absentes(collecteur, souscrites, etats)
     return "\n".join(lignes)
 
 

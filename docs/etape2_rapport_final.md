@@ -24,7 +24,13 @@ Sources :
   lignes. La mesure physique demande 24 h de relevés sans redémarrage, d'où
   aucun déploiement en attendant.
 - **Délai** [Hypothèse, 512 Mo] : 3,2 à 4,1 jours selon que Neon compte
-  toutes les bases ou la seule base. **Urgence : décider avant le 28/10.**
+  toutes les bases ou la seule base.
+- **Console Neon** (Free plan) [Vérifié] : Storage 464,83 Mo, History
+  16,93 Mo, Network transfer 2,39 Go depuis le 19/10. Neon compte le total
+  des bases [Probable]. Pire cas : limite de 500 Mo décimaux, soit **environ
+  1,5 jour** ; 512 Mio, environ 3 jours. **Urgence : décider tout de suite.**
+- **Transfert réseau** : un second plafond probable vers le 1er ou
+  2 novembre (livrable A).
 
 ## 2. Payouts
 
@@ -89,11 +95,25 @@ sont calculées qu'à partir de ticks antérieurs à la décision − G (livrabl
 - **Non stockés** : heure de réception, ordre d'arrivée, socket d'origine.
 - **Battements** : absents de la base avant le 24/10.
 - **Trous** : 480 minutes de ticks sans bougie le 24/10 (02:02-02:25).
-- **CADJPY** : plus collectée depuis le 26/10 01:02. La paire est absente des
-  19 paires souscrites ; cause non établie (fermeture au broker ou
-  éligibilité).
-- **Ordres** : 5 refusés par le broker (O0026 à O0030) depuis le 26/10 vers
-  03:00 ; motif non visible dans la fiche.
+- **CADJPY** : plus collectée depuis le 26/10 01:02, absente des 19 paires
+  souscrites. Le code (`Collector.refresh_pairs`) ne laisse que trois causes :
+  - paire **fermée** au dernier relevé du broker ;
+  - paire **inconnue** du catalogue ;
+  - paire **coupée par le plafond d'abonnements**, abaissé après un refus du
+    broker et qui le reste jusqu'au redémarrage : ce plafond tronque
+    `PAIRES_FIXES` par la fin.
+  `/paires` dira laquelle (correctif prêt, non déployé).
+- **Ordres** : l'étiquette « refusé par le broker » de l'audit était
+  **fausse en partie** [Vérifié, code]. La course inscrit chaque ordre AVANT
+  de l'envoyer, et une ligne non acceptée peut être :
+  - une réservation en suspens ;
+  - un ordre arrêté avant l'envoi (« non envoyé : … » : plafonds, prix,
+    payout) ;
+  - une réservation introuvable chez le broker ;
+  - un vrai refus, avec motif et contexte.
+  Le motif est dans la colonne `refus`, que l'audit ne lisait pas. C'est
+  corrigé (non déployé) : la fiche et le rapport donneront le motif des 5
+  ordres O0026 à O0030.
 - **`/classement`** : il annonce une part du temps au plafond et mesure une
   part de relevés, avec environ 20 points d'écart en médiane.
 
