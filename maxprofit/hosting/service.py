@@ -155,9 +155,12 @@ def univers_trade(cfg) -> tuple[str, ...]:
 #: L'adresse publique que Render donne à chaque service.
 ENV_ADRESSE_PUBLIQUE = "RENDER_EXTERNAL_URL"
 
-#: Le stockage de la base, en Mo : 0,5 Go sur l'offre gratuite de Neon.
+#: Le stockage de la base, en Mio (2²⁰ octets) : l'offre gratuite de Neon
+#: donne 1 Go DÉCIMAL par projet (documentation de Neon, lue le 27/10 ; la
+#: console compte en Mo décimaux), soit 953 Mio. 0,5 Go était l'ancienne
+#: limite.
 ENV_QUOTA_STOCKAGE = "QUOTA_STOCKAGE_MO"
-QUOTA_STOCKAGE_MO_DEFAUT = 512
+QUOTA_STOCKAGE_MO_DEFAUT = 953
 NOMS_TABLES = {"tick_paths": "chemins de ticks", "candles": "bougies",
                "payouts": "payouts", "uptime": "battements",
                "executions": "ordres", "ticks": "ticks (v1)"}

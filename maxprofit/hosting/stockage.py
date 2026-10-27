@@ -30,7 +30,9 @@ ECHANTILLONS = ds.Echantillons()
 #: Entre deux relevés de taille.
 PAS_ECHANTILLON_SEC = 1800
 ENV_QUOTA = "QUOTA_STOCKAGE_MO"
-QUOTA_DEFAUT_MO = 512
+#: 1 Go décimal par projet sur l'offre gratuite de Neon, en Mio (voir
+#: `service.QUOTA_STOCKAGE_MO_DEFAUT`).
+QUOTA_DEFAUT_MO = 953
 MO = 2 ** 20
 
 
@@ -116,10 +118,11 @@ def _pc(a, b) -> str:
 
 def _quota() -> tuple[float, str]:
     try:
-        return float(os.environ.get(ENV_QUOTA, "") or QUOTA_DEFAUT_MO), \
-            f"{ENV_QUOTA} (hypothèse)"
+        if os.environ.get(ENV_QUOTA, ""):
+            return float(os.environ[ENV_QUOTA]), ENV_QUOTA
     except ValueError:
-        return float(QUOTA_DEFAUT_MO), "défaut (hypothèse)"
+        pass
+    return float(QUOTA_DEFAUT_MO), "offre gratuite de Neon : 1 Go décimal"
 
 
 def _texte_classement(c: dict) -> list[str]:
@@ -165,8 +168,9 @@ def texte(d: dict, releve: dict | None = None) -> str:
         f"{_mo(t.get('toutes_bases'))} ; taille comptée par Neon "
         f"{_mo(t.get('taille_neon')) if t.get('taille_neon') else 'non exposée'}.",
         f"Limite : {quota:.0f} Mo — source : {source}"
-        + ("" if t.get("limite_mo") else " [Inconnu : à lire dans la console "
-           "Neon, qui seule fait foi]") + "."]
+        + ("" if t.get("limite_mo") else
+           " [Probable : documentation de Neon, compte en Mo décimaux ; la "
+           "console fait foi]") + "."]
     for nom, v in list(t.get("tables", {}).items())[:8]:
         mortes = v.get("mortes")
         vivantes = v.get("vivantes")

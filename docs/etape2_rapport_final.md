@@ -18,8 +18,10 @@ Sources :
   - lignes mortes quasi nulles ;
   - index : 153 Mo au total ;
   - relève : 409,2 Mo.
-- **Limite** [Inconnu] : non exposée. 512 Mo est une hypothèse, à lire dans
-  la console Neon.
+- **Limite** [Vérifié le 27/10, documentation de Neon] : **1 Go par
+  projet** sur l'offre gratuite, et **5 Go de transfert réseau par mois**.
+  Le 512 Mo de départ était une hypothèse, et 0,5 Go l'ancienne limite.
+  Voir la mise à jour du livrable A.
 - **Croissance** [Probable] : 21,4 à 22,7 Mo par jour, estimée sur les
   lignes. La mesure physique demande 24 h de relevés sans redémarrage, d'où
   aucun déploiement en attendant.
@@ -29,8 +31,10 @@ Sources :
   16,93 Mo, Network transfer 2,39 Go depuis le 19/10. Neon compte le total
   des bases [Probable]. Pire cas : limite de 500 Mo décimaux, soit **environ
   1,5 jour** ; 512 Mio, environ 3 jours. **Urgence : décider tout de suite.**
-- **Transfert réseau** : un second plafond probable vers le 1er ou
-  2 novembre (livrable A).
+- **Transfert réseau** : le plafond de 5 Go par mois tomberait vers le
+  3 novembre au rythme actuel. Il suspendrait le calcul jusqu'à la période
+  suivante. C'est désormais le premier risque, devant le stockage (environ
+  1 Go vers mi-novembre).
 
 ## 2. Payouts
 

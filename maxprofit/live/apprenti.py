@@ -163,6 +163,9 @@ class Apprenti:
             strategies_simples = StrategiesSimples(debut, coupure_temps,
                                                    ouverture_s())
             exclusions: dict[str, int] = {}
+            # Étape 3 : le niveau de zone de chaque signal, relevé au passage
+            # (la stratégie le calcule déjà ; le rejeu ne le gardait pas).
+            niveaux: dict = {}
             respirer = lambda: time.sleep(RESPIRATION_SEC)  # noqa: E731
             # L'étape 0 des ticks (/ticks), en lecture seule, sur les
             # derniers jours : elle réutilise les bougies et les signaux
@@ -179,7 +182,8 @@ class Apprenti:
                     echeance_sec=strategie.p.expiry_sec,
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
-                    respirer=respirer, exclusions=exclusions)
+                    respirer=respirer, exclusions=exclusions,
+                    niveaux=niveaux)
                 exemples += de_la_paire
                 if audit_ticks is not None:
                     try:
@@ -309,6 +313,7 @@ class Apprenti:
             fin=fin, jours_collectes=qualite.jours_collectes)
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
+        course.niveaux_en_memoire = niveaux
         # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
         # Une alerte de dégradation PRÉVIENT ; elle ne change aucune règle.
         from maxprofit.live.stabilite import stabilite, texte_alerte
@@ -386,7 +391,7 @@ class Apprenti:
 
 #: Version du contenu des expériences. La changer force un rejeu au
 #: démarrage suivant, au lieu d'attendre le rejeu quotidien.
-VERSION_EXPERIENCES = 16
+VERSION_EXPERIENCES = 17
 
 
 def _avec_zone_confirmee(laboratoire) -> bool:
