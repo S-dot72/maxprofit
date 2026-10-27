@@ -69,6 +69,10 @@ BORNE_MO = 150
 #: Estimation du transfert d'une bougie (neuf colonnes et le protocole).
 OCTETS_PAR_BOUGIE = 100
 PAIRE_DU_CONTROLE = "EURUSD_otc"
+#: Les clés que le protocole AJOUTE au contexte de chaque signal APRÈS le
+#: rejeu (`protocole.marquer_qualite`). Un rejeu refait ne les a pas : ce
+#: n'est pas un écart du rejeu, et le contrôle les écarte en le disant.
+ANNOTATIONS_APRES_REJEU: tuple[str, ...] = ("donnees_douteuses",)
 
 
 class ConnexionTracee:
@@ -275,16 +279,45 @@ def controle_du_rejeu(conn: ConnexionTracee, course, exemples, paire: str,
 
     seul = rejouer()
     avec = rejouer({})
-    memoire = sorted((e for e in exemples if e.pair == paire
-                      and debut <= e.ts_sec < debut + 86400),
-                     key=lambda e: e.ts_sec)
-    ecarts = [e.ts_sec for e, m in zip(seul, memoire) if cle(e) != cle(m)]
-    return {"paire": paire, "memoire": len(memoire), "recalcul": len(seul),
-            "identique": len(seul) == len(memoire) and not ecarts,
-            "ecarts": ecarts[:3],
+    memoire = {e.ts_sec: e for e in exemples if e.pair == paire
+               and debut <= e.ts_sec < debut + 86400}
+    refait = {e.ts_sec: e for e in seul}
+    champs: Counter = Counter()
+    differents = 0
+    for d in sorted(set(memoire) | set(refait)):
+        if d not in refait or d not in memoire:
+            champs["absent du rejeu refait" if d not in refait
+                   else "absent du rejeu en mémoire"] += 1
+            differents += 1
+            continue
+        ecart = champs_differents(memoire[d], refait[d])
+        champs.update(ecart)
+        differents += bool(ecart)
+    return {"paire": paire, "memoire": len(memoire), "recalcul": len(refait),
+            "identique": not differents, "differents": differents,
+            "champs": dict(champs),
+            "annotes": sum(1 for e in memoire.values()
+                           if any(k in e.contexte
+                                  for k in ANNOTATIONS_APRES_REJEU)),
             "passif_sans_effet": [cle(e) for e in seul]
             == [cle(e) for e in avec],
             "temps": time.monotonic() - t}
+
+
+def champs_differents(a, b) -> list[str]:
+    """Ce qui diffère entre deux exemples d'un même signal, hors des
+    annotations posées après le rejeu."""
+    champs = []
+    if a.gagne != b.gagne:
+        champs.append("issue")
+    if dict(a.issues) != dict(b.issues):
+        champs.append("issues aux autres échéances")
+    ca = {k: v for k, v in a.contexte.items()
+          if k not in ANNOTATIONS_APRES_REJEU}
+    cb = {k: v for k, v in b.contexte.items()
+          if k not in ANNOTATIONS_APRES_REJEU}
+    champs += sorted(k for k in set(ca) | set(cb) if ca.get(k) != cb.get(k))
+    return champs
 
 
 # --------------------------------------------------------------------------- #
@@ -515,7 +548,14 @@ def texte(resume: dict, resultats: Sequence[dict], rejeu: dict,
          f"mémoire, {rejeu['recalcul']} rejoués ici ; mêmes décisions, "
          f"issues et contexte : {'oui' if rejeu['identique'] else 'NON'} "
          f"{_ok(rejeu['identique'])}"
-         + (f" (écarts : {rejeu['ecarts']})" if rejeu["ecarts"] else ""),
+         + (f" — {rejeu['differents']} signal(s) différent(s), champs : "
+            + ", ".join(f"{html.escape(k)} ({v})" for k, v in
+                        sorted(rejeu["champs"].items(),
+                               key=lambda kv: -kv[1])[:8])
+            if not rejeu["identique"] else ""),
+         f"- annotation posée après le rejeu, hors comparaison : "
+         f"{', '.join(ANNOTATIONS_APRES_REJEU)} ({rejeu['annotes']} "
+         f"signal(s) en mémoire la portent)",
          f"- le relevé du niveau de zone ne change rien au rejeu : "
          f"{'oui' if rejeu['passif_sans_effet'] else 'NON'} "
          f"{_ok(rejeu['passif_sans_effet'])} (contrôle hors mesure : "
