@@ -467,6 +467,32 @@ En plus : qualité des fenêtres, ordres réels face au flux (§0), puissance
 **Déploiement** : `VERSION_EXPERIENCES` passe à 17, ce qui force le rejeu
 quotidien au démarrage et met les niveaux en mémoire.
 
+**Premier essai v2, le 27/10** (20/10, 20 paires, 123 signaux) :
+
+| Vérification | Résultat |
+|---|---|
+| Temps réel | 65,9 s pour 20 paires-jours, soit 3,3 s chacun ; extrapolé à environ 20 min et 9 Mo ; pic mémoire de 7 Mo. **Dans les bornes.** Répartition : lecture 19 s (latence réseau, 187 requêtes), décodage 6 s, concordance 8 s, variables 33 s |
+| Lecture seule | `transaction_read_only` = on au début et à la fin ; 277 SELECT, 0 refusée |
+| Rejeu inchangé | « NON » sur EURUSD_otc : **défaut du contrôle**, pas du rejeu. `marquer_qualite` ajoute `donnees_douteuses` au contexte de chaque signal après le rejeu, et le contrôle le comptait. Corrigé : l'annotation est écartée en le disant, et tous les champs qui diffèrent sont nommés. **À refaire.** Le relevé passif est sans effet |
+| Concordance | 1 259 minutes lues, toutes « identique » ; 123 signaux sur 123 au niveau 2 |
+| Reproductibilité | empreintes identiques à la relecture |
+| Anti-fuite | 492 sur 492 |
+
+**Qualité des fenêtres** : 93 % VALID. Les 8 PARTIAL se répartissent
+ainsi :
+- 2 viennent d'un gel de 11 s ;
+- 6 viennent de minutes déclarées **fermées** par le catalogue du broker
+  alors que les cotations continuaient (couverture 100 %, aucun écart). La
+  règle, fixée d'avance, n'est pas changée.
+
+**Aperçu de la règle de retrait**, sur un seul jour : elle n'est **pas
+gelée** ici, elle le sera sur toute l'exploration.
+- H1 (`A7_penetration`) et H2 (`D1_traversees`) à 300 s sont bien mesurées :
+  85 et 19 valeurs distinctes, IQR non nul.
+- C5 a un IQR nul à 300 et 900 s, mais il reste conservé, car 61 à 72 % de
+  ses valeurs diffèrent du mode, souvent de quelques millisecondes. C'est
+  la limite de résolution déjà notée (§4) : C5 reste exploratoire.
+
 ## 12. Stockage et transfert : prérequis indépendants
 
 **Limites de l'offre gratuite de Neon** (documentation lue le 27/10) :

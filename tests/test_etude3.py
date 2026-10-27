@@ -219,7 +219,32 @@ def test_le_controle_du_rejeu_voit_un_ecart(tmp_path):
         faux = etude3.controle_du_rejeu(t, course, exemples, P, JOUR)
     finally:
         conn.close()
-    assert not faux["identique"] and faux["ecarts"] == [exemples[i].ts_sec]
+    assert not faux["identique"] and faux["differents"] == 1
+    assert faux["champs"] == {"issue": 1}
+
+
+def test_l_annotation_posee_apres_le_rejeu_n_est_pas_un_ecart(tmp_path):
+    """Le 27/10 en production : `marquer_qualite` ajoute
+    `donnees_douteuses` au contexte de CHAQUE signal après le rejeu. Le
+    contrôle la comptait comme un écart (« NON » sur 10 signaux sur 10)."""
+    from maxprofit.live.protocole import marquer_qualite
+    chemin = _base(tmp_path)
+    course = _course(chemin)
+    exemples = course.rejeu_en_memoire[0]
+    marquer_qualite(exemples, SimpleNamespace(touche=lambda *a: True), 900)
+    assert all("donnees_douteuses" in e.contexte for e in exemples)
+    conn = open_read_only(chemin)
+    try:
+        r = etude3.controle_du_rejeu(etude3.ConnexionTracee(conn), course,
+                                     exemples, P, JOUR)
+    finally:
+        conn.close()
+    assert r["identique"] and r["differents"] == 0
+    assert r["annotes"] == r["memoire"] > 0
+    exemples[0].contexte["distance_niveau"] = 99.0
+    assert etude3.champs_differents(
+        exemples[0], SimpleNamespace(**{**exemples[0].__dict__,
+                                        "contexte": {}})) != []
 
 
 def test_les_ordres_reels_face_au_flux(tmp_path):
