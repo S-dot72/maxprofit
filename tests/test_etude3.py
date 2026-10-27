@@ -52,17 +52,33 @@ class _Strategie:
                                 "entrees_deja_offertes": 0.0})
 
 
-def _course():
+def _course(chemin=None):
+    """La course, avec le rejeu quotidien en mémoire comme le laisse
+    `Apprenti` : exemples, et niveaux de zone relevés au passage."""
     p = SimpleNamespace(lookback=30, expiry_sec=900, tolerance_pct=0.02)
-    return SimpleNamespace(strategie=_Strategie(p), paires_collectees=(P,),
-                           rejeu_en_memoire=None)
+    course = SimpleNamespace(strategie=_Strategie(p), paires_collectees=(P,),
+                             rejeu_en_memoire=None, niveaux_en_memoire=None)
+    if chemin is not None:
+        from maxprofit.apprentissage.historique import exemples_historiques
+        from maxprofit.store.market import MarketReader
+        conn = open_read_only(chemin)
+        try:
+            bougies = MarketReader(conn).candles(P, 60, 0, 4_000_000_000)
+        finally:
+            conn.close()
+        niveaux: dict = {}
+        exemples = exemples_historiques(
+            {P: bougies}, _Strategie(p), echeance_sec=900, niveaux=niveaux)
+        course.rejeu_en_memoire = (exemples, None, 1, "v")
+        course.niveaux_en_memoire = niveaux
+    return course
 
 
 def _base(tmp_path):
     chemin = tmp_path / "m.db"
     conn = open_read_write(chemin)
     ecrivain = MarketWriter(conn)
-    flux = _flux(JOUR - 6 * 3600, JOUR + 86400 + 1800)
+    flux = _flux(JOUR - 8 * 3600, JOUR + 86400 + 2 * 3600, pas_ms=3000)
     agg = CandleAggregator(garder_ticks=True)
     for t in flux:
         agg.add(t)
@@ -102,25 +118,32 @@ def _empreinte(chemin) -> str:
     return hashlib.sha256(chemin.read_bytes()).hexdigest()
 
 
-def test_l_essai_de_bout_en_bout_ne_touche_pas_la_base(tmp_path):
-    chemin = _base(tmp_path)
-    avant = _empreinte(chemin)
+def _essai(chemin, course=None, argument=""):
     conn = open_read_only(chemin)
     lecture_seule(conn)
     try:
-        rapport, fiches = etude3.essai(conn, _course(), "")
+        return etude3.essai(conn, course or _course(chemin), argument)
     finally:
         conn.close()
+
+
+def test_l_essai_de_bout_en_bout_ne_touche_pas_la_base(tmp_path):
+    chemin = _base(tmp_path)
+    avant = _empreinte(chemin)
+    rapport, fiches = _essai(chemin)
     assert _empreinte(chemin) == avant, "l'essai a écrit dans la base"
-    for section in ("1. Coût", "2. Couverture", "3. Anti-fuite",
-                    "4. Disponibilité", "5. Puissance"):
+    for section in ("1. Temps réel", "2. Lecture seule", "3. Rejeu inchangé",
+                    "4. Concordance", "5. Reproductibilité",
+                    "6. Qualité", "7. Ordres réels", "8. Puissance"):
         assert section in rapport, section
-    assert "✅" in rapport, "l'anti-fuite doit passer sur chaque fenêtre"
-    assert "2 ordres" in rapport, "le rapatrié est exclu"
-    # Ticks toutes les 2 s : le dernier tick peut dater de plus d'une
-    # seconde ; il est retrouvé comme « dernier tick » et à ± 2 s.
-    assert "même instant : 1/2" in rapport and "± 2 s : 1/2" in rapport
-    assert "N = 500" in rapport and "+2 points" in rapport
+    assert "⚠️" not in rapport, rapport
+    assert "refusées : 0 ✅" in rapport
+    assert "SQLite (mode=ro)" in rapport
+    assert "issues et contexte : oui ✅" in rapport
+    assert "ne change rien au rejeu : oui ✅" in rapport
+    assert "variables identiques : oui ✅" in rapport
+    assert "dans les bornes ✅" in rapport
+    assert "2 ordres" in rapport
     noms = [nom for _, nom, _ in fiches]
     assert noms == ["micro_essai.csv", "ordres_disponibilite.csv"]
     entete, *lignes = fiches[0][0].decode().splitlines()
@@ -128,23 +151,75 @@ def test_l_essai_de_bout_en_bout_ne_touche_pas_la_base(tmp_path):
     assert "gagne" not in colonnes and "issue" not in colonnes, (
         "l'échantillon ne doit porter aucune issue")
     assert set(mp.VARIABLES) <= set(colonnes)
-    assert lignes and len(lignes) % (2 * 3 * 4) == 0
+    assert lignes and len(lignes) % len(mp.FENETRES_SEC) == 0
+    assert all(";distincts;0;" in x for x in lignes), "sélection : k = 0"
 
 
-def test_l_echantillon_compte_la_qualite_et_le_niveau_2(tmp_path):
+def test_sans_rejeu_en_memoire_l_essai_attend(tmp_path):
     chemin = _base(tmp_path)
+    rapport, fiches = _essai(chemin, course=_course())
+    assert rapport == etude3.ATTENDRE_LE_REJEU and fiches == []
+
+
+def test_seules_les_fenetres_des_signaux_sont_lues(tmp_path):
+    chemin = _base(tmp_path)
+    course = _course(chemin)
+    exemples, niveaux = course.rejeu_en_memoire[0], course.niveaux_en_memoire
+    signaux = etude3.signaux_du_jour(exemples, niveaux, P, JOUR)
+    assert signaux and all(n is not None for _, _, n in signaux)
     conn = open_read_only(chemin)
     try:
-        ech = etude3.echantillon(conn, _course(), P, JOUR)
+        r = etude3.paire_jour(etude3.ConnexionTracee(conn), course, P, JOUR,
+                              signaux)
     finally:
         conn.close()
-    assert ech["minutes"]["presentes"] == 1440 + 15
-    assert ech["fiches"], "des signaux dans la journée"
-    assert ech["classes"] == {mp.VALID: len(ech["fiches"])}
-    assert ech["niveau_2"] == len(ech["fiches"])
-    assert ech["autotests"][0] == ech["autotests"][1] > 0
-    assert set(ech["temps"]) == {"lecture", "decodage", "concordance",
-                                 "signaux", "variables"}
+    minutes = {m for a, b in etude3.intervalles([d for d, _, _ in signaux])
+               for m in range(a, b, 60)}
+    assert r["chemins"] == len(minutes) < 1440
+    assert len(r["fiches"]) == len(signaux)
+    assert r["autotests"][0] == r["autotests"][1] == 4 * len(signaux)
+
+
+def test_les_fenetres_qui_se_touchent_sont_fusionnees():
+    assert etude3.intervalles([1000, 1300, 5000]) == [(100, 1300),
+                                                      (4100, 5000)]
+    assert etude3.intervalles([]) == []
+
+
+def test_la_connexion_tracee_refuse_toute_ecriture(tmp_path):
+    conn = open_read_write(tmp_path / "x.db")
+    try:
+        t = etude3.ConnexionTracee(conn)
+        assert t.execute("SELECT 1").fetchone()[0] == 1
+        for sql in ("INSERT INTO uptime VALUES (1, 1)", "DELETE FROM uptime",
+                    "UPDATE uptime SET n_pairs = 2", "CREATE TABLE z (a)",
+                    "  drop table uptime", "PRAGMA journal_mode=WAL"):
+            with pytest.raises(PermissionError):
+                t.execute(sql)
+        assert t.refusees == 6 and t.requetes == {"SELECT": 1}
+        assert conn.execute("SELECT COUNT(*) FROM uptime").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_le_controle_du_rejeu_voit_un_ecart(tmp_path):
+    chemin = _base(tmp_path)
+    course = _course(chemin)
+    exemples = list(course.rejeu_en_memoire[0])
+    conn = open_read_only(chemin)
+    try:
+        t = etude3.ConnexionTracee(conn)
+        bon = etude3.controle_du_rejeu(t, course, exemples, P, JOUR)
+        assert bon["identique"] and bon["passif_sans_effet"]
+        assert bon["memoire"] == bon["recalcul"] > 0
+        i = next(k for k, e in enumerate(exemples)
+                 if JOUR <= e.ts_sec < JOUR + 86400)
+        from dataclasses import replace
+        exemples[i] = replace(exemples[i], gagne=not exemples[i].gagne)
+        faux = etude3.controle_du_rejeu(t, course, exemples, P, JOUR)
+    finally:
+        conn.close()
+    assert not faux["identique"] and faux["ecarts"] == [exemples[i].ts_sec]
 
 
 def test_les_ordres_reels_face_au_flux(tmp_path):
@@ -178,9 +253,9 @@ def test_la_puissance_ne_lit_que_l_exploration():
 
 
 @pytest.mark.parametrize("argument, attendu", [
-    ("", (P, JOUR)),
-    ("2026-10-19", (P, JOUR - 86400)),
-    ("EURUSD_otc 2026-10-20", (P, JOUR)),
+    ("", ((P,), JOUR)),
+    ("2026-10-19", ((P,), JOUR - 86400)),
+    ("EURUSD_otc 2026-10-20", ((P,), JOUR)),
 ])
 def test_les_arguments(argument, attendu):
     assert etude3.analyser(argument, (P,)) == attendu

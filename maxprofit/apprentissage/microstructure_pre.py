@@ -360,7 +360,11 @@ def autotest_coupure(par_minute: Mapping[int, Sequence[Tick]], ctx: Contexte,
     avant = variables(ticks_de_la_fenetre(par_minute, ctx.d_sec, w_sec,
                                           k_sec=k_sec), ctx, w_sec, k_sec)
     coupure_ms = (ctx.d_sec - k_sec) * 1000
-    pollue = {m: list(t) for m, t in par_minute.items()}
+    # Seules les minutes de la fenêtre sont copiées : recopier la journée à
+    # chaque contrôle coûtait plus que le calcul des variables.
+    premiere = (ctx.d_sec - w_sec) // 60 * 60
+    pollue = {m: list(t) for m, t in par_minute.items()
+              if premiere <= m < ctx.d_sec}
     loin = ctx.niveau * (1 + 50 * ctx.tolerance_pct / 100)
     for decalage, prix in ((0, loin), (1, ctx.niveau), (999, loin)):
         ts = coupure_ms + decalage

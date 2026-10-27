@@ -303,7 +303,7 @@ def test_la_puissance_suit_la_formule_sans_grappes():
     blocs = {i: [i % 2] for i in range(1000)}          # p = 0,5, ρ = 0
     r = em.puissance(blocs, tailles=(500,), signaux_par_jour=100,
                      part_niveau_2=0.5)
-    za = em._N.inv_cdf(1 - 0.0125)
+    za = em._N.inv_cdf(1 - 0.025)            # deux hypothèses, Holm
     zb = em._N.inv_cdf(0.8)
     attendu = (za + zb) * math.sqrt(0.25 * 4.5 / 500)
     assert r["deff"] == pytest.approx(1.0)
@@ -376,3 +376,73 @@ def test_vingt_quatre_variantes_de_sensibilite_par_hypothese():
     assert len(variantes) == 24
     assert variantes[0] == {"traitement": "distincts", "k": 0,
                             "blocs": "paire_jour", "egalites": "exclues"}
+
+
+# --------------------------------------------------------------------------- #
+# Décisions du 27/10 : deux hypothèses, plafond, sens, maturité, retrait
+# --------------------------------------------------------------------------- #
+
+def test_deux_hypotheses_et_un_plafond_de_quatre_mille():
+    assert em.HYPOTHESES_MAX == 2 and em.REGARDS[-1] == 4000
+    seuils = em.seuils_des_regards()
+    assert seuils[-1]["N"] == 4000
+    assert sum(s["nominal"] for s in seuils) == pytest.approx(0.05)
+
+
+def test_l_effet_du_tercile_dans_le_sens_preinscrit():
+    lignes = [{"v": float(i % 9), "y": int(i % 9 < 6 and i % 2 == 0),
+               "jour": i // 30} for i in range(270)]
+    bornes = em.terciles([r["v"] for r in lignes])
+    plus = em.effet_tercile(lignes, "v", bornes, 2, bloc=lambda r: r["jour"],
+                            tirages=100)
+    moins = em.effet_tercile(lignes, "v", bornes, 2,
+                             bloc=lambda r: r["jour"], sens=-1, tirages=100)
+    assert plus["estimation"] < 0 < moins["estimation"]
+    assert moins["estimation"] == pytest.approx(-plus["estimation"])
+    with pytest.raises(ValueError):
+        em.effet_tercile(lignes, "v", bornes, 2, bloc=lambda r: 0, sens=2)
+
+
+def test_une_periode_ne_se_fige_qu_une_fois_ses_issues_mures():
+    fin = em.FIN_VALIDATION
+    attente = em.HORIZON_SEC + em.MARGE_MATURITE_SEC
+    assert not em.periode_figeable(fin, fin + attente - 1)
+    assert em.periode_figeable(fin, fin + attente)
+    assert not em.issue_mure(fin - 60, fin + em.HORIZON_SEC)
+
+
+def test_la_regle_de_retrait_garde_les_evenements_rares_assez_frequents():
+    trace = {r["candidate"]: r for r in em.retrait_des_quasi_constantes({
+        "continue@60": [float(i) for i in range(200)],
+        "constante@60": [0.0] * 200,
+        "rare_mais_frequent@300": [0.0] * 160 + [1.0] * 40,
+        "rare_et_isole@300": [0.0] * 190 + [1.0] * 10,
+        "peu_mesuree@900": [None] * 190 + [1.0] * 10,
+    })}
+    assert trace["continue@60"]["decision"] == "conservée"
+    assert trace["constante@60"]["decision"] == "retirée"
+    assert trace["rare_mais_frequent@300"]["decision"] == "conservée"
+    assert trace["rare_mais_frequent@300"]["iqr"] == 0.0
+    assert trace["rare_et_isole@300"]["decision"] == "retirée"
+    assert trace["peu_mesuree@900"]["decision"] == "retirée"
+    for r in trace.values():
+        assert r["version"] == em.VERSION_RETRAIT and r["raison"]
+        assert {"valeurs", "distinctes", "iqr", "part_hors_mode"} <= set(r)
+
+
+def test_le_releve_du_niveau_ne_change_pas_le_rejeu():
+    """Rejeu inchangé : mêmes exemples avec ou sans relevé passif, et un
+    niveau pour chaque signal, gardé ou écarté."""
+    alea = random.Random(8)
+    serie = _serie([alea.choice((-0.0001, 0.0, 0.0001)) for _ in range(300)])
+    sans = exemples_historiques({PAIRE: serie}, _ToujoursCall(),
+                                echeance_sec=900)
+    niveaux: dict = {}
+    sans_issue: list = []
+    avec = exemples_historiques({PAIRE: serie}, _ToujoursCall(),
+                                echeance_sec=900, niveaux=niveaux,
+                                sans_issue=sans_issue)
+    assert avec == sans
+    assert {(PAIRE, e.ts_sec) for e in avec} | {
+        (PAIRE, r["ts_sec"]) for r in sans_issue} == set(niveaux)
+    assert set(niveaux.values()) == {1.1}

@@ -130,8 +130,9 @@ def test_le_rapport_est_en_lecture_seule_et_etiquete(tmp_path, monkeypatch):
     d = hs.mesurer(chemin, _lecture(chemin), MAINTENANT)
     t = hs.texte(d)
     assert hashlib.sha256(chemin.read_bytes()).hexdigest() == avant
-    for morceau in ("[Vérifié", "[Probable", "[Inconnu", "Scénarios",
-                    "JAMAIS", "Reconstruction", "rejeu_plan", "512 Mo"):
+    for morceau in ("[Vérifié", "[Probable", "Scénarios",
+                    "JAMAIS", "Reconstruction", "rejeu_plan", "953 Mo",
+                    "1 Go décimal"):
         assert morceau in t, morceau
     lecture = _lecture(chemin)()
     with pytest.raises(sqlite3.OperationalError):

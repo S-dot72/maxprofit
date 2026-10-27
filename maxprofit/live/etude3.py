@@ -1,35 +1,48 @@
 """
-Étape 3 — `/micro_essai` : les contrôles préalables autorisés le 27/10,
-en lecture seule, AVANT toute passe complète (docs/etape3_plan_execution.md
-§11).
+Étape 3 — `/micro_essai`, version 2 : l'essai technique de la passe
+OPTIMISÉE, autorisé le 27/10, en lecture seule
+(docs/etape3_plan_execution.md §11).
 
-Trois contrôles, aucun lien variable–issue :
-1. **Échantillon** d'une paire × un jour d'EXPLORATION : coût (lignes,
-   octets, temps, mémoire), couverture, concordance, classes de fenêtre,
-   part du niveau 2, valeurs manquantes, et le contrôle anti-fuite rejoué
-   sur chaque vraie fenêtre. Les variables sont calculées ; les issues de
-   l'échantillon ne sont PAS lues.
-2. **Disponibilité sur les ordres réels** : le dernier prix que la course
-   avait en main au moment de décider (`prix_attendu`, pris dans le tampon
-   vivant) est-il dans le flux stocké, au même instant ? Et combien de
-   temps après la frontière de minute la course décide-t-elle ?
-3. **Puissance**, depuis les seules issues de l'exploration (avant le
-   21/10) : taux de base, corrélation intra-bloc, effet minimal détectable
-   à chaque regard, et seuils nominaux de la règle de poursuite.
+L'essai fait sur un jour d'EXPLORATION exactement ce que ferait la passe de
+sélection, et mesure ce qu'elle coûterait :
+- les signaux viennent du rejeu quotidien en mémoire, et leur niveau de zone
+  du relevé passif de ce rejeu (`niveaux_en_memoire`) ;
+- seules les fenêtres des signaux sont lues (chemins de [d − 900, d), bougies
+  d'une minute de plus de chaque côté pour la concordance) ;
+- chaque chemin n'est décodé qu'une fois (cache partagé avec l'audit) ;
+- la sélection ne calcule que les ticks distincts à k = 0 ; les autres
+  variantes ne serviront qu'aux deux hypothèses retenues.
 
-Rien n'est écrit : la connexion est passée en lecture seule par l'appelant
-(`diagnostic_stockage.lecture_seule`), et ce module ne lance que les
-lectures de `MarketReader` et de `live.ticks`.
+Les vérifications demandées le 27/10 sont faites et publiées :
+1. **Temps réel** : durée totale, paires-jours, octets de chemins, pic de
+   mémoire (seconde passe sur le paire-jour le plus chargé, pour ne pas
+   fausser le temps).
+2. **Lecture seule** : toutes les requêtes passent par `ConnexionTracee`, qui
+   les compte et refuse ce qui n'est pas une lecture ; sur PostgreSQL,
+   `transaction_read_only` est lu au début et à la fin.
+3. **Rejeu inchangé** : un paire-jour est rejoué ici avec la stratégie seule
+   et comparé au rejeu en mémoire (mêmes signaux, mêmes issues, même
+   contexte) ; et le relevé passif ne change rien au rejeu.
+4. **Concordance** : une minute inexpliquée, absente ou réécrite exclut le
+   signal du niveau 2. Aucune correction, aucune interpolation.
+5. **Reproductibilité** : le paire-jour le plus chargé est relu et recalculé ;
+   les empreintes des lignes lues et des variables doivent être identiques.
+
+Aucune issue n'entre dans les variables ni dans la fiche CSV de
+l'échantillon. Les issues de l'exploration ne servent qu'à la puissance.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import html
 import io
+import json
 import logging
 import time
 import tracemalloc
+from collections import Counter
 from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Sequence
@@ -43,44 +56,66 @@ from maxprofit.store.chemin_ticks import decoder
 
 log = logging.getLogger(__name__)
 
-PAIRE_PAR_DEFAUT = "EURUSD_otc"
 JOUR_PAR_DEFAUT = "2026-10-20"
-#: Le recul de ZoneH1 (300 minutes) et une marge : les signaux du premier
-#: quart d'heure du jour ont leur fenêtre entière.
-AVANT_SEC = 6 * 3600
-#: Les jours couverts par une passe complète de SÉLECTION (exploration et
-#: validation) : du début des chemins au 28/10. Sert à l'extrapolation.
+#: Pour le contrôle du rejeu : le recul de ZoneH1 (300 minutes) et la
+#: tendance sur 4 h avant ; les excursions et la confirmation après.
+AVANT_SEC = 8 * 3600
+APRES_SEC = 2 * 3600
+#: Les jours d'une passe de SÉLECTION (exploration et validation) : du début
+#: des chemins au 28/10. Sert à l'extrapolation.
 JOURS_SELECTION_DEFAUT = 18
+BORNE_MINUTES = 30
+BORNE_MO = 150
+#: Estimation du transfert d'une bougie (neuf colonnes et le protocole).
+OCTETS_PAR_BOUGIE = 100
+PAIRE_DU_CONTROLE = "EURUSD_otc"
 
 
-class _Enregistreuse:
-    """La stratégie de la course, dont on retient le `niveau` de chaque
-    signal (il n'est pas dans le contexte du rejeu)."""
+class ConnexionTracee:
+    """Toutes les requêtes de l'essai passent ici : comptées, et REFUSÉES si
+    elles ne lisent pas. Une empreinte de fichier ne prouve la lecture seule
+    que sur SQLite ; sur Neon, c'est ce registre plus `transaction_read_only`
+    qui la montrent."""
 
-    def __init__(self, strategie) -> None:
-        self._s = strategie
-        self.p = strategie.p
-        self.features: dict[int, dict] = {}
+    PERMIS = frozenset({"SELECT", "WITH", "SHOW"})
 
-    def on_bar(self, vue):
-        signal = self._s.on_bar(vue)
-        if signal is not None:
-            self.features[vue.now_ms // 1000] = dict(signal.features or {})
-        return signal
+    def __init__(self, conn) -> None:
+        self.brute = conn
+        self.requetes: Counter = Counter()
+        self.refusees = 0
+
+    def execute(self, sql: str, *args):
+        mot = (sql.lstrip().split(None, 1) or [""])[0].upper()
+        if mot not in self.PERMIS:
+            self.refusees += 1
+            raise PermissionError(f"requête refusée (lecture seule) : {mot}")
+        self.requetes[mot] += 1
+        return self.brute.execute(sql, *args)
 
 
-def analyser(argument: str, paires: Sequence[str]) -> tuple[str, int]:
-    """`[PAIRE] [AAAA-MM-JJ]` → (paire, début du jour UTC). Le jour doit
-    être dans l'EXPLORATION : l'échantillon ne touche ni la validation ni ce
-    qui suit."""
-    paire, jour = PAIRE_PAR_DEFAUT, JOUR_PAR_DEFAUT
+def etat_lecture_seule(conn: ConnexionTracee) -> str:
+    """« on » / « off » sur PostgreSQL ; SQLite est ouvert en `mode=ro`."""
+    from maxprofit.store import postgres
+    if not postgres.est_postgres(conn.brute):
+        return "SQLite (mode=ro)"
+    ligne = conn.execute(
+        "SELECT current_setting('transaction_read_only')").fetchone()
+    return str(ligne[0]) if ligne else "inconnu"
+
+
+def analyser(argument: str, paires: Sequence[str]
+             ) -> tuple[tuple[str, ...], int]:
+    """`[AAAA-MM-JJ] [PAIRE]` → (paires, début du jour UTC). Sans paire :
+    toutes les paires collectées. Le jour doit être dans l'EXPLORATION."""
+    jour, choisies = JOUR_PAR_DEFAUT, []
     for mot in argument.split():
         if mot[:4].isdigit() and "-" in mot:
             jour = mot
         else:
-            paire = mot
-    if paires and paire not in paires:
-        raise ValueError(f"{paire} n'est pas une paire collectée.")
+            choisies.append(mot)
+    for paire in choisies:
+        if paires and paire not in paires:
+            raise ValueError(f"{paire} n'est pas une paire collectée.")
     try:
         debut = int(datetime.strptime(jour, "%Y-%m-%d")
                     .replace(tzinfo=timezone.utc).timestamp())
@@ -89,143 +124,171 @@ def analyser(argument: str, paires: Sequence[str]) -> tuple[str, int]:
     if debut + 86400 > em.FIN_EXPLORATION:
         raise ValueError("le jour doit être entièrement avant le 21/10 "
                          "(exploration).")
-    return paire, debut
+    return tuple(choisies) or tuple(paires), debut
+
+
+def intervalles(decisions: Sequence[int],
+                avant_sec: int = mp.QUALITE_SEC) -> list[tuple[int, int]]:
+    """Les fenêtres [d − 900, d) des signaux, fusionnées quand elles se
+    touchent : chaque minute n'est lue qu'une fois."""
+    sortie: list[list[int]] = []
+    for d in sorted(decisions):
+        a, b = d - avant_sec, d
+        if sortie and a <= sortie[-1][1]:
+            sortie[-1][1] = max(sortie[-1][1], b)
+        else:
+            sortie.append([a, b])
+    return [(a, b) for a, b in sortie]
+
+
+def _empreinte(objet: Any) -> str:
+    return hashlib.sha256(json.dumps(objet, sort_keys=True, default=repr)
+                          .encode("utf-8")).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
-# 1. Échantillon
+# Un paire-jour, comme la passe de sélection le traiterait
 # --------------------------------------------------------------------------- #
 
-def _signaux(course, bougies, paire: str, debut: int, fin: int):
-    """(signaux du jour : (décision, call, features, issue), exclusions)."""
-    from maxprofit.live.plan_demo import dans_la_plage_de_calibration
-    strategie = _Enregistreuse(type(course.strategie)(course.strategie.p))
-    tolerance = course.strategie.p.tolerance_pct
-    sans_issue: list[dict] = []
-    exemples = exemples_historiques(
-        {paire: bougies}, strategie, echeance_sec=strategie.p.expiry_sec,
-        garde=lambda p, f: dans_la_plage_de_calibration(tolerance, f),
-        sans_issue=sans_issue)
-    signaux = []
-    for e in exemples:
-        signaux.append((e.ts_sec, bool(e.contexte.get("sens_call")),
-                        "avec issue"))
-    for r in sans_issue:
-        signaux.append((r["ts_sec"], r["call"], r["issue"]))
-    return sorted((d, call, strategie.features.get(d, {}), motif)
-                  for d, call, motif in signaux if debut <= d < fin)
-
-
-def _calculer(course, paire: str, debut: int, bougies, chemins, ouvertures,
-              temps: dict[str, float]) -> dict[str, Any]:
-    """Décodage, concordance, signaux et variables, sur des lignes déjà
-    lues ; `temps` reçoit la durée de chaque étape."""
-    fin = debut + 86400
+def paire_jour(conn: ConnexionTracee, course, paire: str, debut: int,
+               signaux: Sequence[tuple[int, bool, float | None]]
+               ) -> dict[str, Any]:
+    """`signaux` : (décision, call, niveau de zone) du rejeu en mémoire."""
+    from maxprofit.live.ticks import lire_ouvertures
+    from maxprofit.store.market import MarketReader
+    lecteur = MarketReader(conn)
+    temps: dict[str, float] = {}
     t = time.monotonic()
-    par_minute = {c.minute_sec: decoder(c) for c in chemins}
+    chemins: dict[int, Any] = {}
+    bougies: dict[int, Any] = {}
+    for a, b in intervalles([d for d, _, _ in signaux]):
+        for c in lecteur.tick_paths(paire, a, b):
+            chemins[c.minute_sec] = c
+        for x in lecteur.candles(paire, 60, a - 60, b + 60):
+            bougies[x.ts_sec] = x
+    ouvertures = lire_ouvertures(conn, paire, debut - mp.QUALITE_SEC,
+                                 debut + 86400)
+    temps["lecture"] = time.monotonic() - t
+    chemins_l = [chemins[m] for m in sorted(chemins)]
+    bougies_l = [bougies[m] for m in sorted(bougies)]
+
+    cache: dict[int, Any] = {}
+
+    def decoder_une_fois(c):
+        if c.minute_sec not in cache:
+            cache[c.minute_sec] = decoder(c)
+        return cache[c.minute_sec]
+
+    t = time.monotonic()
+    par_minute = {c.minute_sec: decoder_une_fois(c) for c in chemins_l}
     temps["decodage"] = time.monotonic() - t
 
     t = time.monotonic()
-    audit = AuditTicks(debut - mp.QUALITE_SEC, fin, decoder=decoder,
-                       garder_classes=True)
-    audit.ajouter_paire(paire, bougies, chemins)
+    audit = AuditTicks(debut - mp.QUALITE_SEC, debut + 86400,
+                       decoder=decoder_une_fois, garder_classes=True)
+    audit.ajouter_paire(paire, bougies_l, chemins_l)
     classes = (audit.classes or {}).get(paire, {})
     fermees = audit._fermees(ouvertures)
     temps["concordance"] = time.monotonic() - t
 
     t = time.monotonic()
-    signaux = _signaux(course, bougies, paire, debut, fin)
-    temps["signaux"] = time.monotonic() - t
-
-    t = time.monotonic()
     doublees = {m for m, ticks in par_minute.items() if ticks and
                 len(ticks) - len({(x.ts_ms, x.price) for x in ticks})
                 >= DOUBLES_MIN * len(ticks)}
-    delta = mp.pas_de_cotation(c.echelle for c in chemins)
-    lignes, fiches, autotests = [], [], [0, 0]
-    for d, call, features, motif in signaux:
-        niveau = features.get("niveau")
+    delta = mp.pas_de_cotation(c.echelle for c in chemins_l)
+    fiches, lignes, autotests, sans_niveau = [], [], [0, 0], 0
+    for d, call, niveau in signaux:
         if niveau is None or delta is None:
+            sans_niveau += 1
             continue
         ctx = mp.Contexte(d_sec=d, s=1 if call else -1, niveau=float(niveau),
                           tolerance_pct=course.strategie.p.tolerance_pct,
                           delta=delta)
-        q, rangs = mp.ligne_du_signal(par_minute, ctx, concordances=classes,
-                                      fermees=fermees, doublees=doublees)
+        q, rangs = mp.ligne_du_signal(
+            par_minute, ctx, concordances=classes, fermees=fermees,
+            doublees=doublees, troncatures=(0,), traitements=("distincts",))
         for w in mp.FENETRES_SEC:
             autotests[0] += 1
             autotests[1] += mp.autotest_coupure(par_minute, ctx, paire, w)
+        minutes = range(d - mp.QUALITE_SEC, d, 60)
+        causes = sorted({("absente" if m not in par_minute
+                          else str(classes.get(m)))
+                         for m in minutes
+                         if m not in par_minute or classes.get(m)
+                         not in mp.CONCORDANCES_NIVEAU_2})
         fiche = {"paire": paire, "decision": d,
                  "decision_utc": datetime.fromtimestamp(
                      d, timezone.utc).strftime("%Y-%m-%d %H:%M"),
-                 "sens": "call" if call else "put", "motif": motif, **q}
+                 "sens": "call" if call else "put",
+                 "hors_niveau_2": ", ".join(causes), **q}
         fiches.append(fiche)
         lignes += [{**fiche, **r} for r in rangs]
     temps["variables"] = time.monotonic() - t
-    return {"par_minute": par_minute, "audit": audit, "fermees": fermees,
-            "doublees": doublees, "signaux": signaux, "fiches": fiches,
-            "lignes": lignes, "autotests": autotests}
+    entree = _empreinte(
+        [[c.pair, c.minute_sec, c.n_ticks, c.echelle, c.octets.hex()]
+         for c in chemins_l]
+        + [[x.ts_sec, x.open, x.high, x.low, x.close, x.tick_count,
+            x.complete] for x in bougies_l] + [list(o) for o in
+                                               (ouvertures or [])])
+    return {"paire": paire, "temps": temps, "fiches": fiches,
+            "lignes": lignes, "autotests": autotests,
+            "sans_niveau": sans_niveau, "chemins": len(chemins_l),
+            "octets": sum(len(c.octets) for c in chemins_l),
+            "bougies": len(bougies_l), "releves": len(ouvertures or []),
+            "concordance": Counter(classes.values()),
+            "fermees": len(fermees), "doublees": len(doublees),
+            "empreinte_entree": entree,
+            "empreinte_sortie": _empreinte(lignes)}
 
 
-def echantillon(conn, course, paire: str, debut: int) -> dict[str, Any]:
-    """L'échantillon d'une paire × un jour. Ne lit aucune issue : les
-    signaux sont énumérés par le rejeu, mais seul leur motif d'exclusion
-    (égalité, bougie absente) est gardé, pas leur gain.
+def signaux_du_jour(exemples, niveaux, paire: str, debut: int
+                    ) -> list[tuple[int, bool, float | None]]:
+    """(décision, call, niveau) des signaux du rejeu en mémoire. Seuls
+    l'instant, le sens et le niveau sont lus : pas l'issue."""
+    return sorted((e.ts_sec, bool(e.contexte.get("sens_call")),
+                   niveaux.get((paire, e.ts_sec)))
+                  for e in exemples
+                  if e.pair == paire and debut <= e.ts_sec < debut + 86400)
 
-    Deux passes sur les mêmes lignes lues : la première chronométrée, la
-    seconde sous `tracemalloc` pour la mémoire (le suivi ralentit le calcul
-    et fausserait le temps)."""
-    from maxprofit.live.ticks import lire_ouvertures
+
+def controle_du_rejeu(conn: ConnexionTracee, course, exemples, paire: str,
+                      debut: int) -> dict[str, Any]:
+    """Le rejeu d'un paire-jour refait ici, avec la stratégie seule puis avec
+    le relevé passif, face au rejeu quotidien en mémoire."""
+    from maxprofit.live.plan_demo import dans_la_plage_de_calibration
     from maxprofit.store.market import MarketReader
-    fin = debut + 86400
-    lecteur = MarketReader(conn)
-    temps: dict[str, float] = {}
     t = time.monotonic()
-    bougies = lecteur.candles(paire, 60, debut - AVANT_SEC,
-                              fin + em.HORIZON_SEC + 120)
-    chemins = lecteur.tick_paths(paire, debut - mp.QUALITE_SEC, fin)
-    ouvertures = lire_ouvertures(conn, paire, debut - mp.QUALITE_SEC, fin)
-    temps["lecture"] = time.monotonic() - t
-    c = _calculer(course, paire, debut, bougies, chemins, ouvertures, temps)
-    tracemalloc.start()
-    try:
-        _calculer(course, paire, debut, bougies, chemins, ouvertures, {})
-        _, pic = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    fiches, lignes = c["fiches"], c["lignes"]
-    reference = [r for r in lignes if r["traitement"] == "distincts"
-                 and r["k"] == 0 and r["w"] == 900]
-    manquantes = {v: sum(1 for r in reference if r.get(v) is None)
-                  for v in mp.VARIABLES}
-    return {
-        "paire": paire, "debut": debut, "temps": temps, "pic_octets": pic,
-        "lignes_lues": {"bougies": len(bougies), "chemins": len(chemins),
-                        "releves": len(ouvertures or [])},
-        "octets_chemins": sum(len(x.octets) for x in chemins),
-        "minutes": {"attendues": 1440 + mp.QUALITE_SEC // 60,
-                    "presentes": len(c["par_minute"]),
-                    "fermees": len(c["fermees"]),
-                    "doublees": len(c["doublees"])},
-        "concordance": dict(c["audit"].concordance),
-        "signaux": len(c["signaux"]),
-        "motifs": _compte(x[3] for x in c["signaux"]),
-        "fiches": fiches, "lignes": lignes,
-        "classes": _compte(f["classe"] for f in fiches),
-        "niveau_2": sum(1 for f in fiches if f["E8_niveau"] == 2),
-        "manquantes": manquantes, "autotests": c["autotests"],
-    }
+    bougies = MarketReader(conn).candles(paire, 60, debut - AVANT_SEC,
+                                         debut + 86400 + APRES_SEC)
+    strategie = type(course.strategie)(course.strategie.p)
+    tolerance = course.strategie.p.tolerance_pct
 
+    def rejouer(niveaux=None):
+        return [e for e in exemples_historiques(
+            {paire: bougies}, strategie, echeance_sec=strategie.p.expiry_sec,
+            garde=lambda p, f: dans_la_plage_de_calibration(tolerance, f),
+            niveaux=niveaux) if debut <= e.ts_sec < debut + 86400]
 
-def _compte(valeurs) -> dict:
-    sortie: dict = {}
-    for v in valeurs:
-        sortie[v] = sortie.get(v, 0) + 1
-    return sortie
+    def cle(e):
+        return (e.ts_sec, e.pair, e.gagne, dict(e.issues),
+                dict(e.contexte))
+
+    seul = rejouer()
+    avec = rejouer({})
+    memoire = sorted((e for e in exemples if e.pair == paire
+                      and debut <= e.ts_sec < debut + 86400),
+                     key=lambda e: e.ts_sec)
+    ecarts = [e.ts_sec for e, m in zip(seul, memoire) if cle(e) != cle(m)]
+    return {"paire": paire, "memoire": len(memoire), "recalcul": len(seul),
+            "identique": len(seul) == len(memoire) and not ecarts,
+            "ecarts": ecarts[:3],
+            "passif_sans_effet": [cle(e) for e in seul]
+            == [cle(e) for e in avec],
+            "temps": time.monotonic() - t}
 
 
 # --------------------------------------------------------------------------- #
-# 2. Disponibilité sur les ordres réels
+# Disponibilité sur les ordres réels
 # --------------------------------------------------------------------------- #
 
 def ordres_reels(ordres: Sequence[dict], ticks_autour) -> dict[str, Any]:
@@ -258,18 +321,19 @@ def ordres_reels(ordres: Sequence[dict], ticks_autour) -> dict[str, Any]:
             "ecart_points": trouve["ecart_points"],
             "proche_ms": trouve["proche_ms"]})
     retards = [f["apres_frontiere_ms"] for f in fiches]
+    proches = [f["proche_ms"] for f in fiches if f["proche_ms"] is not None]
     return {
         "fiches": fiches, "n": len(fiches),
         "retard_ms": ((min(retards), median(retards), max(retards))
                       if retards else None),
+        "proche_ms": median(proches) if proches else None,
         "trouve": {w: sum(1 for f in fiches if f[f"trouve_{w}ms"])
                    for w in FENETRES_PRIX_MS},
-        "sans_tick": sum(1 for f in fiches if not f["ticks_autour"]),
     }
 
 
 # --------------------------------------------------------------------------- #
-# 3. Puissance, depuis l'exploration
+# Puissance, depuis l'exploration
 # --------------------------------------------------------------------------- #
 
 def puissance_exploration(exemples, part_niveau_2: float | None,
@@ -297,8 +361,7 @@ def puissance_exploration(exemples, part_niveau_2: float | None,
                                  signaux_par_jour=len(gardes) / jours,
                                  part_niveau_2=part),
             "jours": jours, "par_jour": len(gardes) / jours,
-            "part_niveau_2": part_niveau_2,
-            "premier": min(e.ts_sec for e in gardes)}
+            "part_niveau_2": part_niveau_2}
 
 
 def premiere_minute_de_ticks(conn) -> int | None:
@@ -306,58 +369,86 @@ def premiere_minute_de_ticks(conn) -> int | None:
     return None if not ligne or ligne[0] is None else int(ligne[0])
 
 
-def exemples_exploration(conn, course, paires: Sequence[str],
-                         debut: int) -> list:
-    """Le rejeu de l'exploration, quand celui de la course n'est pas en
-    mémoire : bougies de chaque paire de `debut` au 21/10."""
-    from maxprofit.live.plan_demo import dans_la_plage_de_calibration
-    from maxprofit.store.market import MarketReader
-    lecteur = MarketReader(conn)
-    strategie = type(course.strategie)(course.strategie.p)
-    tolerance = course.strategie.p.tolerance_pct
-    sortie = []
-    for paire in paires:
-        bougies = lecteur.candles(paire, 60, debut - AVANT_SEC,
-                                  em.FIN_EXPLORATION + em.HORIZON_SEC + 120)
-        sortie += [e for e in exemples_historiques(
-            {paire: bougies}, strategie, echeance_sec=strategie.p.expiry_sec,
-            garde=lambda p, f: dans_la_plage_de_calibration(tolerance, f),
-            respirer=lambda: time.sleep(0.05))
-            if debut <= e.ts_sec < em.FIN_EXPLORATION]
-    return sortie
-
-
 # --------------------------------------------------------------------------- #
-# Le tout
+# L'essai
 # --------------------------------------------------------------------------- #
 
-def essai(conn, course, argument: str = "") -> tuple[str, list]:
-    """(rapport, fiches CSV). `conn` est déjà en lecture seule."""
+ATTENDRE_LE_REJEU = (
+    "🔬 Le rejeu quotidien n'est pas encore en mémoire avec les niveaux de "
+    "zone : il tourne quelques minutes après chaque démarrage, puis toutes "
+    "les 24 h. Relance /micro_essai quand /lecons annonce le nouvel "
+    "apprentissage.")
+
+
+def essai(conn, course, argument: str = "",
+          jours_selection: int = JOURS_SELECTION_DEFAUT
+          ) -> tuple[str, list]:
+    """(rapport, fiches CSV). `conn` est déjà en lecture seule ; toutes les
+    requêtes passent en plus par `ConnexionTracee`."""
     from maxprofit.live.ticks import lire_ordres
     from maxprofit.store.market import MarketReader
+    tracee = ConnexionTracee(conn)
     paires = tuple(getattr(course, "paires_collectees", ()) or ())
     try:
-        paire, debut = analyser(argument, paires)
+        retenues, debut = analyser(argument, paires)
     except ValueError as erreur:
         return f"🔬 {html.escape(str(erreur))}", []
-    ech = echantillon(conn, course, paire, debut)
-    lecteur = MarketReader(conn)
-    ordres = ordres_reels(lire_ordres(conn), lecteur.ticks)
-    part = (ech["niveau_2"] / len(ech["fiches"])) if ech["fiches"] else None
-    premiere = premiere_minute_de_ticks(conn)
     memoire = getattr(course, "rejeu_en_memoire", None)
-    if premiere is None:
-        exemples, source = [], "aucun chemin de ticks"
-    elif memoire:
-        exemples, source = memoire[0], "rejeu en mémoire"
-    else:
-        t = time.monotonic()
-        exemples = exemples_exploration(conn, course, paires, premiere)
-        source = f"rejeu de l'exploration ({time.monotonic() - t:.0f} s)"
-    puis = puissance_exploration(exemples, part, premiere or 0)
-    return (texte(ech, ordres, puis, source, n_paires=len(paires) or 20),
-            fichiers(ech, ordres))
+    niveaux = getattr(course, "niveaux_en_memoire", None)
+    if not memoire or niveaux is None:
+        return ATTENDRE_LE_REJEU, []
+    exemples = memoire[0]
+    lecture_debut = etat_lecture_seule(tracee)
 
+    t0 = time.monotonic()
+    resultats = [paire_jour(tracee, course, p, debut,
+                            signaux_du_jour(exemples, niveaux, p, debut))
+                 for p in retenues]
+    duree = time.monotonic() - t0
+    requetes_passe = sum(tracee.requetes.values())
+
+    # Mémoire et reproductibilité : le paire-jour le plus chargé, relu et
+    # recalculé sous `tracemalloc`.
+    charge = max(resultats, key=lambda r: len(r["fiches"]))
+    tracemalloc.start()
+    try:
+        relu = paire_jour(tracee, course, charge["paire"], debut,
+                          signaux_du_jour(exemples, niveaux, charge["paire"],
+                                          debut))
+        _, pic = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    reproductible = (relu["empreinte_entree"] == charge["empreinte_entree"]
+                     and relu["empreinte_sortie"]
+                     == charge["empreinte_sortie"])
+
+    paire_controle = (PAIRE_DU_CONTROLE if PAIRE_DU_CONTROLE in retenues
+                      else charge["paire"])
+    rejeu = controle_du_rejeu(tracee, course, exemples, paire_controle, debut)
+    ordres = ordres_reels(lire_ordres(tracee), MarketReader(tracee).ticks)
+    fiches = [f for r in resultats for f in r["fiches"]]
+    part = (sum(1 for f in fiches if f["E8_niveau"] == 2) / len(fiches)
+            if fiches else None)
+    puis = puissance_exploration(exemples, part,
+                                 premiere_minute_de_ticks(tracee) or 0)
+    lecture_fin = etat_lecture_seule(tracee)
+    resume = {
+        "debut": debut, "paires_jours": len(resultats), "duree": duree,
+        "requetes_passe": requetes_passe, "pic": pic,
+        "charge": charge["paire"], "reproductible": reproductible,
+        "empreintes": (charge["empreinte_entree"][:12],
+                       charge["empreinte_sortie"][:12]),
+        "lecture": (lecture_debut, lecture_fin),
+        "requetes": dict(tracee.requetes), "refusees": tracee.refusees,
+        "jours_selection": jours_selection, "n_paires": len(paires) or 20,
+    }
+    return (texte(resume, resultats, rejeu, ordres, puis),
+            fichiers(resultats, ordres))
+
+
+# --------------------------------------------------------------------------- #
+# Rapport
+# --------------------------------------------------------------------------- #
 
 def _s(x: float) -> str:
     return f"{x:.1f} s" if x >= 1 else f"{1000 * x:.0f} ms"
@@ -367,102 +458,135 @@ def _pc(n: int, total: int) -> str:
     return f"{n}/{total} ({100 * n / total:.0f} %)" if total else "—"
 
 
-def texte(ech: dict, ordres: dict, puis: dict | None, source: str,
-          jours_selection: int = JOURS_SELECTION_DEFAUT,
-          n_paires: int = 20) -> str:
-    jour = datetime.fromtimestamp(ech["debut"], timezone.utc).strftime(
+def _ok(b: bool) -> str:
+    return "✅" if b else "⚠️"
+
+
+def texte(resume: dict, resultats: Sequence[dict], rejeu: dict,
+          ordres: dict, puis: dict | None) -> str:
+    jour = datetime.fromtimestamp(resume["debut"], timezone.utc).strftime(
         "%d/%m/%Y")
-    total_temps = sum(ech["temps"].values())
-    paires_jours = jours_selection * n_paires
-    l = ["🔬 <b>Étape 3 — contrôles préalables</b> (lecture seule)",
-         f"Échantillon : {html.escape(ech['paire'])}, {jour} UTC "
-         f"(exploration). Aucune issue de l'échantillon n'est lue.", "",
-         "<b>1. Coût</b>",
-         f"- lu : {ech['lignes_lues']['bougies']} bougies, "
-         f"{ech['lignes_lues']['chemins']} chemins "
-         f"({ech['octets_chemins'] / 1e6:.2f} Mo compressés), "
-         f"{ech['lignes_lues']['releves']} relevés de payout",
-         "- temps : " + ", ".join(f"{k} {_s(v)}"
-                                  for k, v in ech["temps"].items())
-         + f" ; total {_s(total_temps)}",
-         f"- mémoire Python au plus haut : {ech['pic_octets'] / 1e6:.0f} Mo",
-         f"- extrapolation à {jours_selection} jours × {n_paires} paires "
-         f"({paires_jours} paires-jours) : ~{total_temps * paires_jours / 60:.0f}"
-         f" min de calcul, ~{ech['octets_chemins'] * paires_jours / 1e9:.2f} "
-         f"Go de chemins à transférer (plus les bougies). Borne du plan : "
-         f"30 min, 150 Mo.", "",
-         "<b>2. Couverture et qualité</b>"]
-    m = ech["minutes"]
-    l.append(f"- minutes de ticks : {_pc(m['presentes'], m['attendues'])} ; "
-             f"fermées chez le broker : {m['fermees']} ; à flux doublé : "
-             f"{m['doublees']}")
-    l.append("- concordance des minutes : " + ", ".join(
-        f"{html.escape(str(k))} {v}" for k, v in
-        sorted(ech["concordance"].items(), key=lambda kv: -kv[1])))
-    n = len(ech["fiches"])
-    l.append(f"- signaux du jour : {ech['signaux']} ("
-             + ", ".join(f"{k} {v}" for k, v in ech["motifs"].items())
-             + f") ; avec un niveau de zone : {n}")
+    n_pj = resume["paires_jours"]
+    fiches = [f for r in resultats for f in r["fiches"]]
+    n = len(fiches)
+    temps: Counter = Counter()
+    for r in resultats:
+        temps.update(r["temps"])
+    octets = sum(r["octets"] for r in resultats)
+    bougies = sum(r["bougies"] for r in resultats)
+    chemins = sum(r["chemins"] for r in resultats)
+    a_faire = resume["jours_selection"] * resume["n_paires"]
+    par_pj = resume["duree"] / n_pj if n_pj else 0.0
+    minutes = par_pj * a_faire / 60
+    transfert = (octets + bougies * OCTETS_PAR_BOUGIE) / n_pj * a_faire \
+        if n_pj else 0
+    pic_mo = resume["pic"] / 1e6
+    dans_les_bornes = minutes <= BORNE_MINUTES and pic_mo <= BORNE_MO
+    l = ["🔬 <b>Étape 3 — essai technique de la passe optimisée</b> "
+         "(lecture seule)",
+         f"Jour d'exploration : {jour} UTC, {n_pj} paire(s). Signaux et "
+         f"niveaux de zone : rejeu quotidien en mémoire. Aucune issue lue "
+         f"pour les variables.", "",
+         "<b>1. Temps réel</b>",
+         f"- durée totale : {_s(resume['duree'])} pour {n_pj} paires-jours, "
+         f"{n} signaux ({_s(par_pj)} par paire-jour)",
+         "- par étape : " + ", ".join(f"{k} {_s(v)}" for k, v in temps.items()),
+         f"- lu : {chemins} chemins ({octets / 1e6:.2f} Mo exacts), "
+         f"{bougies} bougies (~{bougies * OCTETS_PAR_BOUGIE / 1e6:.2f} Mo "
+         f"estimés), {resume['requetes_passe']} requêtes",
+         f"- mémoire au plus haut : {pic_mo:.0f} Mo (paire-jour le plus "
+         f"chargé, {html.escape(resume['charge'])})",
+         f"- extrapolation à {resume['jours_selection']} jours × "
+         f"{resume['n_paires']} paires : ~{minutes:.0f} min, "
+         f"~{transfert / 1e6:.0f} Mo de transfert. Bornes : "
+         f"{BORNE_MINUTES} min, {BORNE_MO} Mo → "
+         + ("dans les bornes ✅" if dans_les_bornes else
+            "HORS BORNES ⚠️ : suspendre et diagnostiquer"), "",
+         "<b>2. Lecture seule</b>",
+         f"- transaction_read_only : {html.escape(resume['lecture'][0])} au "
+         f"début, {html.escape(resume['lecture'][1])} à la fin",
+         "- requêtes de tout l'essai : " + ", ".join(f"{v} {k}" for k, v in
+                                     sorted(resume["requetes"].items()))
+         + f" ; refusées : {resume['refusees']} "
+         + _ok(not resume["refusees"]
+               and set(resume["requetes"]) <= {"SELECT", "WITH", "SHOW"}),
+         "", "<b>3. Rejeu inchangé</b>",
+         f"- {html.escape(rejeu['paire'])} : {rejeu['memoire']} signaux en "
+         f"mémoire, {rejeu['recalcul']} rejoués ici ; mêmes décisions, "
+         f"issues et contexte : {'oui' if rejeu['identique'] else 'NON'} "
+         f"{_ok(rejeu['identique'])}"
+         + (f" (écarts : {rejeu['ecarts']})" if rejeu["ecarts"] else ""),
+         f"- le relevé du niveau de zone ne change rien au rejeu : "
+         f"{'oui' if rejeu['passif_sans_effet'] else 'NON'} "
+         f"{_ok(rejeu['passif_sans_effet'])} (contrôle hors mesure : "
+         f"{_s(rejeu['temps'])})", "",
+         "<b>4. Concordance</b>"]
+    conc: Counter = Counter()
+    for r in resultats:
+        conc.update(r["concordance"])
+    l.append("- minutes lues : " + ", ".join(
+        f"{html.escape(str(k))} {v}" for k, v in conc.most_common()))
+    hors = [f for f in fiches if f["E8_niveau"] != 2]
+    causes = Counter(c.strip() for f in hors
+                     for c in f["hors_niveau_2"].split(",") if c.strip())
+    l.append(f"- niveau 2 : {_pc(n - len(hors), n)}"
+             + (" ; exclus pour : " + ", ".join(
+                 f"{html.escape(k)} {v}" for k, v in causes.most_common())
+                if hors else ""))
+    l.append("- aucune correction, aucune interpolation : une minute "
+             "inexpliquée, absente ou réécrite exclut le signal du niveau 2.")
+    l += ["", "<b>5. Reproductibilité</b>",
+          f"- {html.escape(resume['charge'])} relu et recalculé : lignes lues "
+          f"et variables identiques : "
+          f"{'oui' if resume['reproductible'] else 'NON'} "
+          f"{_ok(resume['reproductible'])} (empreintes "
+          f"{resume['empreintes'][0]} / {resume['empreintes'][1]})", "",
+          "<b>6. Qualité et anti-fuite</b>"]
+    classes = Counter(f["classe"] for f in fiches)
     l.append("- fenêtres : " + ", ".join(
-        f"{k} {_pc(v, n)}" for k, v in sorted(ech["classes"].items())))
-    l.append(f"- niveau 2 : {_pc(ech['niveau_2'], n)}")
-    lourdes = [f"{v} {c}" for v, c in ech["manquantes"].items()
-               if n and c > 0.2 * n]
-    l.append("- variables manquantes > 20 % (w = 900 s, distincts) : "
-             + (", ".join(lourdes) if lourdes else "aucune"))
-    a = ech["autotests"]
-    l += ["", "<b>3. Anti-fuite sur les vraies fenêtres</b>",
-          f"- ticks ajoutés après la coupure sans effet : "
-          f"{_pc(a[1], a[0])}" + (" ✅" if a[0] and a[0] == a[1] else " ⚠️")]
-    l += ["", "<b>4. Disponibilité : ordres réels face au flux stocké</b>"]
+        f"{k} {_pc(v, n)}" for k, v in sorted(classes.items())))
+    sans = sum(r["sans_niveau"] for r in resultats)
+    if sans:
+        l.append(f"- signaux sans niveau de zone : {sans} (écartés)")
+    a = [sum(r["autotests"][0] for r in resultats),
+         sum(r["autotests"][1] for r in resultats)]
+    l.append(f"- ticks ajoutés après la coupure sans effet : {_pc(a[1], a[0])}"
+             f" {_ok(a[0] > 0 and a[0] == a[1])}")
+    l += ["", "<b>7. Ordres réels face au flux stocké</b>"]
     if not ordres["n"]:
         l.append("- aucun ordre comparable.")
     else:
-        bas, med, haut = ordres["retard_ms"]
         k = ordres["n"]
-        l.append(f"- {k} ordres ; décision après la frontière de minute : "
-                 f"{bas} / {med:.0f} / {haut} ms (min / médiane / max)")
-        l.append(f"- prix vu par la course = dernier tick stocké au même "
-                 f"instant : {_pc(ordres['trouve'][0], k)} ; présent dans le "
-                 f"flux à ± 1 s : {_pc(ordres['trouve'][1000], k)}, ± 2 s : "
-                 f"{_pc(ordres['trouve'][2000], k)}, ± 5 s : "
-                 f"{_pc(ordres['trouve'][5000], k)}")
-        l.append("- lecture : l'instant est ramené à l'horloge du broker par "
-                 "le décalage mesuré ; une erreur de quelques centaines de "
-                 "ms sur ce décalage suffit à changer le « dernier tick ». "
-                 "Un prix absent à ± 5 s serait, lui, une divergence.")
-    l += ["", "<b>5. Puissance, depuis l'exploration</b> "
-          f"({html.escape(source, quote=False)})"]
+        bas, med, haut = ordres["retard_ms"]
+        l.append(f"- {k} ordres ; décision {bas} / {med:.0f} / {haut} ms après "
+                 f"la frontière de minute ; prix vu = dernier tick stocké : "
+                 f"{_pc(ordres['trouve'][0], k)} ; présent à ± 1 s : "
+                 f"{_pc(ordres['trouve'][1000], k)} ; à ± 5 s : "
+                 f"{_pc(ordres['trouve'][5000], k)} ; tick de même prix le "
+                 f"plus proche : {ordres['proche_ms']:.0f} ms (médiane)")
+    l += ["", "<b>8. Puissance</b> (2 hypothèses, α = 0,025 unilatéral, "
+          "plafond de 4 000 signaux)"]
     if puis is None:
-        l.append("- aucun signal d'exploration disponible.")
+        l.append("- aucun signal d'exploration en mémoire.")
     else:
         r = puis["paire_jour"]
-        l.append(f"- {r['n']} signaux avec issue en {puis['jours']} jours "
-                 f"(~{puis['par_jour']:.0f}/jour), {r['blocs']} blocs paire × "
-                 f"jour ; taux de gain {100 * r['p']:.1f} %")
-        l.append(f"- corrélation intra-bloc {r['icc']:.3f} (paire × jour), "
-                 f"{puis['jour']['icc']:.3f} (jour) ; effet de plan "
-                 f"{r['deff']:.2f}")
         part = puis["part_niveau_2"]
-        l.append("- part du niveau 2 retenue : "
-                 + (f"{100 * part:.0f} % (UN jour d'UNE paire : grossier)"
-                    if part else "inconnue (100 % supposés)"))
-        l.append("- effet minimal détectable (tercile contre le reste, "
-                 "α = 0,0125 unilatéral, puissance 80 %) :")
+        l.append(f"- {r['n']} signaux avec issue en {puis['jours']} jours "
+                 f"(~{puis['par_jour']:.0f}/jour), {r['blocs']} blocs ; "
+                 f"corrélation intra-bloc {r['icc']:.3f}, effet de plan "
+                 f"{r['deff']:.2f} ; part du niveau 2 "
+                 + (f"{100 * part:.0f} % ({n} signaux)" if part else
+                    "inconnue"))
         for x in r["lignes"]:
             jours = f", ~{x['jours']:.0f} jours" if x["jours"] else ""
-            l.append(f"  · N = {x['N']} : {100 * x['effet_min']:.1f} points "
-                     f"(demi-IC 95 % {100 * x['demi_ic95']:.1f}){jours}")
-        jc, jr = r["jours_pour_confirmer"], r["jours_pour_rejeter"]
-        l.append(f"- +2 points : {r['n_pour_confirmer']} signaux pour le "
-                 f"détecter" + (f" (~{jc:.0f} jours)" if jc else "")
-                 + f", {r['n_pour_rejeter']} pour l'exclure"
-                 + (f" (~{jr:.0f} jours)" if jr else ""))
-        l.append("- seuils de la règle de poursuite (famille de Holm) : "
-                 + ", ".join(f"N {s['N']} → {s['nominal']:.2g}"
-                             for s in em.seuils_des_regards()))
-    l += ["", "Rien n'a été écrit. La passe complète n'est pas lancée : elle "
-          "attend ton feu vert, après ces contrôles."]
+            l.append(f"  · N = {x['N']} : effet détectable "
+                     f"{100 * x['effet_min']:.1f} points (demi-IC 95 % "
+                     f"{100 * x['demi_ic95']:.1f}){jours}")
+        l.append("- seuils des regards : " + ", ".join(
+            f"N {s['N']} → {s['nominal']:.2g}"
+            for s in em.seuils_des_regards()))
+    l += ["", "Rien n'a été écrit. La passe complète reste suspendue : coût "
+          "réel, protocole pré-inscrit et continuité du stockage d'abord."]
     return "\n".join(l)
 
 
@@ -478,13 +602,15 @@ def _csv(lignes: Sequence[dict], colonnes: Sequence[str]) -> bytes:
     return sortie.getvalue().encode("utf-8")
 
 
-def fichiers(ech: dict, ordres: dict) -> list[tuple[bytes, str, str]]:
-    colonnes = (["paire", "decision", "decision_utc", "sens", "motif",
-                 *mp.QUALITE, "classe",
-                 "traitement", "k", "w", "n", *mp.VARIABLES])
-    sortie = [(_csv(ech["lignes"], colonnes), "micro_essai.csv",
-               "Échantillon : qualité et variables par signal × traitement "
-               "× k × w (sans issue)")]
+def fichiers(resultats: Sequence[dict], ordres: dict
+             ) -> list[tuple[bytes, str, str]]:
+    colonnes = ["paire", "decision", "decision_utc", "sens", *mp.QUALITE,
+                "classe", "hors_niveau_2", "traitement", "k", "w", "n",
+                *mp.VARIABLES]
+    lignes = [x for r in resultats for x in r["lignes"]]
+    sortie = [(_csv(lignes, colonnes), "micro_essai.csv",
+               "Essai : qualité et variables (distincts, k = 0) par signal × "
+               "fenêtre, sans issue")]
     if ordres["fiches"]:
         sortie.append((_csv(ordres["fiches"], list(ordres["fiches"][0])),
                        "ordres_disponibilite.csv",

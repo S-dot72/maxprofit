@@ -112,6 +112,31 @@ fait :
 - **Calcul** : 13 CU-h en 7 jours n'est pas une contrainte à ce rythme (à
   confirmer face à l'allocation de l'offre).
 
+## Mise à jour du 27/10 : les limites sont connues
+
+La documentation de Neon (page *Plans*, lue le 27/10) donne les limites de
+l'offre gratuite :
+
+| Limite | Valeur | Effet du dépassement |
+|---|---|---|
+| Stockage | **1 Go par projet** (20 Go au total pour le compte). 0,5 Go était l'ancienne valeur, et elle s'applique aussi aux projets existants | les écritures (insertions, mises à jour, suppressions) échouent |
+| Transfert réseau | **5 Go par projet et par mois**, remis à zéro à chaque période | le calcul est **suspendu** jusqu'à la période suivante |
+
+**Conséquences, en Mo décimaux comme la console** :
+- **Stockage** : environ 465 Mo le 26/10, plus environ 22 Mo par jour,
+  donne environ 1 000 Mo vers **mi-novembre**. L'urgence du 26/10 (1,5 à
+  3 jours) reposait sur l'ancienne limite : elle est levée.
+- **Transfert** : 2,39 Go du 19/10 au 26/10, soit environ 0,34 Go par jour,
+  donne 5 Go vers le **3 novembre**. Le calcul serait alors suspendu
+  jusqu'à la période suivante (vers le 19/11) : plus de collecte, plus de
+  course.
+  - **C'est désormais le premier risque de continuité.**
+  - Ses sources probables restent à mesurer : rejeux quotidiens,
+    synchronisation de la relève, lectures de la course.
+
+Le quota affiché par `/etat` et `/stockage` passe à 953 Mio (1 Go décimal),
+toujours surchargeable par `QUOTA_STOCKAGE_MO`.
+
 ## Ce qui était connu avant `/stockage`
 
 - **Vérifié** (`/etat` du 26/10) : 416 Mo affichés sur 512 (81 %) ; chemins de

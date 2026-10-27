@@ -1,8 +1,16 @@
-# Étape 3 — Plan d'exécution, version 3
+# Étape 3 — Plan d'exécution, version 4
 
-**Statut** : approuvé sous conditions le 27/10. Seuls la préparation et les
-contrôles préalables sont autorisés. La passe complète attend une nouvelle
-validation.
+**Statut** :
+- plan approuvé sous conditions le 27/10 ;
+- décisions du même jour : 2 hypothèses principales, plafond de 4 000
+  signaux, règle de retrait des variables quasi constantes ;
+- autorisé : l'essai technique de la passe optimisée (`/micro_essai`) ;
+- la passe complète reste suspendue. Elle attend la validation du coût
+  réel, la pré-inscription des deux hypothèses et la continuité de la
+  collecte.
+
+Les résultats actuels justifient une étude **exploratoire**. Ils ne
+permettent encore aucune décision sur l'efficacité prédictive des ticks.
 
 **Ce qui ne change pas** :
 - analyse hors ligne et en lecture seule ;
@@ -11,9 +19,8 @@ validation.
 - aucune écriture de séries de ticks en base ;
 - un résultat négatif bien établi est un résultat.
 
-La version 3 répond aux points A à D de la revue du 27/10, aux trois
-corrections statistiques, à la justification des deux points et aux
-prérequis de stockage.
+La version 3 répondait aux points A à D de la revue du 27/10. La version 4
+applique les décisions qui ont suivi le premier `/micro_essai`.
 
 ## 0. Disponibilité de l'information
 
@@ -57,13 +64,23 @@ Ces tests (`tests/test_disponibilite_collecte.py`) utilisent l'agrégateur,
   tampon vivant) figure dans le flux stocké, comme dernier tick puis à ± 1,
   2 et 5 s.
 
-Premier aperçu, sur les 25 ordres du `/ticks` du 26/10 :
-- 15 fois sur 25, le dernier tick stocké au même instant est le prix vu ;
-- dans les 10 autres cas, l'écart va de 1 à 7 points.
+**Résultat du 27/10** (31 ordres, `/micro_essai`) :
+- le prix vu par la course est présent dans le flux stocké à ± 1 s **31
+  fois sur 31** ;
+- c'est le dernier tick stocké au même instant 18 fois sur 31. Les autres
+  fois, le tick de même prix est à environ 100 ms, soit la précision de la
+  conversion d'horloge ; un écart de 1 à 9 points correspond à un tick
+  d'écart ;
+- la course décide entre 1,2 et 6,2 s après la frontière de minute
+  (médiane 2,4 s). Les 4 à 26 ticks stockés entre d et la décision sont
+  ignorés par le niveau 2, ce qui est prudent.
 
-Cet aperçu dépend de la conversion d'horloge locale → broker, précise à
-quelques centaines de ms. Le contrôle « présent à ± 5 s » tranche : un prix
-absent à ± 5 s serait une vraie divergence.
+**Hypothèse, non prouvée** : le tick le plus proche est presque toujours à
+100, 200, 300 ou 400 ms. Cela suggère une latence d'environ 100 ms entre
+l'horodatage du broker et la réception.
+
+**Aucune divergence n'est vue.** Ces ordres datent du 24/10 et après ; le
+code de collecte est inchangé depuis le 27/09.
 
 ### Ce qui reste indémontrable
 
@@ -125,6 +142,11 @@ Le signal porte sur la bougie M (début m), et d = m + 60.
 - **240 et 600 s** : secondaires, en BH.
 - **Limite connue** : l'issue M1 est un approchant de l'échéance du broker,
   qui court depuis le clic (quelques secondes après d).
+- **Maturité** : une issue n'est lue qu'une heure après son échéance. La
+  bougie de sortie d'une paire calme ne s'écrit qu'au tick suivant.
+  - Une période n'est figée qu'une fois toutes ses issues mûres :
+    `issue_mure`, `periode_figeable`.
+  - Seules les issues mûres comptent dans le N d'un regard.
 
 ## 3. Qualité et coût, mesurés avant toute comparaison
 
@@ -157,6 +179,40 @@ Inchangées depuis la version 2, avec trois précisions :
 définitions sont testées sur un cas calculé à la main
 (`tests/test_microstructure_pre.py`).
 
+**Ce que le premier essai a appris** (une seule paire-jour, donc
+indicatif) :
+- **Flux OTC presque périodique** : environ 2 ticks distincts par seconde.
+  Le délai entre retournements (C5) vaut presque toujours 1,0 s. C'est une
+  **limite de résolution** de la mesure : les délais sont des multiples de
+  la cadence du flux. On n'en conclut rien sur le phénomène lui-même.
+- **Ticks bruts et distincts** ne diffèrent que sur B3 et B6, et seulement
+  dans les minutes à flux doublé.
+
+## 4 bis. Retrait des variables quasi constantes (règle gelée)
+
+La règle est appliquée sur l'**exploration seule**, **sans aucune issue**.
+La liste des variables conservées et retirées est gelée avec le registre
+avant toute analyse des résultats (`retrait_des_quasi_constantes`,
+version 1).
+- **IQR > 0** : conservée.
+- **IQR nul** : l'IQR seul ne juge pas une variable rare, car un
+  événement binaire peu fréquent a un IQR nul. Elle est conservée si au
+  moins 30 valeurs **et** au moins 5 % des valeurs diffèrent du mode.
+  Sinon, elle est retirée.
+- **Moins de 30 valeurs mesurées** : retirée.
+- **Trace, pour chaque candidate** (variable × fenêtre) :
+  - valeurs, manquantes, valeurs distinctes ;
+  - Q1, Q3, IQR ;
+  - mode, nombre et part hors du mode ;
+  - décision, raison, version de la règle.
+- **Ticks bruts : diagnostic seulement**, jamais en sélection. B3 et B6
+  bruts mesurent le doublement du flux, un artefact de collecte
+  (`ARTEFACTS_BRUTS`). Leurs versions distinctes restent candidates.
+- **A9, D3 et C5** : jugés par cette règle sur toute l'exploration, pas sur
+  l'échantillon d'une paire-jour.
+- **Une variable pré-inscrite retirée par la règle** : son hypothèse est
+  abandonnée (indéterminée), jamais remplacée.
+
 ## 5. Référence, et mêmes signaux
 
 **Variables** :
@@ -182,31 +238,59 @@ Imputation et standardisation sont figées sur l'exploration.
   ligne incomplète ou un signal compté deux fois est refusé
   (`LigneComparee`, `comparer`).
 
-## 6. Découpage et gel formel
+## 6. Hypothèses choisies a priori, découpage et gel
 
-**Périodes** :
-- **Exploration** : avant le 21/10 00:00 UTC. Les bornes des terciles y sont
-  calculées, puis figées.
-- **Validation** : du 21/10 au 28/10 00:00 UTC, bornes fixes. On y choisit
-  au plus 4 hypothèses (variable, w, sens, tercile retenu).
-- **Gel formel** : la pré-inscription (JSON) est enregistrée avec son
-  empreinte SHA-256, dans le registre et dans un commit.
-  - Le code refuse tout calcul de confirmation sans gel, ou sur des
-    paramètres différents (`exiger_le_gel`).
-- **Confirmation** : elle s'ouvre au **premier minuit UTC qui suit le gel**,
-  jamais avant le 28/10.
-- **Quarantaine** : ce qui tombe entre le 28/10 et l'ouverture n'est ni
-  choisi ni confirmé.
-- Le gel ne peut venir qu'après la passe de sélection, donc après ton feu
-  vert.
+**Les deux hypothèses principales sont choisies et pré-inscrites AVANT tout
+examen de leur lien avec les issues** (décision du 27/10).
+- **Critères** : définition, interprétabilité, fiabilité de la mesure, et
+  un mécanisme plausible.
+- **Jamais** les résultats de l'exploration. Aucune relation variable–issue
+  n'a été calculée à ce jour.
+- Choisies ainsi, elles n'héritent d'aucun biais de sélection parmi les 92.
+  Les 90 autres candidates restent des **analyses secondaires
+  exploratoires**, en BH. Elles ne confirment rien.
 
-**Biais de sélection** : les 4 hypothèses sont choisies parmi 92.
-- Holm sur 4 tests ne corrige que les 4 tests de confirmation.
-- La validité repose sur des données de confirmation **nouvelles**,
-  indépendantes du choix.
-- Les effets observés en validation sont gonflés par la sélection (effet du
-  gagnant). Ils ne servent ni à la puissance ni au verdict, et sont publiés
-  comme tels.
+**Candidates proposées, à valider** :
+
+| | Variable, fenêtre | Tercile, sens | Mécanisme | Fiabilité de mesure |
+|---|---|---|---|---|
+| **H1** | `A7_penetration`, w = 300 s | tercile haut : **moins** de gains | ZoneH1 parie sur un rebond sur la zone. Une pénétration profonde au-delà du niveau, contre le trade, dans les 5 min avant d dit que la zone a déjà cédé. | en marges de zone, identique en ticks bruts et distincts, indépendante de la cadence du flux |
+| **H2** | `D1_traversees`, w = 300 s | tercile haut : **moins** de gains | Un niveau franchi à répétition ne fait pas barrière : le prix oscille autour, et la prémisse du rebond n'est pas remplie. | compte de changements de côté, identique en bruts et distincts |
+
+- H1 et H2 mesurent toutes deux la fragilité de la zone : elles sont
+  corrélées. Holm reste valide, simplement conservateur.
+- **Alternative** pour diversifier : `B5_ratio_vol`, w = 300 s, tercile
+  haut, moins de gains (la volatilité s'accélère juste avant d : risque de
+  cassure). Elle est moins robuste, car elle dépend de la cadence du flux.
+- **Réserve** : le flux OTC semble généré. Un mécanisme « de marché » y
+  reste une hypothèse. Le test dit si la prémisse de ZoneH1 (la zone tient)
+  se voit dans les ticks.
+
+**Périodes** (inchangées) :
+- **Exploration** : avant le 21/10 00:00 UTC. On y calcule, sans aucune
+  issue, les bornes des terciles, la préparation et la règle de retrait.
+- **Validation** : du 21/10 au 28/10 00:00 UTC. Elle sert à réestimer le
+  modèle sur exploration + validation, et aux analyses secondaires.
+
+**Gel en deux temps** :
+1. **Gel des hypothèses**, dès ta validation de H1 et H2 : variable,
+   fenêtre, tercile, sens, horizon, règles (retrait, préparation,
+   regards, seuils, périodes, sensibilités). Une empreinte SHA-256 est
+   notée au registre et dans un commit.
+2. **Gel des paramètres**, après la passe de sélection : bornes des
+   terciles, préparation, coefficients et liste des variables retenues.
+   Ces paramètres sont **déterminés mécaniquement** par les règles du
+   premier gel, à partir des seules données d'avant le 28/10. Une seconde
+   empreinte les fige.
+3. **Confirmation** : choix à faire (voir §13) :
+   - **(a) strict** : elle s'ouvre au premier minuit UTC qui suit le gel
+     des paramètres ;
+   - **(b)** : elle s'ouvre au premier minuit UTC qui suit le gel des
+     hypothèses. C'est possible parce que rien de ce qui reste à calculer
+     ne dépend d'un choix, ni des données de confirmation. Le code refuse
+     tout calcul de confirmation avant le second gel (`exiger_le_gel`).
+   - **Quarantaine** : ce qui tombe entre le 28/10 et l'ouverture n'est ni
+     choisi ni confirmé.
 
 ## 7. Incertitude
 
@@ -232,57 +316,62 @@ qui ne tient qu'avec les blocs paire × jour est « fragile ».
   4,5/N × DEFF ;
 - DEFF = 1 + (m − 1)ρ, avec ρ la corrélation intra-bloc et m la taille
   moyenne pondérée des blocs ;
-- α = 0,0125 unilatéral (le pas le plus sévère de Holm), puissance 80 %.
+- α = 0,025 unilatéral (le pas le plus sévère de Holm pour 2 hypothèses),
+  puissance 80 %.
 
-**Ordres de grandeur** (sans dépendance, p ≈ 0,5) :
+**Mesuré le 27/10** sur l'exploration : 1 025 signaux en 10 jours (environ
+102 par jour), p = 53,3 %, ρ = 0,085 (paire × jour), DEFF = 1,66.
 
-| N signaux de niveau 2 | Effet minimal détectable | Demi-IC 95 % |
-|---|---|---|
-| 500 | ≈ 15 points | ≈ 9 points |
-| 2 000 | ≈ 7 points | ≈ 4,6 points |
-| 8 000 | ≈ 3,7 points | ≈ 2,3 points |
+| N signaux de niveau 2 | Jours (à 102/j) | Effet détectable | Demi-IC 95 % |
+|---|---|---|---|
+| 500 | ≈ 5 | ≈ 17 points | ≈ 12 points |
+| 1 000 | ≈ 10 | ≈ 12 points | ≈ 8,5 points |
+| 2 000 | ≈ 20 | ≈ 8,5 points | ≈ 6,0 points |
+| 4 000 | ≈ 39 | ≈ 6,0 points | ≈ 4,2 points |
 
-Détecter +2 points demande environ 27 000 signaux. L'exclure (borne haute
-sous +2 points) en demande environ 22 000. Avec la dépendance, c'est plus.
+**Décision du 27/10** :
+- 2 hypothèses principales, Holm à 5 % ;
+- plafond de 4 000 signaux ;
+- effet recherché : environ 6 points.
 
-**Conséquence, à dire maintenant** : en quelques semaines, l'étude ne peut
-confirmer ou exclure que de **grands** effets (au-delà de 6 à 15 points).
-- Le verdict « rejetée » au seuil de +2 points est pratiquement hors de
-  portée.
-- À chaque regard, on publie l'effet exclu (« au-delà de X points »).
+Le plafond n'est pas une garantie de puissance. Le calcul sera refait avec
+le nombre réel de blocs, la corrélation observée et la correction. Un effet
+**détectable** n'est pas forcément **économiquement utile**.
+
+**Résultat négatif** : on publie les effets encore compatibles avec les
+données. On ne prétend pas exclure un gain de +2 points, ce qui demanderait
+environ 36 000 signaux.
 
 **Règle de poursuite** :
-- **Regards** à N = 500, 1 000, 2 000, 4 000, 8 000 signaux de niveau 2 en
-  confirmation.
+- **Regards** à N = 500, 1 000, 2 000 et 4 000 signaux de niveau 2 en
+  confirmation, issues mûres.
 - **Dépense d'α** de type O'Brien-Fleming (Lan-DeMets). Le seuil nominal de
   la famille de Holm à chaque regard est l'**incrément** de dépense : une
   borne de Bonferroni entre regards, conservatrice.
-  - Seuils : environ 4·10⁻¹⁵, 3·10⁻⁸, 9·10⁻⁵, 0,0055 et 0,044.
-  - Les trois premiers regards ne peuvent pas confirmer avec 1 000 tirages :
+  - Seuils : environ 3·10⁻⁸, 9·10⁻⁵, 0,0055 et 0,044.
+  - Les deux premiers regards ne peuvent pas confirmer avec 1 000 tirages :
     c'est voulu.
 - **Arrêt de la collecte** pour une raison étrangère aux résultats
-  (stockage, broker) : le dernier regard disponible devient final et reçoit
-  l'α restant.
-- **À 8 000 signaux** sans verdict : **indéterminée**, définitivement, avec
+  (stockage, transfert, broker) : le dernier regard disponible devient final
+  et reçoit l'α restant.
+- **À 4 000 signaux** sans verdict : **indéterminée**, définitivement, avec
   les bornes.
-- **Interdit** : changer les regards, les seuils ou N_max après
+- **Interdit** : changer les regards, les seuils ou le plafond après
   l'ouverture de la confirmation.
-
-**Décision pour toi** : vu l'ordre de grandeur, accepter ce plafond (environ
-3 mois à 90 signaux de niveau 2 par jour, à mesurer) ou réduire l'ambition à
-« détecter un grand effet ».
 
 ## 8. Comparaisons multiples et registre
 
 **Corrections** :
-- **Principales** : au plus 4, Holm à 5 %, à chaque regard au seuil
-  nominal.
+- **Principales** : 2 au plus, choisies a priori, Holm à 5 %, à chaque
+  regard au seuil nominal.
 - **Exploration** : 92 variables plus les échéances secondaires, BH à 10 %.
   Une découverte BH reste **exploratoire**, jamais une preuve.
 
 **Sensibilités de chaque principale**, toutes comptées au registre, soit
-2 × 3 × 2 × 2 = 24 variantes :
-- ticks bruts / distincts ;
+2 × 3 × 2 × 2 = 24 variantes. Elles ne sont calculées **que** pour les deux
+hypothèses retenues ; la sélection n'utilise que les ticks distincts à
+k = 0 :
+- ticks bruts, à titre de diagnostic seulement / distincts ;
 - k = 0 / 2 / 5 ;
 - blocs paire × jour / jour ;
 - égalités exclues / perdues.
@@ -322,53 +411,92 @@ stabilité dans le temps et à la qualité des données.
   - le coût dépasse les bornes ;
   - l'historique de ticks est perdu avant la passe.
 
-## 11. Contrôles préalables : `/micro_essai` (admin)
+## 11. `/micro_essai` v2 : essai technique de la passe optimisée (admin)
 
-`/micro_essai [PAIRE] [AAAA-MM-JJ]`. Par défaut : EURUSD_otc, le 20/10. Le
-jour doit être dans l'exploration.
+**Premier essai, le 27/10** (v1, une paire-jour) : 49,5 s par paire-jour,
+soit environ 5 h extrapolées pour la passe. C'est hors bornes. Les causes :
+- les signaux étaient recalculés ;
+- toute la journée était lue et décodée deux fois ;
+- les 24 variantes étaient calculées ;
+- l'autotest recopiait toute la journée.
 
-1. **Coût** : lignes, Mo compressés, temps par étape, mémoire,
-   extrapolation.
-2. **Couverture et qualité** :
-   - minutes présentes, fermées, à flux doublé ;
-   - concordance ;
-   - signaux (avec issue / égalité / manquante) ;
-   - classes de fenêtre ;
-   - part du niveau 2 ;
-   - variables manquantes.
-3. **Anti-fuite** sur chaque vraie fenêtre.
-4. **Disponibilité** sur les ordres réels (§0).
-5. **Puissance** depuis l'exploration, et seuils des regards.
+**Commande** : `/micro_essai [AAAA-MM-JJ] [PAIRE]`. Par défaut, le 20/10 et
+**toutes** les paires collectées. Le jour doit être dans l'exploration. Le
+rejeu quotidien doit être en mémoire avec ses niveaux de zone ; sinon,
+l'essai le dit et attend.
+
+**La passe optimisée, telle que l'essai la mesure** :
+- **Signaux** : ceux du rejeu quotidien. Le niveau de zone est relevé
+  **passivement** dans ce rejeu (`niveaux`). La stratégie, les signaux et
+  les issues ne changent pas.
+- **Lectures** : seulement les fenêtres [d − 900, d) des signaux,
+  fusionnées. Les bougies sont lues une minute de plus de chaque côté pour
+  la concordance.
+- **Décodage** : une seule fois par chemin, avec un cache partagé avec
+  l'audit.
+- **Calcul** : ticks distincts, k = 0, les 4 fenêtres, plus l'autotest
+  anti-fuite par signal et par fenêtre.
+
+**Vérifications publiées** (demandées le 27/10) :
+1. **Temps réel** : durée totale, paires-jours, signaux, octets de chemins
+   exacts, bougies, requêtes. Le pic mémoire est mesuré dans une seconde
+   passe sur le paire-jour le plus chargé. L'extrapolation est comparée aux
+   bornes (30 min, 150 Mo). Au-delà : suspendre et diagnostiquer.
+2. **Lecture seule** :
+   - toutes les requêtes passent par `ConnexionTracee`, qui les compte et
+     **refuse** tout ce qui n'est pas SELECT, WITH ou SHOW ;
+   - `transaction_read_only` est lu au début et à la fin (PostgreSQL) ;
+   - une empreinte de fichier ne vaut que pour SQLite.
+3. **Rejeu inchangé** : un paire-jour est rejoué avec la stratégie seule,
+   puis comparé au rejeu en mémoire (décisions, issues, contexte). Un
+   second contrôle vérifie que le relevé passif ne change rien.
+4. **Concordance** : on publie les classes des minutes lues, et les causes
+   d'exclusion du niveau 2. Aucune correction, aucune interpolation.
+5. **Reproductibilité** : le paire-jour le plus chargé est relu et
+   recalculé. Les empreintes des lignes lues et des variables doivent être
+   identiques.
+
+En plus : qualité des fenêtres, ordres réels face au flux (§0), puissance
+(2 hypothèses, plafond 4 000).
 
 **Fiches** :
-- `micro_essai.csv` : qualité et variables par signal × traitement × k × w,
+- `micro_essai.csv` : distincts, k = 0, une ligne par signal × fenêtre,
   **sans aucune issue** ;
 - `ordres_disponibilite.csv`.
 
-**Coût réseau** : environ 1 Mo pour l'échantillon. Le rejeu de l'exploration
-(bougies de 20 paires, environ 30 Mo) n'est lu que si le rejeu quotidien
-n'est pas en mémoire.
+**Déploiement** : `VERSION_EXPERIENCES` passe à 17, ce qui force le rejeu
+quotidien au démarrage et met les niveaux en mémoire.
 
-## 12. Stockage : prérequis indépendant
+## 12. Stockage et transfert : prérequis indépendants
 
-À confirmer séparément, avant la passe complète :
-- **Marge réelle sur Neon** : limite et unité, lues dans la console.
-- **Volume temporaire** : aucun en base, la mémoire est mesurée par
-  `/micro_essai`.
-- **Coût et temps du parcours des chemins compressés** : mesurés par
-  `/micro_essai`. Le transfert est un plafond distinct du stockage.
-- **Sauvegarde vérifiée** (`pg_dump`, puis restauration d'essai).
-- **Risque d'interruption de la collecte** avant la fin de la
-  confirmation : une décision de continuité est à prendre.
+**Limites de l'offre gratuite de Neon** (documentation lue le 27/10) :
+- **Stockage** : **1 Go par projet** (0,5 Go était l'ancienne limite). La
+  console compte en Mo décimaux.
+  - Au rythme d'environ 22 Mo par jour, depuis 465 Mo le 26/10, la limite
+    est atteinte vers mi-novembre.
+  - Au-delà, les écritures échouent.
+- **Transfert réseau** : **5 Go par projet et par mois**, remis à zéro à
+  chaque période de facturation.
+  - 2,39 Go étaient consommés du 19/10 au 26/10, soit environ 0,34 Go par
+    jour. Le plafond tomberait vers le **3 novembre**.
+  - Le calcul est alors **suspendu** jusqu'à la période suivante (vers le
+    19/11). C'est **le** risque de continuité, avant le stockage.
+- **La passe optimisée** est estimée à quelques dizaines de Mo, négligeable
+  à côté des rejeux quotidiens. Un diagnostic des sources du transfert est
+  proposé à part.
+
+**Reste à confirmer avant la passe complète** :
+- la sauvegarde vérifiée (`pg_dump`, puis restauration d'essai) ;
+- la continuité de la collecte sur la durée de la confirmation (environ
+  40 jours de niveau 2), compte tenu du transfert.
 
 ## 13. Autorisations, et ordre d'exécution
 
-**Autorisé, fait dans cette version** :
-- vérification des composants et des frontières temporelles ;
-- tests anti-fuite et de concordance ;
-- mesure du coût, estimation de la puissance et diagnostic des ordres, dans
-  une commande en lecture seule ;
-- registre et modèle de pré-inscription.
+**Autorisé, fait** :
+- composants, frontières, anti-fuite et concordance testés ;
+- `/micro_essai` v2 avec les cinq vérifications ;
+- relevé passif du niveau de zone dans le rejeu quotidien ;
+- protocole à 2 hypothèses, plafond 4 000, règle de retrait, maturité.
 
 **Pas encore autorisé** :
 - passe complète ;
@@ -376,16 +504,21 @@ n'est pas en mémoire.
 - modification du collecteur ou de la stratégie ;
 - sélection définitive des hypothèses sans gel formel.
 
+**À toi de décider** :
+1. **H1 et H2** (§6) : valider, remplacer (par exemple par B5) ou modifier.
+2. **Ouverture de la confirmation** : (a) strict ou (b) dès le gel des
+   hypothèses (§6).
+
 **Ordre** :
 
 | Étape | État |
 |---|---|
-| 1. Corriger et tester A à D | fait (ce document, 4 fichiers de tests) |
-| 2. Concordance et anti-fuite sur un échantillon contrôlé | `/micro_essai`, à lancer après déploiement |
-| 3. Coût, couverture, puissance | même commande |
-| 4. Stockage et continuité sécurisés | de ton côté (§12) |
-| 5. Gel des 4 hypothèses et des paramètres | après la passe de sélection |
-| 6. Plan corrigé soumis avant la passe complète | ce document, plus les résultats de `/micro_essai` |
+| 1. Corriger et tester A à D | fait |
+| 2. Concordance et anti-fuite sur échantillon | fait (27/10), à refaire avec la v2 |
+| 3. Coût réel de la passe optimisée | `/micro_essai` v2, après déploiement |
+| 4. Stockage, transfert, sauvegarde, continuité | de ton côté (§12) |
+| 5. Gel des 2 hypothèses | après ta validation de H1 et H2 |
+| 6. Passe de sélection, puis gel des paramètres | après ton feu vert |
 
 ## 14. Fichiers
 
@@ -393,8 +526,9 @@ n'est pas en mémoire.
 |---|---|
 | `maxprofit/apprentissage/microstructure_pre.py` | fenêtres, variables A à E, classes, niveaux, autotest anti-fuite ; pur |
 | `maxprofit/apprentissage/etude_micro.py` | issue, périodes, préparation, logistique L2, Δℓ sur mêmes signaux, bootstrap, terciles, Holm / BH, verdicts, puissance, dépense d'α, registre, gel ; pur |
-| `maxprofit/live/etude3.py` | `/micro_essai` |
-| `maxprofit/apprentissage/historique.py` | option `sans_issue` (signaux à égalité ou sans issue, avec contexte) |
+| `maxprofit/live/etude3.py` | `/micro_essai` v2 (passe fenêtrée, `ConnexionTracee`, contrôles) |
+| `maxprofit/apprentissage/historique.py` | options `sans_issue` et `niveaux` (relevés passifs) |
+| `maxprofit/live/apprenti.py` | niveaux de zone du rejeu en mémoire (`niveaux_en_memoire`) |
 | `maxprofit/apprentissage/audit_ticks.py` | option `garder_classes` (concordance minute par minute) |
 | `tests/test_disponibilite_collecte.py`, `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py`, `tests/test_etude3.py` | disponibilité, définitions, anti-fuite, protocole, bout en bout |
 | `docs/etape3_registre.md` | registre et pré-inscription |

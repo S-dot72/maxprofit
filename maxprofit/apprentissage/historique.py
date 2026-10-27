@@ -33,7 +33,9 @@ def exemples_historiques(
         echeances: Sequence[int] = ECHEANCES_COMPAREES,
         avec_contexte: bool = True,
         exclusions: dict[str, int] | None = None,
-        sans_issue: list[dict] | None = None) -> list[Exemple]:
+        sans_issue: list[dict] | None = None,
+        niveaux: dict[tuple[str, int], float | None] | None = None
+        ) -> list[Exemple]:
     """Chaque signal que la stratégie aurait émis, avec son contexte.
 
     `respirer`, appelée régulièrement, laisse la main aux autres fils du
@@ -43,6 +45,9 @@ def exemples_historiques(
     `sans_issue`, si fourni, reçoit chaque signal écarté pour égalité ou
     bougie absente à l'échéance, avec son contexte : l'étape 3 les rapporte
     à part et compte les égalités perdues en sensibilité.
+    `niveaux`, si fourni, reçoit le niveau de zone de CHAQUE signal,
+    {(paire, décision): niveau} : un relevé passif pour l'étape 3, qui ne
+    change ni les signaux, ni leurs issues, ni leur contexte.
     """
     def exclure(motif: str) -> None:
         if exclusions is not None:
@@ -84,6 +89,9 @@ def exemples_historiques(
             signal = strategie.on_bar(vue)
             if signal is None:
                 continue
+            if niveaux is not None:
+                niveaux[(pair, bougie.ts_sec + 60)] = \
+                    (signal.features or {}).get("niveau")
             sortie_prix = closes.get(bougie.ts_sec + echeance_sec)
             call = signal.direction is Direction.CALL
             if sortie_prix is None or sortie_prix == bougie.close:

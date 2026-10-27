@@ -81,7 +81,7 @@ def test_la_ligne_de_stockage_dit_la_place_et_le_quota(monkeypatch):
         "uptime": 10 * mo}}
     monkeypatch.delenv("QUOTA_STOCKAGE_MO", raising=False)
     assert _ligne_stockage(tailles) == (
-        "Stockage : ⚠ 420 Mo sur 512 (82 %) — chemins de ticks 300 Mo, "
+        "Stockage : 420 Mo sur 953 (44 %) — chemins de ticks 300 Mo, "
         "bougies 90 Mo, payouts 20 Mo")
     monkeypatch.setenv("QUOTA_STOCKAGE_MO", "3072")
     assert _ligne_stockage(tailles).startswith("Stockage : 420 Mo sur 3072")

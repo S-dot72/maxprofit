@@ -36,6 +36,10 @@ from typing import Any, Callable, Hashable, Mapping, Sequence
 
 GAIN, PERTE, EGALITE, MANQUANTE = "gain", "perte", "egalite", "manquante"
 HORIZON_SEC = 900
+#: Une issue n'est lue qu'une heure après son échéance : la bougie de sortie
+#: d'une paire calme ne s'écrit qu'au tick suivant. Une période n'est figée
+#: qu'une fois toutes ses issues mûres.
+MARGE_MATURITE_SEC = 3600
 HORIZONS_SECONDAIRES = (240, 600)
 
 #: Le découpage, fixé avant de lire une issue (plan §6). La confirmation
@@ -60,13 +64,25 @@ CONFIRMEE, REJETEE, INDETERMINEE = "confirmée", "rejetée", "indéterminée"
 EFFET_PRATIQUE = 0.02
 SIGNAUX_MIN = 500
 ALPHA_FAMILLE = 0.05
-HYPOTHESES_MAX = 4
+#: Deux hypothèses principales au plus (décision du 27/10), choisies et
+#: pré-inscrites AVANT tout examen de leur lien avec les issues.
+HYPOTHESES_MAX = 2
 BH_Q = 0.10
 TIRAGES = 1000
 GRAINE = 7
 #: Les regards de la confirmation, en signaux de niveau 2 : la règle de
-#: poursuite est fixée avant le premier (plan §7 bis).
-REGARDS: tuple[int, ...] = (500, 1000, 2000, 4000, 8000)
+#: poursuite est fixée avant le premier (plan §7 bis). Plafond de 4 000
+#: (décision du 27/10) : un plafond, pas une garantie de puissance.
+REGARDS: tuple[int, ...] = (500, 1000, 2000, 4000)
+
+#: La règle de retrait des variables quasi constantes (plan §4 bis), fixée
+#: avant toute lecture d'issue et appliquée sur l'EXPLORATION seule.
+VERSION_RETRAIT = 1
+PART_RARE_MIN = 0.05
+N_RARE_MIN = 30
+#: En ticks bruts, ces deux variables mesurent le doublement du flux (un
+#: artefact de collecte) : jamais prédictives, diagnostic seulement.
+ARTEFACTS_BRUTS: tuple[str, ...] = ("B3_nulles", "B6_concentration")
 
 #: Les variantes de sensibilité de CHAQUE hypothèse principale : comptées
 #: au registre, et une conclusion qui change de signe entre elles est
@@ -117,6 +133,19 @@ def ouverture_confirmation(gel_sec: int) -> int:
     """Le premier minuit UTC strictement après le gel, et jamais avant la
     fin de la validation."""
     return max(FIN_VALIDATION, (int(gel_sec) // 86400 + 1) * 86400)
+
+
+def issue_mure(decision_sec: int, maintenant: float,
+               horizon_sec: int = HORIZON_SEC) -> bool:
+    """L'issue est-elle lisible sans risque d'être encore incomplète ?"""
+    return maintenant >= decision_sec + horizon_sec + MARGE_MATURITE_SEC
+
+
+def periode_figeable(fin_sec: int, maintenant: float,
+                     horizon_sec: int = HORIZON_SEC) -> bool:
+    """Une période [·, fin_sec[ ne se fige qu'une fois toutes ses issues
+    mûres : son dernier signal peut décider juste avant `fin_sec`."""
+    return issue_mure(fin_sec, maintenant, horizon_sec)
 
 
 def y_selon(issue_: str, egalites: str = "exclues") -> int | None:
@@ -367,12 +396,16 @@ def bootstrap_par_blocs(par_bloc: Mapping[Hashable, Sequence[float]], *,
 def effet_tercile(lignes: Sequence[Mapping[str, Any]], variable: str,
                   bornes: tuple[float, float], tercile: int, *,
                   bloc: Callable[[Mapping[str, Any]], Hashable],
-                  tirages: int = TIRAGES, graine: int = GRAINE
-                  ) -> dict[str, float | int]:
-    """Taux de gain du tercile pré-inscrit − taux des deux autres, avec un
-    intervalle par blocs. `bornes` : les terciles de l'EXPLORATION, figés ;
-    `tercile` ∈ {0, 1, 2}. Une variable manquante tombe dans le tercile de
-    la médiane d'exploration, comme dans le modèle."""
+                  sens: int = 1, tirages: int = TIRAGES,
+                  graine: int = GRAINE) -> dict[str, float | int]:
+    """`sens` × (taux de gain du tercile pré-inscrit − taux des deux
+    autres), avec un intervalle par blocs : positif dans le sens pré-inscrit
+    (`sens` = −1 pour une hypothèse « moins de gains »). `bornes` : les
+    terciles de l'EXPLORATION, figés ; `tercile` ∈ {0, 1, 2}. Une variable
+    manquante tombe dans le tercile de la médiane d'exploration, comme dans
+    le modèle."""
+    if sens not in (1, -1):
+        raise ValueError("sens : +1 ou −1")
     def classe(v: float) -> int:
         return 0 if v < bornes[0] else (1 if v < bornes[1] else 2)
 
@@ -388,7 +421,7 @@ def effet_tercile(lignes: Sequence[Mapping[str, Any]], variable: str,
         c = [y for b in blocs for d, y in b if not d]
         if not a or not c:
             return None
-        return sum(a) / len(a) - sum(c) / len(c)
+        return sens * (sum(a) / len(a) - sum(c) / len(c))
 
     ordonnes = [g for _, g in sorted(groupes.items(),
                                       key=lambda kv: repr(kv[0]))]
@@ -409,6 +442,58 @@ def effet_tercile(lignes: Sequence[Mapping[str, Any]], variable: str,
             "haut": tirs[min(len(tirs) - 1, int(math.ceil(0.975 * len(tirs)))
                              - 1)],
             "blocs": len(ordonnes)}
+
+
+def retrait_des_quasi_constantes(
+        valeurs: Mapping[str, Sequence[float | None]], *,
+        part_min: float = PART_RARE_MIN, n_min: int = N_RARE_MIN
+        ) -> list[dict[str, Any]]:
+    """La trace de la règle de retrait, une ligne par candidate
+    (« variable@w ») : calculée sur l'EXPLORATION, sans aucune issue, puis
+    gelée avec le registre.
+
+    - écart interquartile > 0 : conservée ;
+    - écart interquartile nul : l'IQR ne suffit pas à juger une variable
+      rare (un événement binaire peu fréquent a un IQR nul). Elle est
+      conservée si au moins `n_min` valeurs ET au moins `part_min` des
+      valeurs diffèrent du mode ; retirée sinon ;
+    - moins de `n_min` valeurs mesurées : retirée."""
+    trace = []
+    for candidate, brutes in valeurs.items():
+        v = sorted(float(x) for x in brutes if x is not None)
+        n = len(v)
+        ligne: dict[str, Any] = {
+            "candidate": candidate, "valeurs": n,
+            "manquantes": len(brutes) - n, "distinctes": len(set(v)),
+            "q1": None, "q3": None, "iqr": None, "mode": None,
+            "hors_mode": None, "part_hors_mode": None,
+            "version": VERSION_RETRAIT}
+        if n < n_min:
+            ligne.update(decision="retirée",
+                         raison=f"moins de {n_min} valeurs mesurées")
+            trace.append(ligne)
+            continue
+        q1, q3 = v[n // 4], v[(3 * n) // 4]
+        comptes: dict[float, int] = {}
+        for x in v:
+            comptes[x] = comptes.get(x, 0) + 1
+        mode = max(comptes, key=lambda x: (comptes[x], -x))
+        hors = n - comptes[mode]
+        ligne.update(q1=q1, q3=q3, iqr=q3 - q1, mode=mode, hors_mode=hors,
+                     part_hors_mode=hors / n)
+        if q3 > q1:
+            ligne.update(decision="conservée", raison="IQR > 0")
+        elif hors >= n_min and hors / n >= part_min:
+            ligne.update(decision="conservée",
+                         raison=f"IQR nul mais {hors} valeurs "
+                                f"({100 * hors / n:.1f} %) hors du mode")
+        else:
+            ligne.update(decision="retirée",
+                         raison=f"quasi constante : IQR nul, {hors} valeurs "
+                                f"({100 * hors / n:.1f} %) hors du mode, "
+                                f"seuils {n_min} et {100 * part_min:.0f} %")
+        trace.append(ligne)
+    return trace
 
 
 def terciles(valeurs: Sequence[float | None]) -> tuple[float, float] | None:
