@@ -490,7 +490,8 @@ class AuditTicks:
     def __init__(self, debut: int, fin: int, *,
                  decoder: Callable[[Any], Sequence[Tick]],
                  encoder: Callable[[Sequence[Tick]], Any] | None = None,
-                 joue: Callable[[Any], bool] | None = None):
+                 joue: Callable[[Any], bool] | None = None,
+                 garder_classes: bool = False):
         self.decoder = decoder
         self.encoder = encoder
         self.debut = int(debut) // 60 * 60
@@ -528,6 +529,11 @@ class AuditTicks:
         self.ecarts_concordance: Counter = Counter()   # champ en défaut
         self.champs_ordre: Counter = Counter()   # o / c pris à l'arrivée
         self.exemples: dict[str, list] = {}
+        #: paire → minute → classe de concordance, pour le niveau 2 de
+        #: l'étape 3. Gardé seulement sur demande : une paire à la fois,
+        #: l'appelant le vide après usage.
+        self.classes: dict[str, dict[int, str | None]] | None = (
+            {} if garder_classes else None)
         # Signaux
         self.fiches_signaux: list[dict] = []
         self.codes: Counter = Counter()
@@ -698,6 +704,8 @@ class AuditTicks:
                              else None)
             r["concordance"] = self._concorder(paire, m, r, bougies_m, ticks)
             resumes[m] = r
+            if self.classes is not None:
+                self.classes.setdefault(paire, {})[m] = r["concordance"]
             dernier_ms, derniere_minute = r["dernier"], m
         if relire is not None:
             self._relire(paire, resumes, par_minute, relire)

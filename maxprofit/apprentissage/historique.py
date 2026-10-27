@@ -32,13 +32,17 @@ def exemples_historiques(
         respirer: Callable[[], None] | None = None,
         echeances: Sequence[int] = ECHEANCES_COMPAREES,
         avec_contexte: bool = True,
-        exclusions: dict[str, int] | None = None) -> list[Exemple]:
+        exclusions: dict[str, int] | None = None,
+        sans_issue: list[dict] | None = None) -> list[Exemple]:
     """Chaque signal que la stratégie aurait émis, avec son contexte.
 
     `respirer`, appelée régulièrement, laisse la main aux autres fils du
     processus : le rejeu tourne à côté de la collecte et de la course.
     `exclusions`, si fourni, reçoit le compte de ce qui a été écarté et
     pourquoi (protocole OTC : « observations exclues, avec les motifs »).
+    `sans_issue`, si fourni, reçoit chaque signal écarté pour égalité ou
+    bougie absente à l'échéance, avec son contexte : l'étape 3 les rapporte
+    à part et compte les égalités perdues en sensibilité.
     """
     def exclure(motif: str) -> None:
         if exclusions is not None:
@@ -81,12 +85,20 @@ def exemples_historiques(
             if signal is None:
                 continue
             sortie_prix = closes.get(bougie.ts_sec + echeance_sec)
+            call = signal.direction is Direction.CALL
             if sortie_prix is None or sortie_prix == bougie.close:
                 exclure("signaux sans bougie à l'échéance"
                         if sortie_prix is None else
                         "signaux à égalité à l'échéance")
+                if sans_issue is not None:
+                    ctx = (contexte(fenetre, call, signal.features)
+                           if avec_contexte else {})
+                    sans_issue.append({
+                        "ts_sec": bougie.ts_sec + 60, "pair": pair,
+                        "call": call, "contexte": ctx,
+                        "issue": ("manquante" if sortie_prix is None
+                                  else "egalite")})
                 continue
-            call = signal.direction is Direction.CALL
             # Le MÊME signal jugé à d'autres échéances : c'est ce qui rend
             # la comparaison juste — mêmes entrées, seule la sortie change.
             issues = {}

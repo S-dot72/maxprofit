@@ -359,6 +359,9 @@ async def _servir(args) -> int:
                 simples, getattr(_course.get("sup"), "_course", None))
             bot._ticks = lambda: asyncio.to_thread(
                 ticks, getattr(_course.get("sup"), "_course", None))
+            bot._micro_essai = lambda argument: asyncio.to_thread(
+                _micro_essai, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             bot._decision = lambda: asyncio.to_thread(
                 decision, getattr(_course.get("sup"), "_course", None))
             bot._lecons = lambda: asyncio.to_thread(
@@ -749,6 +752,30 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
             lignes.append(f"Campagne : {origine}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
+
+
+def _micro_essai(chemin, course, argument: str
+                 ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/micro_essai` : les contrôles préalables de l'étape 3, sur une
+    connexion à part passée en lecture seule."""
+    import html
+    from maxprofit.live.etude3 import essai
+    from maxprofit.store.db import open_read_only
+    from maxprofit.store.diagnostic_stockage import lecture_seule
+    if course is None:
+        return "Course indisponible.", []
+    try:
+        conn = open_read_only(chemin)
+        try:
+            lecture_seule(conn)
+            return essai(conn, course, argument)
+        finally:
+            conn.close()
+    except Exception as erreur:                          # noqa: BLE001
+        log.exception("Contrôles de l'étape 3 impossibles")
+        return (f"🔬 Contrôles impossibles : "
+                f"{html.escape((str(erreur).splitlines() or [repr(erreur)])[0][:300])}",
+                [])
 
 
 def _ligne_stockage(tailles: dict) -> str | None:
