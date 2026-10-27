@@ -69,6 +69,10 @@ def _course(chemin=None):
         niveaux: dict = {}
         exemples = exemples_historiques(
             {P: bougies}, _Strategie(p), echeance_sec=900, niveaux=niveaux)
+        # Comme `Apprenti` : le drapeau de qualité est posé APRÈS le rejeu.
+        from maxprofit.live.protocole import marquer_qualite
+        marquer_qualite(exemples, SimpleNamespace(touche=lambda *a: False),
+                        900)
         course.rejeu_en_memoire = (exemples, None, 1, "v")
         course.niveaux_en_memoire = niveaux
     return course
@@ -221,6 +225,8 @@ def test_le_controle_du_rejeu_voit_un_ecart(tmp_path):
         conn.close()
     assert not faux["identique"] and faux["differents"] == 1
     assert faux["champs"] == {"issue": 1}
+    (d,) = faux["differences"]
+    assert d["champ"] == "issue" and d["memoire"] != d["rejoue"]
 
 
 def test_l_annotation_posee_apres_le_rejeu_n_est_pas_un_ecart(tmp_path):
@@ -240,7 +246,10 @@ def test_l_annotation_posee_apres_le_rejeu_n_est_pas_un_ecart(tmp_path):
     finally:
         conn.close()
     assert r["identique"] and r["differents"] == 0
-    assert r["annotes"] == r["memoire"] > 0
+    assert r["annotation"]["ok"]
+    a = r["annotation"]["donnees_douteuses"]
+    assert a["presentes"] == a["total"] == r["memoire"] > 0
+    assert a["valeurs"] == {"1.0": r["memoire"]} and a["dans_le_refait"] == 0
     exemples[0].contexte["distance_niveau"] = 99.0
     assert etude3.champs_differents(
         exemples[0], SimpleNamespace(**{**exemples[0].__dict__,
@@ -291,3 +300,39 @@ def test_les_arguments(argument, attendu):
 def test_les_arguments_refuses(argument):
     with pytest.raises(ValueError):
         etude3.analyser(argument, (P,))
+
+
+def test_le_controle_liste_toutes_les_differences_et_l_annotation_a_part(
+        tmp_path):
+    """Liste EXHAUSTIVE : chaque champ divergent de chaque signal, plus un
+    signal manquant ; l'annotation est jugée à part (une valeur hors de
+    0/1, ou absente d'un signal, fait échouer son contrôle)."""
+    from dataclasses import replace
+    chemin = _base(tmp_path)
+    course = _course(chemin)
+    exemples = [replace(e, contexte=dict(e.contexte))
+                for e in course.rejeu_en_memoire[0]]
+    du_jour = [k for k, e in enumerate(exemples)
+               if JOUR <= e.ts_sec < JOUR + 86400]
+    for k in du_jour:
+        exemples[k].contexte["donnees_douteuses"] = 0.0
+    a, b = du_jour[0], du_jour[1]
+    exemples[a].contexte["distance_niveau"] = 42.0
+    exemples[a].contexte["elan_15m"] = -1.0
+    exemples[b].contexte["donnees_douteuses"] = 0.5
+    retire = exemples.pop(du_jour[2])
+    conn = open_read_only(chemin)
+    try:
+        r = etude3.controle_du_rejeu(etude3.ConnexionTracee(conn), course,
+                                     exemples, P, JOUR)
+    finally:
+        conn.close()
+    champs = {(x["decision"], x["champ"]) for x in r["differences"]}
+    assert (exemples[a].ts_sec, "distance_niveau") in champs
+    assert (exemples[a].ts_sec, "elan_15m") in champs
+    assert (retire.ts_sec, "signal absent du rejeu en mémoire") in champs
+    assert r["differents"] == 2 and len(r["differences"]) == 3
+    assert not r["annotation"]["ok"], "une valeur 0,5 n'est pas admise"
+    rapport_csv = etude3.fichiers([], {"fiches": []}, r)[-1]
+    assert rapport_csv[1] == "controle_rejeu.csv"
+    assert rapport_csv[0].decode().count("\n") == 1 + 3

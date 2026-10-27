@@ -530,10 +530,29 @@ gelée** ici, elle le sera sur toute l'exploration.
 - modification du collecteur ou de la stratégie ;
 - sélection définitive des hypothèses sans gel formel.
 
-**À toi de décider** :
-1. **H1 et H2** (§6) : valider, remplacer (par exemple par B5) ou modifier.
-2. **Ouverture de la confirmation** : (a) strict ou (b) dès le gel des
-   hypothèses (§6).
+**Décisions du 27/10 (soir)** :
+- **H1 et H2 validées comme hypothèses à tester.** Ce n'est pas une
+  validation de leur efficacité.
+- **Confirmation : option (a)**, au premier minuit UTC qui suit le gel des
+  paramètres.
+- **Transfert réseau** : mesurer en lecture seule avant toute modification
+  (`/transfert`, `docs/transfert_diagnostic.md`).
+
+**Brouillon de pré-inscription** : `docs/etape3_preinscription.json`, non
+gelé. Il fixe :
+- les formules exactes de H1 et H2 : unité, sens, traitement des valeurs
+  manquantes, oscillations, déduplication ;
+- la population et les exclusions ;
+- l'issue historique, distincte de l'issue réglée par le broker ;
+- le modèle de référence et les modèles comparés ;
+- le critère principal (Δℓ face à la référence, IC par blocs, Holm sur
+  2) ;
+- l'effet pratique, les verdicts, les sensibilités, les regards, les
+  périodes et les interdits.
+
+Un test vérifie qu'il ne diverge pas du code. Le gel (empreinte dans un
+commit) viendra après la confirmation du rejeu et ton accord sur ce
+brouillon.
 
 **Ordre** :
 
@@ -543,8 +562,9 @@ gelée** ici, elle le sera sur toute l'exploration.
 | 2. Concordance et anti-fuite sur échantillon | fait (27/10), à refaire avec la v2 |
 | 3. Coût réel de la passe optimisée | `/micro_essai` v2, après déploiement |
 | 4. Stockage, transfert, sauvegarde, continuité | de ton côté (§12) |
-| 5. Gel des 2 hypothèses | après ta validation de H1 et H2 |
-| 6. Passe de sélection, puis gel des paramètres | après ton feu vert |
+| 4 bis. Diagnostic du transfert | `/transfert`, 24 h de mesure contenant un rejeu |
+| 5. Gel des 2 hypothèses | brouillon prêt ; après la confirmation du rejeu et ton accord |
+| 6. Passe de sélection, puis gel des paramètres | après ton feu vert, transfert et continuité réglés |
 
 ## 14. Fichiers
 

@@ -282,42 +282,79 @@ def controle_du_rejeu(conn: ConnexionTracee, course, exemples, paire: str,
     memoire = {e.ts_sec: e for e in exemples if e.pair == paire
                and debut <= e.ts_sec < debut + 86400}
     refait = {e.ts_sec: e for e in seul}
-    champs: Counter = Counter()
-    differents = 0
+    differences: list[dict[str, Any]] = []
     for d in sorted(set(memoire) | set(refait)):
         if d not in refait or d not in memoire:
-            champs["absent du rejeu refait" if d not in refait
-                   else "absent du rejeu en mémoire"] += 1
-            differents += 1
+            differences.append({
+                "decision": d, "champ": ("signal absent du rejeu refait"
+                                         if d not in refait else
+                                         "signal absent du rejeu en mémoire"),
+                "memoire": d in memoire, "rejoue": d in refait})
             continue
-        ecart = champs_differents(memoire[d], refait[d])
-        champs.update(ecart)
-        differents += bool(ecart)
+        differences += [{"decision": d, **x}
+                        for x in differences_metier(memoire[d], refait[d])]
+    for x in differences:
+        x["decision_utc"] = datetime.fromtimestamp(
+            x["decision"], timezone.utc).strftime("%Y-%m-%d %H:%M")
     return {"paire": paire, "memoire": len(memoire), "recalcul": len(refait),
-            "identique": not differents, "differents": differents,
-            "champs": dict(champs),
-            "annotes": sum(1 for e in memoire.values()
-                           if any(k in e.contexte
-                                  for k in ANNOTATIONS_APRES_REJEU)),
+            "identique": not differences,
+            "differents": len({x["decision"] for x in differences}),
+            "champs": dict(Counter(x["champ"] for x in differences)),
+            "differences": differences,
+            "annotation": controle_annotation(memoire.values(),
+                                              refait.values()),
             "passif_sans_effet": [cle(e) for e in seul]
             == [cle(e) for e in avec],
             "temps": time.monotonic() - t}
 
 
-def champs_differents(a, b) -> list[str]:
-    """Ce qui diffère entre deux exemples d'un même signal, hors des
-    annotations posées après le rejeu."""
-    champs = []
+def differences_metier(a, b) -> list[dict[str, Any]]:
+    """TOUT ce qui diffère entre deux exemples d'un même signal — issue,
+    issues aux autres échéances, chaque clé du contexte — sauf les
+    annotations posées après le rejeu, contrôlées à part."""
+    sortie: list[dict[str, Any]] = []
     if a.gagne != b.gagne:
-        champs.append("issue")
+        sortie.append({"champ": "issue", "memoire": a.gagne,
+                       "rejoue": b.gagne})
     if dict(a.issues) != dict(b.issues):
-        champs.append("issues aux autres échéances")
+        sortie.append({"champ": "issues aux autres échéances",
+                       "memoire": dict(a.issues), "rejoue": dict(b.issues)})
     ca = {k: v for k, v in a.contexte.items()
           if k not in ANNOTATIONS_APRES_REJEU}
     cb = {k: v for k, v in b.contexte.items()
           if k not in ANNOTATIONS_APRES_REJEU}
-    champs += sorted(k for k in set(ca) | set(cb) if ca.get(k) != cb.get(k))
-    return champs
+    for k in sorted(set(ca) | set(cb)):
+        if ca.get(k, "absent") != cb.get(k, "absent"):
+            sortie.append({"champ": k, "memoire": ca.get(k, "absent"),
+                           "rejoue": cb.get(k, "absent")})
+    return sortie
+
+
+def champs_differents(a, b) -> list[str]:
+    return [x["champ"] for x in differences_metier(a, b)]
+
+
+def controle_annotation(memoire, refait) -> dict[str, Any]:
+    """L'annotation écartée de la comparaison est contrôlée à part :
+    présente sur CHAQUE signal en mémoire, à valeur 0 ou 1, et absente de
+    tout rejeu refait (seul le protocole la pose, après le rejeu)."""
+    memoire, refait = list(memoire), list(refait)
+    sortie: dict[str, Any] = {}
+    ok = True
+    for cle_ in ANNOTATIONS_APRES_REJEU:
+        valeurs = Counter(e.contexte[cle_] for e in memoire
+                          if cle_ in e.contexte)
+        dans_le_refait = sum(1 for e in refait if cle_ in e.contexte)
+        presentes = sum(valeurs.values())
+        admises = set(valeurs) <= {0.0, 1.0}
+        bon = presentes == len(memoire) and admises and not dans_le_refait
+        sortie[cle_] = {"presentes": presentes, "total": len(memoire),
+                        "valeurs": {str(k): v for k, v in
+                                    sorted(valeurs.items())},
+                        "dans_le_refait": dans_le_refait, "ok": bon}
+        ok = ok and bon
+    sortie["ok"] = ok
+    return sortie
 
 
 # --------------------------------------------------------------------------- #
@@ -476,7 +513,7 @@ def essai(conn, course, argument: str = "",
         "jours_selection": jours_selection, "n_paires": len(paires) or 20,
     }
     return (texte(resume, resultats, rejeu, ordres, puis),
-            fichiers(resultats, ordres))
+            fichiers(resultats, ordres, rejeu))
 
 
 # --------------------------------------------------------------------------- #
@@ -548,14 +585,20 @@ def texte(resume: dict, resultats: Sequence[dict], rejeu: dict,
          f"mémoire, {rejeu['recalcul']} rejoués ici ; mêmes décisions, "
          f"issues et contexte : {'oui' if rejeu['identique'] else 'NON'} "
          f"{_ok(rejeu['identique'])}"
-         + (f" — {rejeu['differents']} signal(s) différent(s), champs : "
+         + (f" — {rejeu['differents']} signal(s) différent(s), "
+            f"{len(rejeu['differences'])} différence(s), liste complète "
+            f"dans controle_rejeu.csv ; par champ : "
             + ", ".join(f"{html.escape(k)} ({v})" for k, v in
                         sorted(rejeu["champs"].items(),
-                               key=lambda kv: -kv[1])[:8])
-            if not rejeu["identique"] else ""),
-         f"- annotation posée après le rejeu, hors comparaison : "
-         f"{', '.join(ANNOTATIONS_APRES_REJEU)} ({rejeu['annotes']} "
-         f"signal(s) en mémoire la portent)",
+                               key=lambda kv: (-kv[1], kv[0])))
+            if not rejeu["identique"] else " — aucune différence"),
+         *[f"- annotation {cle_} (hors comparaison, contrôlée à part) : "
+           f"présente sur {a['presentes']}/{a['total']} signaux en mémoire, "
+           f"valeurs " + (", ".join(f"{k} : {v}" for k, v in
+                                    a["valeurs"].items()) or "aucune")
+           + f", absente du rejeu refait : "
+           f"{'oui' if not a['dans_le_refait'] else 'NON'} {_ok(a['ok'])}"
+           for cle_, a in rejeu["annotation"].items() if cle_ != "ok"],
          f"- le relevé du niveau de zone ne change rien au rejeu : "
          f"{'oui' if rejeu['passif_sans_effet'] else 'NON'} "
          f"{_ok(rejeu['passif_sans_effet'])} (contrôle hors mesure : "
@@ -642,8 +685,8 @@ def _csv(lignes: Sequence[dict], colonnes: Sequence[str]) -> bytes:
     return sortie.getvalue().encode("utf-8")
 
 
-def fichiers(resultats: Sequence[dict], ordres: dict
-             ) -> list[tuple[bytes, str, str]]:
+def fichiers(resultats: Sequence[dict], ordres: dict,
+             rejeu: dict | None = None) -> list[tuple[bytes, str, str]]:
     colonnes = ["paire", "decision", "decision_utc", "sens", *mp.QUALITE,
                 "classe", "hors_niveau_2", "traitement", "k", "w", "n",
                 *mp.VARIABLES]
@@ -656,4 +699,11 @@ def fichiers(resultats: Sequence[dict], ordres: dict
                        "ordres_disponibilite.csv",
                        "Ordres réels : prix vu par la course face au flux "
                        "stocké"))
+    if rejeu and rejeu["differences"]:
+        sortie.append((_csv(rejeu["differences"],
+                            ["decision", "decision_utc", "champ", "memoire",
+                             "rejoue"]),
+                       "controle_rejeu.csv",
+                       "Rejeu en mémoire face au rejeu refait : toutes les "
+                       "différences, champ par champ"))
     return sortie
