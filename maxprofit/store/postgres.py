@@ -110,23 +110,40 @@ def configure() -> bool:
 
 
 class _Curseur:
-    """Enveloppe un curseur psycopg pour ressembler à celui de `sqlite3`."""
+    """Enveloppe un curseur psycopg pour ressembler à celui de `sqlite3`.
 
-    def __init__(self, curseur):
+    `lecture` : le compteur PASSIF du transfert (`store.mesure_transfert`),
+    qui voit les lignes rendues sans rien y changer."""
+
+    def __init__(self, curseur, lecture=None):
         self._c = curseur
+        self._lecture = lecture
 
     def fetchone(self):
-        return self._c.fetchone()
+        ligne = self._c.fetchone()
+        if self._lecture is not None:
+            self._lecture.lignes_lues((ligne,))
+        return ligne
 
     def fetchall(self):
-        return self._c.fetchall()
+        lignes = self._c.fetchall()
+        if self._lecture is not None:
+            self._lecture.lignes_lues(lignes)
+        return lignes
 
     @property
     def rowcount(self) -> int:
         return self._c.rowcount
 
     def __iter__(self):
-        return iter(self._c)
+        if self._lecture is None:
+            return iter(self._c)
+        return self._compter(iter(self._c))
+
+    def _compter(self, lignes):
+        for ligne in lignes:
+            self._lecture.lignes_lues((ligne,))
+            yield ligne
 
 
 class _CurseurVide:
@@ -162,6 +179,8 @@ class Connexion:
         #: Un `BEGIN` explicite est-il en cours ? Tenu ici et non lu sur la
         #: connexion : une connexion coupée ne sait plus rien dire d'elle.
         self._bloc = False
+        #: « active », « relève »… pour la mesure du transfert ; jamais l'URL.
+        self._base: str | None = None
 
     def execute(self, sql: str, params=()):
         if dialecte.est_pragma(sql):
@@ -188,7 +207,17 @@ class Connexion:
             self._bloc = True
         elif mot in ("COMMIT", "ROLLBACK", "END"):
             self._bloc = False
-        return _Curseur(curseur)
+        lecture = None
+        if mot in ("SELECT", "WITH"):
+            try:
+                from maxprofit.store.mesure_transfert import (
+                    MESURE, nom_de_base)
+                if self._base is None:
+                    self._base = nom_de_base(self._url)
+                lecture = MESURE.lecture(sql, params, self._base)
+            except Exception:                            # noqa: BLE001
+                lecture = None      # la mesure ne gêne jamais la lecture
+        return _Curseur(curseur, lecture)
 
     def _executer(self, traduit: str, params):
         curseur = self._conn.cursor()

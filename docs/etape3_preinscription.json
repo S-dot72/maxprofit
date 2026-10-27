@@ -1,0 +1,119 @@
+{
+  "document": "Étape 3 — pré-inscription des hypothèses principales (premier gel)",
+  "statut": "brouillon",
+  "version": 1,
+  "rappel": "Pré-inscrire une hypothèse n'est pas lui attribuer un avantage : seule la confirmation en jugera.",
+  "population": {
+    "signaux": "signaux ZoneH1 du rejeu quotidien (stratégie et paramètres de production inchangés), un par décision",
+    "decision": "d = fin de la bougie M1 du signal (début de la bougie + 60 s)",
+    "niveau_disponibilite": 2,
+    "classes_admises": ["VALID", "PARTIAL"],
+    "exclusions_comptees": ["niveau 1", "fenêtre INVALID", "issue égale", "issue manquante", "signal sans niveau de zone"]
+  },
+  "ticks": {
+    "fenetre": "[d − w, d − k), tick inclus si son instant est dans l'intervalle",
+    "traitement_principal": "distincts : une copie exacte (même instant, même prix) compte une fois",
+    "troncature_principale_sec": 0,
+    "bruts": "diagnostic seulement, jamais dans un verdict"
+  },
+  "zone": {
+    "niveau": "L = niveau de la zone du signal (features['niveau'] de ZoneH1)",
+    "sens_du_trade": "s = +1 pour un CALL, −1 pour un PUT",
+    "demi_largeur": "μ = L × tolerance_pct / 100 (ZoneH1 : 0,02 %, soit 0,0002 × L)",
+    "distance_signee": "z_k = s × (p_k − L) / μ, positive du côté favorable au trade"
+  },
+  "hypotheses": [
+    {
+      "id": "H1",
+      "famille": "A",
+      "variable": "A7_penetration",
+      "fenetre_sec": 300,
+      "formule": "A7 = max(0, max_k(−z_k)) sur les ticks distincts de la fenêtre",
+      "unite": "demi-largeurs de zone (μ) ; 0 = jamais du côté défavorable du niveau ; 1 = bord extérieur de la zone atteint ; > 1 = au-delà de la zone",
+      "sens": -1,
+      "sens_en_clair": "plus la pénétration contre le trade est profonde, moins le signal gagne",
+      "tercile": 2,
+      "mecanisme": "ZoneH1 parie sur un rebond sur la zone ; une pénétration profonde dans les 5 minutes avant d indique une zone qui a déjà cédé",
+      "manquante": "aucun tick dans la fenêtre : valeur manquante, imputée par la médiane de l'exploration avec une indicatrice de manque (modèle), rangée dans le tercile de la médiane (effet du tercile). Impossible au niveau 2, qui exige des ticks dans chaque minute"
+    },
+    {
+      "id": "H2",
+      "famille": "D",
+      "variable": "D1_traversees",
+      "fenetre_sec": 300,
+      "formule": "suite des signes de z_k pour les ticks distincts où z_k ≠ 0, dans l'ordre des instants ; D1 = nombre de changements de signe entre deux éléments consécutifs de cette suite",
+      "unite": "nombre de franchissements du niveau L (entier ≥ 0)",
+      "oscillations": "aucune hystérésis : chaque passage d'un côté à l'autre du niveau compte, même d'un seul point de cotation ; un aller-retour compte pour 2 ; un tick exactement au niveau (z = 0) est ignoré, il ne crée ni n'interrompt un franchissement",
+      "deduplication": "ticks distincts ; une copie exacte a le même prix et ne peut pas créer de franchissement",
+      "sens": -1,
+      "sens_en_clair": "plus le niveau est franchi souvent, moins le signal gagne",
+      "tercile": 2,
+      "mecanisme": "un niveau franchi à répétition ne fait pas barrière : la prémisse du rebond n'est pas remplie",
+      "manquante": "aucun tick dans la fenêtre : même règle que H1"
+    }
+  ],
+  "correlation_attendue": "H1 et H2 mesurent toutes deux l'interaction du prix avec le niveau : corrélées. Holm reste valide (conservateur). Leur association brute n'est pas une preuve d'information nouvelle.",
+  "issue": {
+    "historique": "clôture de la bougie M1 COMPLÈTE qui commence à m + 900 (elle clôt à d + 900) comparée à la clôture de la bougie du signal ; gain si elle est du bon côté",
+    "egalite": "exclue de la métrique principale et comptée ; en sensibilité, comptée perdue",
+    "manquante": "bougie de sortie absente ou incomplète : exclue et comptée, aucune voisine ne la remplace",
+    "maturite": "une issue n'est lue qu'une heure après son échéance",
+    "broker": "le résultat réglé par le broker (ordre ouvert au clic, environ 2 s après d, échéance 900 s, prix du broker) n'existe que pour les ordres passés : il est comparé à l'issue historique à titre descriptif (taux d'accord publié) et n'entre jamais dans un verdict"
+  },
+  "reference": {
+    "variables": ["paire (indicatrices)", "créneau UTC de 4 h (indicatrices)", "sens_call", "touches", "entrees_deja_offertes", "distance_niveau", "elan_15m", "volatilite_relative", "mouvement_heure", "depuis_contact", "alternances_10", "payout (avec indicatrice de manque)"],
+    "modele": "régression logistique pénalisée L2, λ = 1, interception non pénalisée",
+    "preparation": "imputation (médiane) et standardisation calculées sur l'exploration seule, puis appliquées telles quelles",
+    "estimation": "coefficients estimés une fois sur exploration + validation, puis figés (second gel)"
+  },
+  "modeles_compares": {
+    "M0": "référence",
+    "M_H1": "référence + A7_penetration@300 + indicatrice de manque",
+    "M_H2": "référence + D1_traversees@300 + indicatrice de manque",
+    "secondaire_descriptif": "référence + H1 + H2 : gain marginal de chacune sachant l'autre, publié, hors verdict"
+  },
+  "critere_principal": {
+    "statistique": "Δℓ = moyenne, sur les signaux de confirmation, de ℓ(M0) − ℓ(M_Hk), en nats (log-loss) : l'information ajoutée à la référence, pas l'association brute",
+    "incertitude": "intervalle percentile à 95 % par bootstrap de blocs paire × jour, 1 000 tirages, graine 7 ; sensibilité : blocs par jour",
+    "test": "p unilatérale (1 + #tirages ≤ 0) / (tirages + 1), Holm sur {H1, H2} au seuil nominal du regard",
+    "memes_signaux": "M0 et M_Hk sont jugés sur exactement les mêmes signaux"
+  },
+  "effet_pratique": {
+    "statistique": "sens × (taux de gain du tercile haut − taux des deux autres), bornes des terciles calculées sur l'exploration",
+    "seuil_points": 2,
+    "role": "critère d'utilité pratique, pas une preuve d'information nouvelle"
+  },
+  "verdicts": {
+    "confirmee": "Holm atteint pour Δℓ > 0 ET effet pratique ≥ +2 points ET Δℓ > 0 dans au moins 2 des 3 tiers chronologiques ET même signe dans les 24 variantes de sensibilité",
+    "rejetee": "borne haute de Δℓ ≤ 0, ou borne haute de l'effet pratique < +2 points",
+    "indeterminee": "dans tous les autres cas, ou moins de 500 signaux de niveau 2, ou signe qui change selon la variante",
+    "resultat_negatif": "on publie les effets encore compatibles avec les données ; une absence de résultat significatif ne démontre pas l'absence d'un effet modeste"
+  },
+  "sensibilites": {
+    "traitement": ["distincts", "bruts"],
+    "troncature_sec": [0, 2, 5],
+    "blocs": ["paire × jour", "jour"],
+    "egalites": ["exclues", "perdues"]
+  },
+  "regards": {
+    "signaux_niveau_2": [500, 1000, 2000, 4000],
+    "plafond": 4000,
+    "alpha_famille": 0.05,
+    "depense": "O'Brien-Fleming (Lan-DeMets) ; seuil nominal = incrément de dépense",
+    "arret_de_collecte": "pour une raison étrangère aux résultats, le dernier regard devient final et reçoit l'α restant"
+  },
+  "periodes": {
+    "exploration": "décisions avant le 21/10/2026 00:00 UTC",
+    "validation": "du 21/10/2026 00:00 au 28/10/2026 00:00 UTC",
+    "confirmation": "option (a) : à partir du premier minuit UTC qui suit le SECOND gel (paramètres)",
+    "quarantaine": "entre le 28/10 et l'ouverture : ni choisie, ni confirmée"
+  },
+  "retrait_quasi_constantes": {
+    "version": 1,
+    "donnees": "exploration seule, sans issue",
+    "regle": "IQR > 0 : conservée ; IQR nul : conservée si au moins 30 valeurs ET au moins 5 % hors du mode ; moins de 30 valeurs mesurées : retirée",
+    "si_une_principale_est_retiree": "son hypothèse est abandonnée (indéterminée), jamais remplacée"
+  },
+  "exploratoire": "les 90 autres candidates (dont C5) : analyses secondaires, BH à 10 %, aucune confirmation",
+  "interdits_apres_gel": "aucune modification de formule, de fenêtre, de seuil, de population, d'issue, de modèle ou de règle de décision ; toute modification rend l'hypothèse exploratoire"
+}

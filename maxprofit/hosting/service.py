@@ -365,6 +365,10 @@ async def _servir(args) -> int:
             bot._micro_essai = lambda argument: asyncio.to_thread(
                 _micro_essai, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
+            from maxprofit.hosting.transfert import rapport as transfert
+            bot._transfert = lambda: asyncio.to_thread(
+                transfert, getattr(_course.get("sup"), "_course", None))
             bot._decision = lambda: asyncio.to_thread(
                 decision, getattr(_course.get("sup"), "_course", None))
             bot._lecons = lambda: asyncio.to_thread(

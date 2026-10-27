@@ -49,6 +49,9 @@ def echantillonner(chemin, ouvrir: Callable | None = None) -> None:
         conn = _ouvrir_lecture(ouvrir, chemin)
         try:
             ECHANTILLONS.noter(time.time(), ds.tailles(conn))
+            # Les lignes lues par table côté serveur, pour recouper /transfert.
+            from maxprofit.hosting.transfert import echantillonner_serveur
+            echantillonner_serveur(conn)
         finally:
             conn.close()
     except Exception as erreur:                          # noqa: BLE001

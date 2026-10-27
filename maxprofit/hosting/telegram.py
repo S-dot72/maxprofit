@@ -303,6 +303,7 @@ COMMANDES = [
     ("simples", "Momentum 7 bougies, croisement de moyennes, Bollinger"),
     ("ticks", "Étape 0 : qualité des ticks, en lecture seule"),
     ("micro_essai", "Étape 3 : contrôles préalables, lecture seule (admin)"),
+    ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
 ]
@@ -433,6 +434,9 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         #: `argument -> (rapport, fiches CSV)` : les contrôles préalables de
         #: l'étape 3, en lecture seule.
         self._micro_essai: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
+        self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
@@ -674,6 +678,20 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             else:
                 await self.client.envoyer(chat, await self._entrees(),
                                           CLAVIER)
+        elif texte.startswith("/transfert"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._transfert is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            else:
+                resume, fiches = await self._transfert()
+                await self.client.envoyer(chat, resume, CLAVIER)
+                for contenu, nom, legende in fiches:
+                    try:
+                        await self.client.envoyer_document(
+                            chat, contenu, nom, legende)
+                    except Exception as erreur:          # noqa: BLE001
+                        log.error("Fiche %s non envoyée : %s", nom, erreur)
         elif texte.startswith("/micro_essai"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)

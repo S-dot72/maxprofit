@@ -697,3 +697,27 @@ def test_micro_essai_est_reserve_aux_administrateurs_et_envoie_ses_fiches(
     assert appels == ["EURUSD_otc 2026-10-19"]
     assert documents == ["micro_essai.csv"]
     assert client.envoyes[-1] == (CHAT, "rapport")
+
+
+def test_transfert_est_reserve_aux_administrateurs(tmp_path):
+    client = FauxClient()
+    documents = []
+
+    async def envoyer_document(chat_id, contenu, nom, legende=""):
+        documents.append(nom)
+
+    client.envoyer_document = envoyer_document
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+
+    async def transfert():
+        appels.append(1)
+        return "mesure", [(b"base\n", "transfert.csv", "fiche")]
+
+    bot._transfert = transfert
+    _traiter(bot, _message("/transfert", chat=INTRUS))
+    assert appels == [] and documents == []
+    _traiter(bot, _message("/transfert"))
+    assert appels == [1] and documents == ["transfert.csv"]
+    assert client.envoyes[-1] == (CHAT, "mesure")
