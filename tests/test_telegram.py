@@ -665,3 +665,35 @@ def test_reference8_repond_avec_le_rapport():
     bot._reference8 = rapport
     _traiter(bot, _message("/reference8"))
     assert client.envoyes[-1] == (CHAT, "🧭 rapport")
+
+
+# --------------------------------------------------------------------------- #
+# /micro_essai
+# --------------------------------------------------------------------------- #
+
+def test_micro_essai_est_reserve_aux_administrateurs_et_envoie_ses_fiches(
+        tmp_path):
+    """Les contrôles de l'étape 3 lisent la base (transfert réseau) : un
+    observateur ne peut pas les lancer."""
+    client = FauxClient()
+    documents = []
+
+    async def envoyer_document(chat_id, contenu, nom, legende=""):
+        documents.append(nom)
+
+    client.envoyer_document = envoyer_document
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+
+    async def micro_essai(argument):
+        appels.append(argument)
+        return "rapport", [(b"a;b\n", "micro_essai.csv", "fiche")]
+
+    bot._micro_essai = micro_essai
+    _traiter(bot, _message("/micro_essai", chat=INTRUS))
+    assert appels == [] and documents == []
+    _traiter(bot, _message("/micro_essai EURUSD_otc 2026-10-19"))
+    assert appels == ["EURUSD_otc 2026-10-19"]
+    assert documents == ["micro_essai.csv"]
+    assert client.envoyes[-1] == (CHAT, "rapport")

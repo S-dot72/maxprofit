@@ -302,6 +302,7 @@ COMMANDES = [
     ("entrees", "Entrées T0 à T3 : le retard de la confirmation M1"),
     ("simples", "Momentum 7 bougies, croisement de moyennes, Bollinger"),
     ("ticks", "Étape 0 : qualité des ticks, en lecture seule"),
+    ("micro_essai", "Étape 3 : contrôles préalables, lecture seule (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
 ]
@@ -429,6 +430,10 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._ticks: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._decision: Callable[[], Awaitable[str]] | None = None
+        #: `argument -> (rapport, fiches CSV)` : les contrôles préalables de
+        #: l'étape 3, en lecture seule.
+        self._micro_essai: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
         #: `(commande, argument) -> réponse` : /configuration, /mode,
         #: /capital… /demarrer, /arreter.
         self._piloter: Callable[[str, str], Awaitable[str]] | None = None
@@ -669,6 +674,27 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             else:
                 await self.client.envoyer(chat, await self._entrees(),
                                           CLAVIER)
+        elif texte.startswith("/micro_essai"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._micro_essai is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "🔬 Contrôles en cours (lecture seule, quelques "
+                    "minutes)…", CLAVIER)
+                resume, fiches = await self._micro_essai(
+                    texte[len("/micro_essai"):].strip())
+                await self.client.envoyer(chat, resume, CLAVIER)
+                for contenu, nom, legende in fiches:
+                    try:
+                        await self.client.envoyer_document(
+                            chat, contenu, nom, legende)
+                    except Exception as erreur:          # noqa: BLE001
+                        log.error("Fiche %s non envoyée : %s", nom, erreur)
+                        await self.client.envoyer(
+                            chat, f"Fiche {nom} non envoyée : {erreur}",
+                            CLAVIER)
         elif texte.startswith("/ticks"):
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
