@@ -87,3 +87,66 @@ effectives, et si un lecteur manque à cet inventaire.
 
 Chacune sera évaluée sur les chiffres mesurés et soumise avant d'être
 appliquée.
+
+## 5. Mesure du 27/10 22:55 au 28/10, 25,9 h (rejeu quotidien inclus)
+
+**Total mesuré** : 402 Mo, soit environ 372 Mo par 24 h. C'est une borne
+basse, cohérente avec la console (environ 0,34 Go par jour).
+
+| Consommateur | Mo | Part | Constat |
+|---|---|---|---|
+| `hosting/health.py:rapport` (sonde `/health`) | 161 | 40 % | relit **toute** la table `uptime` deux fois par appel (`couverture`), 307 appels ; le volume grossit avec la table |
+| `live/apprenti.py:apprendre_une_fois` (rejeu) | 162 | 40 % | chemins de 7 jours (118 Mo, en hexadécimal) et bougies de 30 jours (43 Mo) |
+| `store/fusion.py:_lire` (relève, `plan_etat`) | 39 | 10 % | 3 lignes d'environ 170 Ko relues à chaque passage de 20 min |
+| `store/pool.py:_lire_tranche` (relève, séries) | 13 | 3 % | |
+| `execution/journal.py:_lire` | 12 | 3 % | |
+| `live/plan_demo.py:_rafraichir_le_cache` | 9 | 2 % | |
+
+**Côté serveur** : 180 millions de lignes de payouts et 167 millions de
+bougies parcourues. Cela correspond, à 1 % près, à 307 `COUNT(*)` de la
+sonde. C'est du calcul, pas du transfert.
+
+**Corrections de l'inventaire du §3, faites par la mesure** :
+- la sonde n'était pas « faible » : c'est le premier poste ;
+- la synchronisation des séries était surestimée d'un facteur 8 environ.
+
+**Limite de l'indicateur « journées relues »** : il compte par jour, et
+surestime donc la relecture des fenêtres glissantes, comme celle de la
+synchronisation.
+
+## 6. Corrections A et B (29/10), déployées ensemble
+
+**A — sonde `/health`** :
+- la couverture (fenêtre de 24 h et cumul) est calculée par le serveur et
+  tient en **une ligne d'agrégats**. Le résultat est identique à l'ancien
+  calcul, vérifié sur SQLite (25 séries aléatoires et cas limites) et sur un
+  PostgreSQL local (360 comparaisons) ;
+- les compteurs de lignes (`COUNT(*)`) et les tailles sont gardés 30 min,
+  avec leur âge publié (`compteurs_age_sec`) ;
+- le battement reste relu à chaque sonde : c'est lui qui dit si la collecte
+  vit.
+
+**B — synchronisation de la relève** : pour les petites tables, on lit
+d'abord la clé et le critère de remplacement (`maj_ts_sec`). On applique la
+**même règle** que la fusion, et l'on ne rapatrie en entier que les lignes
+qu'elle va écrire.
+- **Résultat** : identique à la lecture complète, ligne pour ligne et bilan
+  compris (20 états aléatoires sur SQLite, 36 sur PostgreSQL).
+- **Garde-fous** : une comparaison qui échoue retombe sur la lecture
+  complète ; au-delà de 50 lignes à relire aussi.
+- **Mesuré en local** : un `plan_etat` inchangé passe de 120 Ko lus à
+  114 octets.
+
+**Gains attendus** : des **estimations**, pas des économies garanties.
+- **A** : environ 150 Mo par jour, et la croissance quotidienne s'arrête.
+- **B** : entre presque rien et environ 26 Mo par jour. La ligne de la
+  campagne active change toutes les 10 min environ et restera copiée ; le
+  gain dépend de la taille des lignes inactives.
+
+**Vérification après déploiement**, 24 h sans autre changement :
+- `/transfert` : `health.py:rapport` ne doit plus lire qu'une ligne par
+  couverture ; `fusion.py:_lire` sur `plan_etat` ne doit plus porter que
+  des clés ;
+- console Neon : compteur avant et après, sur des périodes comparables.
+
+**C — lecture binaire des chemins** : reportée (décision du 29/10).

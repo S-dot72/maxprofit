@@ -1,14 +1,31 @@
 {
   "document": "Étape 3 — pré-inscription des hypothèses principales (premier gel)",
-  "statut": "brouillon",
+  "statut": "gelé",
   "version": 1,
   "rappel": "Pré-inscrire une hypothèse n'est pas lui attribuer un avantage : seule la confirmation en jugera.",
   "population": {
     "signaux": "signaux ZoneH1 du rejeu quotidien (stratégie et paramètres de production inchangés), un par décision",
     "decision": "d = fin de la bougie M1 du signal (début de la bougie + 60 s)",
     "niveau_disponibilite": 2,
-    "classes_admises": ["VALID", "PARTIAL"],
-    "exclusions_comptees": ["niveau 1", "fenêtre INVALID", "issue égale", "issue manquante", "signal sans niveau de zone"]
+    "principale": [
+      "VALID"
+    ],
+    "sensibilite_separee": [
+      "PARTIAL"
+    ],
+    "exclue": [
+      "INVALID"
+    ],
+    "seuils_des_classes": "inchangés : VALID = couverture 100 %, aucun écart ≥ 10 s, dernier tick à ≤ 5 s de d, aucune minute fermée chez le broker ; PARTIAL = couverture ≥ 80 % et aucun écart ≥ 30 s ; INVALID sinon",
+    "exclusions_comptees": [
+      "niveau 1",
+      "fenêtre PARTIAL (analyse principale ; incluse dans la sensibilité séparée)",
+      "fenêtre INVALID",
+      "issue égale",
+      "issue manquante",
+      "issue pas encore mûre",
+      "signal sans niveau de zone"
+    ]
   },
   "ticks": {
     "fenetre": "[d − w, d − k), tick inclus si son instant est dans l'intervalle",
@@ -34,7 +51,8 @@
       "sens_en_clair": "plus la pénétration contre le trade est profonde, moins le signal gagne",
       "tercile": 2,
       "mecanisme": "ZoneH1 parie sur un rebond sur la zone ; une pénétration profonde dans les 5 minutes avant d indique une zone qui a déjà cédé",
-      "manquante": "aucun tick dans la fenêtre : valeur manquante, imputée par la médiane de l'exploration avec une indicatrice de manque (modèle), rangée dans le tercile de la médiane (effet du tercile). Impossible au niveau 2, qui exige des ticks dans chaque minute"
+      "manquante": "aucun tick dans la fenêtre : valeur manquante, imputée par la médiane de l'exploration avec une indicatrice de manque (modèle), rangée dans le tercile de la médiane (effet du tercile). Impossible au niveau 2, qui exige des ticks dans chaque minute",
+      "sens_justifie_a_priori": "ZoneH1 achète un rebond sur la zone : plus le prix l'a traversée contre le trade juste avant la décision, moins la prémisse « la zone tient » est vraie. Le sens découle du mécanisme de la stratégie, pas d'un résultat"
     },
     {
       "id": "H2",
@@ -49,19 +67,34 @@
       "sens_en_clair": "plus le niveau est franchi souvent, moins le signal gagne",
       "tercile": 2,
       "mecanisme": "un niveau franchi à répétition ne fait pas barrière : la prémisse du rebond n'est pas remplie",
-      "manquante": "aucun tick dans la fenêtre : même règle que H1"
+      "manquante": "aucun tick dans la fenêtre : même règle que H1",
+      "sens_justifie_a_priori": "un niveau qui fait barrière est franchi rarement ; de nombreux franchissements dans les 5 minutes disent qu'il ne retient pas le prix. Le sens découle du mécanisme de la stratégie, pas d'un résultat",
+      "franchissement": "un franchissement = deux ticks distincts consécutifs, après retrait de ceux situés exactement au niveau (z = 0), de part et d'autre de L ; les doublons exacts sont retirés avant le calcul et ne peuvent donc créer aucun événement"
     }
   ],
   "correlation_attendue": "H1 et H2 mesurent toutes deux l'interaction du prix avec le niveau : corrélées. Holm reste valide (conservateur). Leur association brute n'est pas une preuve d'information nouvelle.",
   "issue": {
-    "historique": "clôture de la bougie M1 COMPLÈTE qui commence à m + 900 (elle clôt à d + 900) comparée à la clôture de la bougie du signal ; gain si elle est du bon côté",
+    "historique": "PROXY HISTORIQUE, pas un règlement broker vérifié : clôture de la bougie M1 COMPLÈTE qui commence à m + 900 (elle clôt à d + 900) comparée à la clôture de la bougie du signal ; gain si elle est du bon côté",
     "egalite": "exclue de la métrique principale et comptée ; en sensibilité, comptée perdue",
     "manquante": "bougie de sortie absente ou incomplète : exclue et comptée, aucune voisine ne la remplace",
     "maturite": "une issue n'est lue qu'une heure après son échéance",
-    "broker": "le résultat réglé par le broker (ordre ouvert au clic, environ 2 s après d, échéance 900 s, prix du broker) n'existe que pour les ordres passés : il est comparé à l'issue historique à titre descriptif (taux d'accord publié) et n'entre jamais dans un verdict"
+    "broker": "le résultat réglé par le broker (ordre ouvert au clic, environ 2 s après d, échéance 900 s, prix du broker) n'existe que pour les ordres passés : il décrit les écarts avec le proxy (taux d'accord publié), n'entre jamais dans un verdict, n'est jamais mélangé à la cible et ne sert jamais à modifier la définition de la cible après observation"
   },
   "reference": {
-    "variables": ["paire (indicatrices)", "créneau UTC de 4 h (indicatrices)", "sens_call", "touches", "entrees_deja_offertes", "distance_niveau", "elan_15m", "volatilite_relative", "mouvement_heure", "depuis_contact", "alternances_10", "payout (avec indicatrice de manque)"],
+    "variables": [
+      "paire (indicatrices)",
+      "créneau UTC de 4 h (indicatrices)",
+      "sens_call",
+      "touches",
+      "entrees_deja_offertes",
+      "distance_niveau",
+      "elan_15m",
+      "volatilite_relative",
+      "mouvement_heure",
+      "depuis_contact",
+      "alternances_10",
+      "payout (avec indicatrice de manque)"
+    ],
     "modele": "régression logistique pénalisée L2, λ = 1, interception non pénalisée",
     "preparation": "imputation (médiane) et standardisation calculées sur l'exploration seule, puis appliquées telles quelles",
     "estimation": "coefficients estimés une fois sur exploration + validation, puis figés (second gel)"
@@ -73,7 +106,7 @@
     "secondaire_descriptif": "référence + H1 + H2 : gain marginal de chacune sachant l'autre, publié, hors verdict"
   },
   "critere_principal": {
-    "statistique": "Δℓ = moyenne, sur les signaux de confirmation, de ℓ(M0) − ℓ(M_Hk), en nats (log-loss) : l'information ajoutée à la référence, pas l'association brute",
+    "statistique": "Δℓ = moyenne, sur les signaux de CONFIRMATION (hors échantillon : les modèles sont estimés sur exploration + validation puis figés), de ℓ(M0) − ℓ(M_Hk), en nats (log-loss) : l'information ajoutée à la référence, pas l'association brute",
     "incertitude": "intervalle percentile à 95 % par bootstrap de blocs paire × jour, 1 000 tirages, graine 7 ; sensibilité : blocs par jour",
     "test": "p unilatérale (1 + #tirages ≤ 0) / (tirages + 1), Holm sur {H1, H2} au seuil nominal du regard",
     "memes_signaux": "M0 et M_Hk sont jugés sur exactement les mêmes signaux"
@@ -90,23 +123,48 @@
     "resultat_negatif": "on publie les effets encore compatibles avec les données ; une absence de résultat significatif ne démontre pas l'absence d'un effet modeste"
   },
   "sensibilites": {
-    "traitement": ["distincts", "bruts"],
-    "troncature_sec": [0, 2, 5],
-    "blocs": ["paire × jour", "jour"],
-    "egalites": ["exclues", "perdues"]
+    "traitement": [
+      "distincts",
+      "bruts"
+    ],
+    "troncature_sec": [
+      0,
+      2,
+      5
+    ],
+    "blocs": [
+      "paire × jour",
+      "jour"
+    ],
+    "egalites": [
+      "exclues",
+      "perdues"
+    ]
   },
   "regards": {
-    "signaux_niveau_2": [500, 1000, 2000, 4000],
+    "signaux_niveau_2": [
+      500,
+      1000,
+      2000,
+      4000
+    ],
     "plafond": 4000,
     "alpha_famille": 0.05,
     "depense": "O'Brien-Fleming (Lan-DeMets) ; seuil nominal = incrément de dépense",
-    "arret_de_collecte": "pour une raison étrangère aux résultats, le dernier regard devient final et reçoit l'α restant"
+    "arret_de_collecte": "pour une raison étrangère aux résultats, le dernier regard devient final et reçoit l'α restant",
+    "seuils_nominaux": {
+      "500": 2.96e-08,
+      "1000": 8.85e-05,
+      "2000": 0.00549,
+      "4000": 0.0444
+    }
   },
   "periodes": {
-    "exploration": "décisions avant le 21/10/2026 00:00 UTC",
-    "validation": "du 21/10/2026 00:00 au 28/10/2026 00:00 UTC",
-    "confirmation": "option (a) : à partir du premier minuit UTC qui suit le SECOND gel (paramètres)",
-    "quarantaine": "entre le 28/10 et l'ouverture : ni choisie, ni confirmée"
+    "exploration": "décisions avant 2026-10-21T00:00:00Z (1792540800)",
+    "validation": "décisions dans [2026-10-21T00:00:00Z, 2026-10-28T00:00:00Z[ (1792540800 à 1793145600)",
+    "confirmation": "option (a) : décisions à partir du premier minuit UTC qui suit le SECOND gel (paramètres)",
+    "quarantaine": "décisions de 2026-10-28T00:00:00Z à l'ouverture de la confirmation : ni choisies, ni confirmées",
+    "maturite": "une période n'est figée, et une issue n'est lue, qu'une heure après l'échéance (d + 900 s + 3 600 s)"
   },
   "retrait_quasi_constantes": {
     "version": 1,
@@ -114,6 +172,13 @@
     "regle": "IQR > 0 : conservée ; IQR nul : conservée si au moins 30 valeurs ET au moins 5 % hors du mode ; moins de 30 valeurs mesurées : retirée",
     "si_une_principale_est_retiree": "son hypothèse est abandonnée (indéterminée), jamais remplacée"
   },
-  "exploratoire": "les 90 autres candidates (dont C5) : analyses secondaires, BH à 10 %, aucune confirmation",
-  "interdits_apres_gel": "aucune modification de formule, de fenêtre, de seuil, de population, d'issue, de modèle ou de règle de décision ; toute modification rend l'hypothèse exploratoire"
+  "exploratoire": "séparé des principales, BH à 10 %, aucune confirmation : les 90 autres candidates (dont C5, limite de résolution notée) ; H1 et H2 aux autres fenêtres (60, 180, 900 s) ; les ticks bruts ; la population PARTIAL (sensibilité) ; le modèle référence + H1 + H2",
+  "interdits_apres_gel": "aucune modification de formule, de fenêtre, de seuil, de population, d'issue, de modèle ou de règle de décision ; toute modification rend l'hypothèse exploratoire",
+  "gele_le": "2026-10-29, avant toute consultation des résultats prédictifs de H1 et H2",
+  "deja_observe": "rapports de qualité, distributions des variables sur l'échantillon du 20/10 (sans issue), taux de gain agrégés T0/T2/T3 (/entrees) : conservés, jamais utilisés pour choisir une variante",
+  "tests": {
+    "delta_log_loss": "unilatéral (Δℓ > 0) : une variable ne peut qu'améliorer ou dégrader la prédiction hors échantillon, une dégradation n'est pas un « effet inverse »",
+    "effet_pratique": "unilatéral dans le sens pré-inscrit, justifié a priori par le mécanisme (voir chaque hypothèse) ; le sens n'est pas choisi après coup",
+    "signe_du_coefficient": "publié au second gel ; s'il est opposé au sens pré-inscrit, l'hypothèse ne peut être confirmée que si l'effet pratique dans le sens pré-inscrit atteint le seuil"
+  }
 }

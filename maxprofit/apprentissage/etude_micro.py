@@ -75,6 +75,12 @@ GRAINE = 7
 #: (décision du 27/10) : un plafond, pas une garantie de puissance.
 REGARDS: tuple[int, ...] = (500, 1000, 2000, 4000)
 
+#: Le PREMIER GEL (hypothèses H1 et H2 et règles communes) : l'empreinte de
+#: `docs/etape3_preinscription.json`, notée le 29/10 avant toute consultation
+#: des résultats prédictifs. Un test refuse toute modification du document.
+EMPREINTE_GEL_HYPOTHESES = (
+    "3e415576fd083a944f62a5051bc6f04df4e076fef98fe64a9899674b93a7a83e")
+
 #: La règle de retrait des variables quasi constantes (plan §4 bis), fixée
 #: avant toute lecture d'issue et appliquée sur l'EXPLORATION seule.
 VERSION_RETRAIT = 1

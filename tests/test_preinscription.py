@@ -41,8 +41,18 @@ def test_les_regles_communes_sont_celles_du_code():
     assert doc["regards"]["plafond"] == em.REGARDS[-1]
     assert doc["regards"]["alpha_famille"] == em.ALPHA_FAMILLE
     assert doc["retrait_quasi_constantes"]["version"] == em.VERSION_RETRAIT
-    assert doc["population"]["niveau_disponibilite"] == 2
-    assert set(doc["population"]["classes_admises"]) <= {mp.VALID, mp.PARTIAL}
+    pop = doc["population"]
+    assert pop["niveau_disponibilite"] == 2
+    assert (pop["principale"], pop["sensibilite_separee"], pop["exclue"]) == (
+        [mp.VALID], [mp.PARTIAL], [mp.INVALID])
+    seuils = {str(s["N"]): float(f"{s['nominal']:.3g}")
+              for s in em.seuils_des_regards()}
+    assert doc["regards"]["seuils_nominaux"] == seuils
+    assert "PROXY HISTORIQUE" in doc["issue"]["historique"]
+    assert set(doc["tests"]) == {"delta_log_loss", "effet_pratique",
+                                 "signe_du_coefficient"}
+    for h in doc["hypotheses"]:
+        assert h["sens_justifie_a_priori"]
     assert doc["ticks"]["troncature_principale_sec"] == 0
     assert doc["effet_pratique"]["seuil_points"] == 100 * em.EFFET_PRATIQUE
     sens = doc["sensibilites"]
@@ -60,9 +70,10 @@ def test_les_regles_communes_sont_celles_du_code():
     assert em.GRAINE == 7 and em.TIRAGES == 1000
 
 
-def test_le_brouillon_n_est_pas_un_gel_et_son_empreinte_est_stable():
+def test_le_premier_gel_est_intact():
+    """Le document gelé le 29/10 n'a pas bougé : toute modification, même
+    d'une virgule, change l'empreinte et fait échouer ce test. Une hypothèse
+    modifiée après le gel est exploratoire."""
     doc = _doc()
-    assert doc["statut"] == "brouillon", (
-        "le gel se fait par un commit qui note l'empreinte, après accord")
-    a = em.empreinte(doc)
-    assert len(a) == 64 and a == em.empreinte(_doc())
+    assert doc["statut"] == "gelé"
+    em.exiger_le_gel(doc, em.EMPREINTE_GEL_HYPOTHESES)

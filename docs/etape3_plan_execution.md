@@ -562,8 +562,8 @@ brouillon.
 | 2. Concordance et anti-fuite sur échantillon | fait (27/10), à refaire avec la v2 |
 | 3. Coût réel de la passe optimisée | `/micro_essai` v2, après déploiement |
 | 4. Stockage, transfert, sauvegarde, continuité | de ton côté (§12) |
-| 4 bis. Diagnostic du transfert | `/transfert`, 24 h de mesure contenant un rejeu |
-| 5. Gel des 2 hypothèses | brouillon prêt ; après la confirmation du rejeu et ton accord |
+| 4 bis. Diagnostic du transfert | mesuré le 28/10 ; corrections A (sonde) et B (synchronisation) déployées ensemble le 29/10, 24 h de mesure à suivre (`docs/transfert_diagnostic.md`) |
+| 5. Gel des 2 hypothèses | **fait le 29/10** : empreinte `3e415576…a7a83e` (`docs/etape3_registre.md` §5) |
 | 6. Passe de sélection, puis gel des paramètres | après ton feu vert, transfert et continuité réglés |
 
 ## 14. Fichiers

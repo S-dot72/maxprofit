@@ -53,6 +53,7 @@ s'arrêter si les chiffres surprennent.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Sequence
@@ -60,6 +61,8 @@ from typing import Sequence
 from maxprofit.core.errors import BotError
 from maxprofit.store import postgres
 from maxprofit.store.market import _inserer_en_lot
+
+log = logging.getLogger(__name__)
 
 #: Tables jamais recopiées, et pourquoi (voir le docstring du module).
 EXCLUES = frozenset({"_schema_version", "etat_broker", "ticks"})
@@ -148,6 +151,48 @@ def _lire(conn, table: str, colonnes: list[str]) -> list[tuple]:
     sql = f"SELECT {', '.join(colonnes)} FROM {table}"
     return [tuple(_normaliser(v) for v in r)
             for r in conn.execute(sql).fetchall()]
+
+
+#: Au-delà, le préfiltre lirait ligne à ligne ce qu'une lecture complète
+#: rapporte en une requête : il cède la place.
+PREFILTRE_LIGNES_MAX = 50
+
+
+def _lignes_utiles(source, table: str, communes: list[str], cle: list[str],
+                   critere: str | None, existantes: dict
+                   ) -> tuple[list[tuple], int, int]:
+    """(lignes complètes à écrire, lignes de la source, déjà présentes).
+
+    ⚠ LA SYNCHRONISATION RELISAIT `plan_etat` EN ENTIER TOUTES LES 20 MIN :
+    trois lignes d'environ 170 Ko, qu'elles aient changé ou non — 10 % du
+    transfert sortant mesuré le 28/10. On lit d'abord la clé et le critère
+    de remplacement (`maj_ts_sec`) côté source, on applique la MÊME règle
+    que la fusion (absente de la cible, ou critère plus grand), et l'on ne
+    rapatrie en entier que ces lignes-là. Aucune ligne que la lecture
+    complète aurait écrite n'est écartée ; les autres n'auraient rien
+    changé."""
+    avec_critere = bool(critere) and critere in communes
+    apercu = _lire(source, table, cle + ([critere] if avec_critere else []))
+    utiles, deja = [], 0
+    for r in apercu:
+        k = tuple(r[:len(cle)])
+        if k not in existantes:
+            utiles.append(k)
+            continue
+        deja += 1
+        if avec_critere:
+            actuel, propose = existantes[k], r[len(cle)]
+            if propose is not None and (actuel is None or propose > actuel):
+                utiles.append(k)
+    if len(utiles) > PREFILTRE_LIGNES_MAX:
+        raise ValueError(f"{len(utiles)} lignes à relire : lecture complète")
+    lignes = []
+    condition = " AND ".join(f"{c} = ?" for c in cle)
+    sql = f"SELECT {', '.join(communes)} FROM {table} WHERE {condition}"
+    for k in utiles:
+        for r in source.execute(sql, k).fetchall():
+            lignes.append(tuple(_normaliser(v) for v in r))
+    return lignes, len(apercu), deja
 
 
 # --- la fusion ------------------------------------------------------------
@@ -260,7 +305,10 @@ def _ligne(b: Bilan, appliquer: bool) -> str:
 
 
 def _fusionner_table(source, cible, table: str, appliquer: bool, *,
-                     forcer: bool = False) -> Bilan:
+                     forcer: bool = False, prefiltrer: bool = False) -> Bilan:
+    """`prefiltrer` (synchronisation de la relève, petites tables) : ne
+    rapatrier en entier que les lignes que la fusion va écrire. Voir
+    `_lignes_utiles` ; le résultat est le même qu'avec la lecture complète."""
     communes = [c for c in _colonnes(source, table)
                 if c in set(_colonnes(cible, table))]
     if table == "executions":
@@ -271,8 +319,6 @@ def _fusionner_table(source, cible, table: str, appliquer: bool, *,
     # Sans clé connue, la ligne entière sert de clé : une table sans clé
     # primaire serait sinon dupliquée à chaque relance.
     cle = cle or communes
-    lignes = _lire(source, table, communes)
-    bilan = Bilan(table, source=len(lignes))
 
     position = [communes.index(c) for c in cle]
     existantes = {}
@@ -280,6 +326,22 @@ def _fusionner_table(source, cible, table: str, appliquer: bool, *,
     colonnes_lues = cle + ([critere] if critere and critere in communes else [])
     for r in _lire(cible, table, colonnes_lues):
         existantes[tuple(r[:len(cle)])] = r[len(cle)] if len(r) > len(cle) else None
+
+    lignes = None
+    if prefiltrer and not forcer and cle != communes:
+        try:
+            lignes, n_source, deja = _lignes_utiles(
+                source, table, communes, cle, critere, existantes)
+        except Exception as erreur:                      # noqa: BLE001
+            # Une comparaison ratée ne doit JAMAIS faire manquer une mise à
+            # jour : on retombe sur la lecture complète.
+            log.warning("Préfiltre de %s impossible (%s) : lecture "
+                        "complète.", table, erreur)
+            lignes = None
+    prefiltre = lignes is not None
+    if not prefiltre:
+        lignes = _lire(source, table, communes)
+    bilan = Bilan(table, source=n_source if prefiltre else len(lignes))
 
     nouvelles, plus_recentes = [], []
     i_critere = communes.index(critere) if critere in communes else None
@@ -297,6 +359,10 @@ def _fusionner_table(source, cible, table: str, appliquer: bool, *,
             propose = ligne[i_critere]
             if propose is not None and (actuel is None or propose > actuel):
                 plus_recentes.append(ligne)
+    if prefiltre:
+        # Les lignes déjà présentes et inchangées n'ont pas été relues : le
+        # préfiltre les a comptées.
+        bilan.deja = deja
     bilan.a_inserer = len(nouvelles)
     bilan.a_remplacer = len(plus_recentes)
     if not appliquer:
