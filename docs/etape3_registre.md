@@ -98,3 +98,12 @@ de la mesure et le mécanisme, jamais les résultats. Champs :
 
 Une hypothèse ajoutée ou modifiée après le gel est **exploratoire**, quels
 que soient ses résultats.
+
+## 5. Gels enregistrés
+
+| Gel | Document | Empreinte SHA-256 | Date | Commit |
+|---|---|---|---|---|
+| 1 — hypothèses H1, H2 et règles communes | `docs/etape3_preinscription.json` | `3e415576fd083a944f62a5051bc6f04df4e076fef98fe64a9899674b93a7a83e` | 29/10/2026, avant toute consultation des résultats prédictifs | celui qui porte cette empreinte dans son message |
+
+L'empreinte est aussi dans le code (`etude_micro.EMPREINTE_GEL_HYPOTHESES`)
+et `tests/test_preinscription.py` échoue si le document change.
