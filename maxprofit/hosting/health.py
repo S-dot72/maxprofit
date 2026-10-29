@@ -45,6 +45,13 @@ log = logging.getLogger("hosting.health")
 #: (qui plafonne à 60 s) sans crier au loup.
 SEUIL_PANNE_SEC = 180
 
+#: Les compteurs de lignes et les tailles de tables changent lentement, et les
+#: compter coûte un parcours COMPLET de chaque table à chaque sonde (environ
+#: 350 millions de lignes parcourues par jour, mesuré le 29/10). Ils sont
+#: gardés 30 minutes ; leur âge est publié. Le battement, lui, est relu à
+#: chaque sonde : c'est lui qui dit si la collecte vit.
+CACHE_COMPTEURS_SEC = 1800
+
 #: Le port par défaut n'est pas un défaut « silencieux » au sens du §5 : il ne
 #: touche ni à l'argent ni aux données, et l'hébergeur injecte $PORT lui-même.
 PORT_PAR_DEFAUT = 10000
@@ -73,6 +80,8 @@ class EtatCollecte:
         self.db = db
         self._reader: MarketReader | None = None
         self.demarre_sec = int(time.time())
+        #: (instant du calcul, compteurs, tailles) : voir CACHE_COMPTEURS_SEC.
+        self._compteurs: tuple[int, dict, dict] | None = None
 
     def _lecteur(self) -> MarketReader | None:
         if self._reader is None:
@@ -107,7 +116,12 @@ class EtatCollecte:
 
         try:
             dernier_battement = lecteur.last_heartbeat_sec()
-            compteurs = lecteur.counts()
+            if (self._compteurs is None
+                    or maintenant - self._compteurs[0] >= CACHE_COMPTEURS_SEC
+                    or maintenant < self._compteurs[0]):
+                self._compteurs = (maintenant, lecteur.counts(),
+                                   lecteur.tailles())
+            calcule, compteurs, tailles = self._compteurs
             version = schema_version(lecteur.conn)
             couverture = lecteur.couverture(fenetre_sec=24 * 3600)
             couverture_totale = lecteur.couverture()
@@ -139,7 +153,8 @@ class EtatCollecte:
             "age_battement_sec": age,
             "schema_version": version,
             "compteurs": compteurs,
-            "tailles": lecteur.tailles(),
+            "tailles": tailles,
+            "compteurs_age_sec": maintenant - calcule,
             "couverture": couverture,
             "couverture_totale": couverture_totale,
         }

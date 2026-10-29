@@ -287,50 +287,67 @@ class MarketReader:
         """
         import time as _t
 
+        # ⚠ CALCULÉE PAR LE SERVEUR (29/10). La sonde relisait ici TOUTE la
+        # table des battements, deux fois par appel (fenêtre de 24 h et
+        # cumul), toutes les cinq minutes : 40 % du transfert sortant mesuré
+        # par /transfert, et un volume qui grossissait chaque jour avec la
+        # table. Les mêmes nombres viennent d'une seule ligne d'agrégats :
+        # premier et dernier battement, et les écarts > `trou_max_sec` entre
+        # deux battements consécutifs DE LA FENÊTRE (LAG sur les seules lignes
+        # retenues, comme l'ancien calcul sur `dans`). Le résultat est
+        # identique (tests/test_couverture.py le compare à l'ancien calcul).
         maintenant = int(maintenant if maintenant is not None else _t.time())
-        battements = [r[0] for r in self.conn.execute(
-            "SELECT ts_sec FROM uptime ORDER BY ts_sec").fetchall()]
+        borne = maintenant - fenetre_sec if fenetre_sec else 0
+        ligne = self.conn.execute(
+            "SELECT MIN(ts_sec), MAX(ts_sec), "
+            "SUM(CASE WHEN e > ? THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN e > ? THEN e ELSE 0 END), "
+            "MAX(CASE WHEN e > ? THEN e ELSE 0 END), "
+            "MAX(CASE WHEN e > ? THEN ts_sec END) "
+            "FROM (SELECT ts_sec, ts_sec - LAG(ts_sec) OVER (ORDER BY ts_sec) "
+            "AS e FROM uptime WHERE ts_sec >= ?) AS s",
+            (trou_max_sec, trou_max_sec, trou_max_sec, trou_max_sec, borne),
+        ).fetchone()
         vide = {"fenetre_sec": 0, "collecte_sec": 0, "part": 0.0,
                 "interruptions": 0, "plus_long_trou_sec": 0}
-        if not battements:
+        if ligne is None or ligne[0] is None:
             return vide
+        premier, dernier = int(ligne[0]), int(ligne[1])
+        trous = int(ligne[2] or 0)
+        somme = int(ligne[3] or 0)
+        plus_long = int(ligne[4] or 0)
+        reprise = None if ligne[5] is None else int(ligne[5])
 
-        debut = (maintenant - fenetre_sec if fenetre_sec
-                 else battements[0])
-        dans = [t for t in battements if t >= debut]
+        debut = maintenant - fenetre_sec if fenetre_sec else premier
         fenetre = maintenant - debut
-        if fenetre <= 0 or not dans:
+        if fenetre <= 0:
             return vide
-
-        trous = [(b - a) for a, b in zip(dans, dans[1:]) if b - a > trou_max_sec]
         # Le silence AVANT le premier battement de la fenêtre et APRÈS le
         # dernier sont des interruptions comme les autres.
-        if dans[0] - debut > trou_max_sec:
-            trous.append(dans[0] - debut)
-        if maintenant - dans[-1] > trou_max_sec:
-            trous.append(maintenant - dans[-1])
+        for trou in (premier - debut, maintenant - dernier):
+            if trou > trou_max_sec:
+                trous += 1
+                somme += trou
+                plus_long = max(plus_long, trou)
 
-        collecte = max(0, fenetre - sum(trous))
+        collecte = max(0, fenetre - somme)
         # Temps écoulé depuis la fin de la dernière interruption. C'est le seul
         # chiffre qui réagit IMMÉDIATEMENT : une moyenne sur 24 h met 24 h à
         # oublier un trou de huit heures, et affiche 66 % pendant tout ce temps
         # alors que la collecte est parfaite depuis une heure. Les deux sont
         # vraies ; celle-ci répond à « est-ce que ça marche là, maintenant ».
-        continue_sec = maintenant - dans[-1] if maintenant > dans[-1] else 0
-        if maintenant - dans[-1] <= trou_max_sec:
-            derniere_reprise = dans[0]
-            for a, b in zip(dans, dans[1:]):
-                if b - a > trou_max_sec:
-                    derniere_reprise = b
-            continue_sec = maintenant - derniere_reprise
+        continue_sec = maintenant - dernier if maintenant > dernier else 0
+        if maintenant - dernier <= trou_max_sec:
+            continue_sec = maintenant - (reprise if reprise is not None
+                                         else premier)
         return {
             "fenetre_sec": fenetre,
             "collecte_sec": collecte,
             "part": collecte / fenetre,
-            "interruptions": len(trous),
-            "plus_long_trou_sec": max(trous) if trous else 0,
+            "interruptions": trous,
+            "plus_long_trou_sec": plus_long if trous else 0,
             "continue_depuis_sec": continue_sec,
-            "en_cours": maintenant - dans[-1] <= trou_max_sec,
+            "en_cours": maintenant - dernier <= trou_max_sec,
         }
 
     def payout_at(self, pair: str, ts_sec: int) -> PairInfo | None:

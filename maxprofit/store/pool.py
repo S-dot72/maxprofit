@@ -252,7 +252,8 @@ def synchroniser(source, cible, journal=log.info, attendre=None) -> dict:
     for table in PETITES:
         if table in tables_source and table in tables_cible:
             bilan = _avec_reessais(
-                lambda t=table: _fusionner_table(source, cible, t, True),
+                lambda t=table: _fusionner_table(source, cible, t, True,
+                                                 prefiltrer=True),
                 table, journal, attendre)
             copiees[table] = bilan.a_inserer + bilan.a_remplacer
     for table, colonne, regle in SERIES:
