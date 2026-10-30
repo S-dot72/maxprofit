@@ -78,6 +78,10 @@ class Superviseur:
         self.attente_de_jeton = False
         self.derniere_erreur: str | None = None
         self.demarrages = 0
+        #: Heure du dernier démarrage du collecteur : le diagnostic des paires
+        #: de /etat dit si une reprise de cotation le suit. Rien d'autre ne
+        #: la lit.
+        self.dernier_demarrage_ts: float | None = None
 
     # --- cycle de vie -------------------------------------------------------
 
@@ -104,6 +108,7 @@ class Superviseur:
 
             self.collecteur = Collector(self._fabriquer_source(), self.cfg)
             self.demarrages += 1
+            self.dernier_demarrage_ts = time.time()
             self._thread = threading.Thread(
                 target=_tourner, name=f"collecteur-{self.demarrages}", daemon=True)
             self._thread.start()
