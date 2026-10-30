@@ -760,8 +760,29 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
         origine = getattr(course, "origine", lambda: None)()
         if origine:
             lignes.append(f"Campagne : {origine}")
+        diagnostic = _diagnostic_des_paires(course, superviseur)
+        if diagnostic:
+            lignes.append(diagnostic)
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
+
+
+def _diagnostic_des_paires(course, superviseur) -> str | None:
+    """Chaque paire collectée, lue dans la mémoire de la course : aucune
+    requête, aucun effet. Une panne du diagnostic ne coûte que sa ligne."""
+    import time as _time
+    from maxprofit.live.diagnostic_paires import depuis_la_course
+    vivante = getattr(course, "_course", None)
+    if vivante is None:
+        return None
+    try:
+        return depuis_la_course(
+            vivante, maintenant=_time.time(),
+            demarrage_collecteur=getattr(superviseur, "dernier_demarrage_ts",
+                                         None))
+    except Exception:                                    # noqa: BLE001
+        log.debug("Diagnostic des paires illisible", exc_info=True)
+        return None
 
 
 def _micro_essai(chemin, course, argument: str
