@@ -304,6 +304,7 @@ COMMANDES = [
     ("ticks", "Étape 0 : qualité des ticks, en lecture seule"),
     ("micro_essai", "Étape 3 : contrôles préalables, lecture seule (admin)"),
     ("micro_selection", "Étape 3 : passe de sélection et gel 2 (admin)"),
+    ("historique_ticks", "Ticks par paire et par heure, 7 jours (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -442,6 +443,11 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._micro_selection: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._selection_en_cours: asyncio.Task | None = None
+        #: `argument -> (rapport, fichiers)` : l'historique des ticks par
+        #: paire et par heure, en lecture seule, en tâche de fond.
+        self._historique_ticks: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._historique_en_cours: asyncio.Task | None = None
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -737,8 +743,30 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                     "fichiers arriveront ici ; les autres commandes restent "
                     "disponibles.", CLAVIER)
                 self._selection_en_cours = asyncio.create_task(
-                    self._envoyer_la_selection(
-                        chat, texte[len("/micro_selection"):].strip()))
+                    self._envoyer_en_fond(
+                        chat, self._micro_selection,
+                        texte[len("/micro_selection"):].strip(),
+                        "🧪 Passe de sélection"))
+        elif texte.startswith("/historique_ticks"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._historique_ticks is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._historique_en_cours is not None
+                  and not self._historique_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "📜 L'historique des ticks est déjà en cours.",
+                    CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "📜 Historique des ticks lancé (lecture seule, sur "
+                    "la relève ; quelques minutes). Le rapport et les "
+                    "fichiers arriveront ici.", CLAVIER)
+                self._historique_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(
+                        chat, self._historique_ticks,
+                        texte[len("/historique_ticks"):].strip(),
+                        "📜 Historique des ticks"))
         elif texte.startswith("/ticks"):
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
@@ -833,13 +861,16 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
 
     # --- inscription --------------------------------------------------------
 
-    async def _envoyer_la_selection(self, chat: str, argument: str) -> None:
+    async def _envoyer_en_fond(self, chat: str, appel, argument: str,
+                               libelle: str) -> None:
+        """Une commande longue, lancée à part : son rapport et ses fichiers
+        arrivent quand elle a fini, les autres commandes restent servies."""
         try:
-            resume, fiches = await self._micro_selection(argument)
+            resume, fiches = await appel(argument)
         except Exception as erreur:                      # noqa: BLE001
-            log.exception("Passe de sélection interrompue")
+            log.exception("%s interrompu(e)", libelle)
             await self.client.envoyer(
-                chat, "🧪 Passe de sélection interrompue : "
+                chat, f"{libelle} : interruption — "
                 + _sans_balises(str(erreur))[:300], CLAVIER)
             return
         await self.client.envoyer(chat, resume, CLAVIER)

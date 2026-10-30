@@ -83,6 +83,7 @@ from typing import Iterator, List, Sequence
 import json
 from pathlib import Path
 
+from maxprofit.collect.observation_flux import OBSERVATION, TramesObservees
 from maxprofit.core.errors import BotError
 from maxprofit.core.timebase import (
     MAX_PLAUSIBLE_MS,
@@ -366,7 +367,11 @@ async def _tenir_la_session(ws_client, ws, send_ping,
     """Dure tant que le socket est ouvert. L'écoute se termine à sa fermeture,
     quelle qu'en soit la cause ; les tâches annexes sont alors annulées pour ne
     pas s'accumuler d'une reconnexion à l'autre."""
-    ecoute = asyncio.create_task(ws_client.websocket_listener(ws))
+    # Diagnostic du 31/10 : l'écouteur lit le MÊME socket, à travers un relais
+    # qui lui remet chaque message inchangé et en compte une copie
+    # (`collect/observation_flux.py`).
+    ecoute = asyncio.create_task(ws_client.websocket_listener(
+        TramesObservees(ws, ws_client, OBSERVATION)))
     annexes = [
         asyncio.create_task(ws_client.send_message(ws_client.message)),
         asyncio.create_task(send_ping(ws)),
@@ -1319,8 +1324,12 @@ class PocketOptionSource:
             log.info("Tampon de %s remplace (%d -> %d) : relecture complete.",
                      nom, vus, fin)
             vus = 0
+            OBSERVATION.remplace(nom)
         if fin <= vus:
             return
+        # Diagnostic du 31/10 : ce que l'adaptateur lit, compté sans rien
+        # retirer du tampon.
+        OBSERVATION.lus(nom, fin - vus)
 
         tranche = tampon[vus:fin]
         self._caler_sur_le_plus_recent(tranche)

@@ -740,6 +740,38 @@ def test_micro_selection_tourne_en_tache_de_fond_et_envoie_ses_fichiers(
     assert documents == ["parametres_gel2.json"]
 
 
+def test_historique_ticks_tourne_en_tache_de_fond(tmp_path):
+    client = FauxClient()
+    documents = []
+
+    async def envoyer_document(chat_id, contenu, nom, legende=""):
+        documents.append(nom)
+
+    client.envoyer_document = envoyer_document
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+
+    async def historique(argument):
+        appels.append(argument)
+        return "historique", [(b"a;b\n", "historique_ticks_heures.csv", "")]
+
+    bot._historique_ticks = historique
+
+    async def scenario():
+        await bot._traiter(
+            _message("/historique_ticks", chat=INTRUS)["message"])
+        assert appels == []
+        await bot._traiter(_message("/historique_ticks 7")["message"])
+        assert "lancé" in client.envoyes[-1][1]
+        await bot._historique_en_cours
+
+    asyncio.run(scenario())
+    assert appels == ["7"]
+    assert client.envoyes[-1] == (CHAT, "historique")
+    assert documents == ["historique_ticks_heures.csv"]
+
+
 def test_transfert_est_reserve_aux_administrateurs(tmp_path):
     client = FauxClient()
     documents = []

@@ -34,6 +34,7 @@ plus, aucune paire n'est déclarée muette pour autant : l'en-tête le dit.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -214,3 +215,103 @@ def depuis_la_course(course, *, maintenant: float,
                          fenetre_min=fenetre, requis=requis, plafond=univers,
                          demarrage_collecteur=demarrage_collecteur)
     return texte(diag, [u for u in univers if u not in set(paires)])
+
+
+# --------------------------------------------------------------------------- #
+# Messages du broker : reçus → transmis → enregistrés (diagnostic du 31/10)
+# --------------------------------------------------------------------------- #
+
+#: Les bougies de la minute en cours, et de la précédente, ne sont pas
+#: encore toutes écrites : la comparaison s'arrête deux minutes avant.
+RETARD_ECRITURE_SEC = 120
+FENETRE_OBSERVATION_SEC = 3600
+
+
+def fenetre_d_observation(maintenant: float, depuis: float
+                          ) -> tuple[int, int]:
+    """La dernière heure close, sans remonter avant le début de
+    l'observation (première minute entière)."""
+    fin = int(maintenant) // 60 * 60 - RETARD_ECRITURE_SEC
+    premiere = (int(depuis) // 60 + 1) * 60
+    return max(fin - FENETRE_OBSERVATION_SEC, premiere), fin
+
+
+def enregistres(cache: Mapping[str, Sequence[Any]], paires: Iterable[str],
+                debut: int, fin: int) -> dict[str, int]:
+    """Ticks des bougies écrites, par paire, sur les minutes [debut, fin)."""
+    return {p: sum(int(b.tick_count) for b in cache.get(p, ())
+                   if debut <= b.ts_sec < fin) for p in paires}
+
+
+def texte_observation(obs: Mapping[str, Any], ecrits: Mapping[str, int],
+                      paires: Sequence[str]) -> str:
+    debut, fin = obs["debut"], obs["fin"]
+    if not obs["actif"]:
+        entete = (f"⚠ Observation des messages DÉSACTIVÉE après une erreur "
+                  f"({obs['erreur']}) : aucun compte n'est fiable.")
+        return f"<b>Messages de ticks du broker</b>\n{entete}"
+    if fin <= debut:
+        return ("<b>Messages de ticks du broker</b> (observation passive) : "
+                "moins d'une minute close depuis le démarrage, rien à "
+                "comparer encore.")
+    m = obs["messages"]
+    n = m["messages"]
+
+    def part(k: str) -> str:
+        return f"{m[k]} ({100 * m[k] / n:.0f} %)" if n else "0"
+
+    heure = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime(  # noqa: E731
+        "%H:%M")
+    l = [f"<b>Messages de ticks du broker</b> (observation passive, "
+         f"{heure(debut)}–{heure(fin)} UTC, {(fin - debut) // 60} min, "
+         f"{obs['sockets']} socket(s) additionnés)",
+         f"- {n} messages ; plusieurs ticks : {part('plusieurs_ticks')} ; "
+         f"plusieurs paires : {part('plusieurs_paires')} ; une même paire "
+         f"répétée : {part('meme_paire_repetee')} ; éléments par message : "
+         f"max {m['max_elements']}, moyenne "
+         f"{(m['elements'] / n if n else 0):.2f}"
+         + (f" ; hors drapeau (ignorés par la bibliothèque) : "
+            f"{m['hors_drapeau']}" if m["hors_drapeau"] else "")
+         + (f" ; sans élément retenu : {m['sans_tete_retenue']}"
+            if m["sans_tete_retenue"] else "")
+         + (f" ; éléments malformés : {m['malformes']}"
+            if m["malformes"] else "")]
+    lignes = []
+    for p in paires:
+        c = obs["paires"].get(p, {})
+        r, a = c.get("recus", 0), c.get("transmis", 0)
+        e = ecrits.get(p, 0)
+        ligne = (f"- {p} : reçus {r} (dans {c.get('messages', 0)} messages, "
+                 f"en tête {c.get('en_tete', 0)}) → transmis {a} → "
+                 f"enregistrés {e}")
+        if r > a:
+            ligne += f" · ⚠ {r - a} reçus non transmis"
+        if a != e:
+            ligne += f" · écart transmis − enregistrés {a - e:+d}"
+        if obs["remplacements"].get(p):
+            ligne += (f" · tampon remplacé {obs['remplacements'][p]} fois "
+                      f"(relu en entier)")
+        lignes.append((r - a, p, ligne))
+    l += [ligne for _, _, ligne in sorted(lignes, key=lambda x: (-x[0],
+                                                                 x[1]))]
+    autres = sorted(set(obs["paires"]) - set(paires))
+    if autres:
+        l.append(f"- reçues hors collecte (suivies par le courtier) : "
+                 f"{len(autres)} paire(s)")
+    l.append("Reçus et transmis sont comptés à la minute de réception, "
+             "enregistrés à la minute du tick : quelques secondes de décalage "
+             "aux bords. « En tête » = premier élément d'un message, le seul "
+             "que la bibliothèque ajoute à son tampon.")
+    return "\n".join(l)
+
+
+def observation_depuis_la_course(course, observation, *, maintenant: float
+                                 ) -> str | None:
+    if observation is None:
+        return None
+    paires = tuple(getattr(course, "paires_collectees", ()) or ())
+    cache = dict(getattr(course, "_cache_bougies", None) or {})
+    debut, fin = fenetre_d_observation(maintenant, observation.depuis)
+    obs = observation.instantane(debut, fin)
+    return texte_observation(obs, enregistres(cache, paires, debut, fin),
+                             paires)

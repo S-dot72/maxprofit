@@ -368,6 +368,9 @@ async def _servir(args) -> int:
             bot._micro_selection = lambda argument: asyncio.to_thread(
                 _micro_selection, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._historique_ticks = lambda argument: asyncio.to_thread(
+                _historique_ticks, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -763,6 +766,9 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
         diagnostic = _diagnostic_des_paires(course, superviseur)
         if diagnostic:
             lignes.append(diagnostic)
+        messages = _observation_des_messages(course)
+        if messages:
+            lignes.append(messages)
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
 
@@ -782,6 +788,23 @@ def _diagnostic_des_paires(course, superviseur) -> str | None:
                                          None))
     except Exception:                                    # noqa: BLE001
         log.debug("Diagnostic des paires illisible", exc_info=True)
+        return None
+
+
+def _observation_des_messages(course) -> str | None:
+    """Reçus → transmis → enregistrés, paire par paire : compteurs en
+    mémoire et bougies de la course, aucune requête."""
+    import time as _time
+    from maxprofit.collect.observation_flux import OBSERVATION
+    from maxprofit.live.diagnostic_paires import observation_depuis_la_course
+    vivante = getattr(course, "_course", None)
+    if vivante is None:
+        return None
+    try:
+        return observation_depuis_la_course(vivante, OBSERVATION,
+                                            maintenant=_time.time())
+    except Exception:                                    # noqa: BLE001
+        log.debug("Observation des messages illisible", exc_info=True)
         return None
 
 
@@ -815,21 +838,59 @@ def _micro_selection(chemin, course, argument: str, environ=None,
     """`/micro_selection` : la passe de sélection de l'étape 3, en lecture
     seule. Elle lit la RELÈVE (son propre quota de transfert), et vérifie la
     copie sur l'active ; `/micro_selection active` lit tout sur l'active."""
-    import html
     from maxprofit.live.selection3 import selection
+    if course is None:
+        return "Course indisponible.", []
+    return _sur_la_releve(
+        chemin, argument.strip().lower() == "active", "🧪", "micro_selection",
+        "Passe de sélection",
+        lambda lue, active, nom: selection(lue, active, course,
+                                           nom_lecture=nom,
+                                           code=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _historique_ticks(chemin, course, argument: str, environ=None,
+                      ouvrir_url=None
+                      ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/historique_ticks [jours] [active]` : les ticks paire × heure, en
+    lecture seule, sur la relève (copie vérifiée sur l'active)."""
+    import html
+    import time as _time
+    from maxprofit.live.historique_ticks import analyser_jours, historique
+    mots = argument.lower().split()
+    sur_l_active = "active" in mots
+    try:
+        jours = analyser_jours(" ".join(m for m in mots if m != "active"))
+    except ValueError as erreur:
+        return f"📜 Jours illisibles : {html.escape(str(erreur))}", []
+    paires = tuple(getattr(course, "paires_collectees", ()) or ())
+    return _sur_la_releve(
+        chemin, sur_l_active, "📜", "historique_ticks",
+        "Historique des ticks",
+        lambda lue, active, nom: historique(lue, active, paires,
+                                            maintenant=_time.time(),
+                                            jours=jours, nom_lecture=nom),
+        environ, ouvrir_url)
+
+
+def _sur_la_releve(chemin, sur_l_active: bool, pastille: str, commande: str,
+                   libelle: str, faire, environ=None, ouvrir_url=None
+                   ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """Ouvre la relève et l'active en LECTURE SEULE, et rend `faire(lue,
+    active, nom de la base lue)`. Sur l'active seule si demandé ; sans
+    active joignable, la copie est dite non vérifiée."""
+    import html
     from maxprofit.store import pool, postgres
     from maxprofit.store.db import open_read_only
     from maxprofit.store.diagnostic_stockage import lecture_seule
-    if course is None:
-        return "Course indisponible.", []
     environ = os.environ if environ is None else environ
     ouvrir_url = ouvrir_url or postgres.ouvrir
     url_releve = environ.get(pool.ENV_RELEVE, "")
-    sur_l_active = argument.strip().lower() == "active"
     if not sur_l_active and not url_releve:
-        return ("🧪 Aucune relève déclarée ou joignable au démarrage. "
-                "/micro_selection active lit tout sur la base active "
-                "(son quota de transfert)."), []
+        return (f"{pastille} Aucune relève déclarée ou joignable au "
+                f"démarrage. /{commande} active lit tout sur la base active "
+                f"(son quota de transfert)."), []
     ouvertes = []
 
     def ouvrir(faire):
@@ -844,18 +905,16 @@ def _micro_selection(chemin, course, argument: str, environ=None,
         except Exception as erreur:                      # noqa: BLE001
             if sur_l_active:
                 raise
-            log.warning("Passe de sélection : l'active ne répond pas (%s) ; "
-                        "copie non vérifiée", erreur)
+            log.warning("%s : l'active ne répond pas (%s) ; copie non "
+                        "vérifiée", libelle, erreur)
             active = None
         if sur_l_active:
-            return selection(active, None, course, nom_lecture="active",
-                             code=version_deployee.commit())
+            return faire(active, None, "active")
         releve = ouvrir(lambda: ouvrir_url(url_releve))
-        return selection(releve, active, course, nom_lecture="relève",
-                         code=version_deployee.commit())
+        return faire(releve, active, "relève")
     except Exception as erreur:                          # noqa: BLE001
-        log.exception("Passe de sélection impossible")
-        return (f"🧪 Passe de sélection impossible : "
+        log.exception("%s impossible", libelle)
+        return (f"{pastille} {libelle} impossible : "
                 f"{html.escape((str(erreur).splitlines() or [repr(erreur)])[0][:300])}",
                 [])
     finally:
