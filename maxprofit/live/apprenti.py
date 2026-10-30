@@ -166,6 +166,10 @@ class Apprenti:
             # Étape 3 : le niveau de zone de chaque signal, relevé au passage
             # (la stratégie le calcule déjà ; le rejeu ne le gardait pas).
             niveaux: dict = {}
+            # Et les signaux SANS issue décisive (égalité, sortie manquante),
+            # avec leur sens : la sensibilité « égalités perdues » de l'étape
+            # 3 en a besoin. Relevé passif, comme les niveaux.
+            sans_issue: list = []
             respirer = lambda: time.sleep(RESPIRATION_SEC)  # noqa: E731
             # L'étape 0 des ticks (/ticks), en lecture seule, sur les
             # derniers jours : elle réutilise les bougies et les signaux
@@ -183,7 +187,7 @@ class Apprenti:
                     garde=lambda p, f: dans_la_plage_de_calibration(
                         tolerance, f),
                     respirer=respirer, exclusions=exclusions,
-                    niveaux=niveaux)
+                    niveaux=niveaux, sans_issue=sans_issue)
                 exemples += de_la_paire
                 if audit_ticks is not None:
                     try:
@@ -314,6 +318,7 @@ class Apprenti:
         course.rejeu_en_memoire = (exemples, en_direct, fenetre or 1,
                                    version_des_regles(strategie))
         course.niveaux_en_memoire = niveaux
+        course.sans_issue_en_memoire = sans_issue
         # EXP-021 / EXP-022 : la stabilité dans le temps et le premier pas.
         # Une alerte de dégradation PRÉVIENT ; elle ne change aucune règle.
         from maxprofit.live.stabilite import stabilite, texte_alerte

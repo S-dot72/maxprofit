@@ -150,3 +150,30 @@ qu'elle va écrire.
 - console Neon : compteur avant et après, sur des périodes comparables.
 
 **C — lecture binaire des chemins** : reportée (décision du 29/10).
+
+## 7. Après A et B : mesure du 29/10 01:15 au 30/10, 24,2 h (rejeu inclus)
+
+**Total mesuré** : 197 Mo, soit environ **195 Mo par 24 h**, contre 372
+avant (−48 %). Borne basse, comme au §5.
+
+| Consommateur | Avant (Mo/24 h) | Après | Constat |
+|---|---|---|---|
+| sonde `/health` (A) | 149 | 0,06 | une ligne d'agrégats par couverture ; comptages toutes les 30 min |
+| relève, `plan_etat` (B) | 36 | 21 | seule la ligne de la campagne active, modifiée entre deux passes, est copiée (≈ 300 Ko) |
+| rejeu quotidien | 150 | 140 | chemins de 7 jours (97 Mo, hexadécimal) et bougies de 30 jours (44 Mo) : **72 %** du reste |
+| journal des ordres | 11 | 12 | |
+| relève, séries | 12 | 10 | |
+| cache de la course | 9 | 8 | |
+
+**Côté serveur** : 31 millions de lignes de payouts et 29 millions de
+bougies parcourues, contre 180 et 167 millions.
+
+**Console Neon, le 30/10 vers 9 h 37** : 3,83 Go de « Network transfer »
+depuis le 20/10. Le reste du quota mensuel (5 Go) est d'environ 1,2 Go. La
+date de remise à zéro (début du mois civil ou anniversaire de la période)
+n'a pas pu être lue dans la documentation de Neon depuis cette session.
+
+**Conséquence pour l'étape 3** : la passe de sélection lit sur la relève
+(son propre quota) et ne coûte à l'active que des résumés par paire × jour
+(quelques Ko). Les pistes du rejeu (lecture binaire C, audit `/ticks`
+incrémental) restent proposées, non lancées.

@@ -1,13 +1,13 @@
-# Étape 3 — Plan d'exécution, version 4
+# Étape 3 — Plan d'exécution, version 5
 
 **Statut** :
 - plan approuvé sous conditions le 27/10 ;
 - décisions du même jour : 2 hypothèses principales, plafond de 4 000
   signaux, règle de retrait des variables quasi constantes ;
 - autorisé : l'essai technique de la passe optimisée (`/micro_essai`) ;
-- la passe complète reste suspendue. Elle attend la validation du coût
-  réel, la pré-inscription des deux hypothèses et la continuité de la
-  collecte.
+- **30/10 : passe de sélection autorisée** (« lancer l'étude »), lue sur
+  la relève (§13 bis). Restent non autorisés : table dérivée, modification
+  du collecteur ou de la stratégie.
 
 Les résultats actuels justifient une étude **exploratoire**. Ils ne
 permettent encore aucune décision sur l'efficacité prédictive des ticks.
@@ -564,7 +564,55 @@ brouillon.
 | 4. Stockage, transfert, sauvegarde, continuité | de ton côté (§12) |
 | 4 bis. Diagnostic du transfert | mesuré le 28/10 ; corrections A (sonde) et B (synchronisation) déployées ensemble le 29/10, 24 h de mesure à suivre (`docs/transfert_diagnostic.md`) |
 | 5. Gel des 2 hypothèses | **fait le 29/10** : empreinte `3e415576…a7a83e` (`docs/etape3_registre.md` §5) |
-| 6. Passe de sélection, puis gel des paramètres | après ton feu vert, transfert et continuité réglés |
+| 6. Passe de sélection, puis gel des paramètres | **autorisée le 30/10** : `/micro_selection` (§13 bis) ; le gel 2 est le commit de `parametres_gel2.json` |
+
+## 13 bis. La passe de sélection : `/micro_selection` (admin)
+
+**Où elle lit** : sur la **relève**, qui reçoit toute la base active toutes
+les 20 minutes et a son propre quota de transfert. La copie est vérifiée
+avant d'être crue :
+- pour chaque paire et chaque jour, chemins de ticks, bougies et payouts
+  sont résumés par le serveur (comptes et sommes) sur les deux bases ;
+- un paire-jour dont la veille, le jour ou le lendemain diffère est lu sur
+  l'active, et compté ;
+- si l'active ne répond pas, le rapport dit « copie non vérifiée ».
+
+`/micro_selection active` lit tout sur l'active.
+
+**Ce qu'elle calcule**, sur les décisions d'avant le 28/10, mécaniquement
+selon le premier gel :
+1. la règle de retrait, sur l'exploration, sans issue ;
+2. les terciles de H1 et H2 sur l'exploration, pour les 6 mesures
+   (distincts / bruts × k = 0 / 2 / 5) ;
+3. la préparation (médianes, moyennes, écarts), sur l'exploration ;
+4. les coefficients sur exploration + validation : M0, M_H1 et M_H2 pour
+   chaque mesure et chaque règle d'égalité, et M_H1H2 (descriptif) ;
+5. à part, le criblage **exploratoire** des 90 autres candidates aux
+   échéances 900, 240 et 600 s : ajusté sur l'exploration, jugé sur la
+   validation (Δℓ, IC par blocs), BH à 10 %. Des pistes, pas des preuves.
+
+**Population principale** : niveau 2 et fenêtre VALID, issue décisive. Les
+égalités entrent dans la variante « perdues » : le rejeu relève désormais
+au passage les signaux sans issue décisive, avec leur sens
+(`sans_issue_en_memoire`), comme il relève les niveaux de zone. Les signaux
+et leurs issues ne changent pas.
+
+**Arrêts** (§10) : un contrôle anti-fuite qui échoue, ou moins de 80 % de
+fenêtres VALID. Le rapport est rendu, le document du gel ne l'est pas.
+
+**Sorties**, par Telegram, sans aucune écriture en base :
+`selection_signaux.csv`, `selection_retrait.csv`, `selection_registre.csv`,
+`selection_exploratoire.csv`, et `parametres_gel2.json` avec son empreinte.
+
+**Gel 2** : le document est commité tel quel (`docs/etape3_parametres_gel2.json`),
+son empreinte notée au registre et dans le message du commit. La
+confirmation s'ouvre au premier minuit UTC qui suit ce commit (option (a)).
+
+**Vérifié** : de bout en bout sur SQLite (bases inchangées, copie
+divergente lue sur l'active sans changer le gel, relève tardive, deux
+passes identiques, arrêt VALID) et sur un PostgreSQL local
+(`transaction_read_only` à on sur les deux bases, même empreinte qu'en
+SQLite).
 
 ## 14. Fichiers
 
@@ -573,8 +621,9 @@ brouillon.
 | `maxprofit/apprentissage/microstructure_pre.py` | fenêtres, variables A à E, classes, niveaux, autotest anti-fuite ; pur |
 | `maxprofit/apprentissage/etude_micro.py` | issue, périodes, préparation, logistique L2, Δℓ sur mêmes signaux, bootstrap, terciles, Holm / BH, verdicts, puissance, dépense d'α, registre, gel ; pur |
 | `maxprofit/live/etude3.py` | `/micro_essai` v2 (passe fenêtrée, `ConnexionTracee`, contrôles) |
+| `maxprofit/live/selection3.py` | `/micro_selection` : copie vérifiée, passe de sélection, criblage exploratoire, document du gel 2 |
 | `maxprofit/apprentissage/historique.py` | options `sans_issue` et `niveaux` (relevés passifs) |
-| `maxprofit/live/apprenti.py` | niveaux de zone du rejeu en mémoire (`niveaux_en_memoire`) |
+| `maxprofit/live/apprenti.py` | niveaux de zone et signaux sans issue du rejeu en mémoire (`niveaux_en_memoire`, `sans_issue_en_memoire`) |
 | `maxprofit/apprentissage/audit_ticks.py` | option `garder_classes` (concordance minute par minute) |
-| `tests/test_disponibilite_collecte.py`, `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py`, `tests/test_etude3.py` | disponibilité, définitions, anti-fuite, protocole, bout en bout |
+| `tests/test_disponibilite_collecte.py`, `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py`, `tests/test_etude3.py`, `tests/test_selection3.py` | disponibilité, définitions, anti-fuite, protocole, bout en bout |
 | `docs/etape3_registre.md` | registre et pré-inscription |

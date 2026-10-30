@@ -303,6 +303,7 @@ COMMANDES = [
     ("simples", "Momentum 7 bougies, croisement de moyennes, Bollinger"),
     ("ticks", "Étape 0 : qualité des ticks, en lecture seule"),
     ("micro_essai", "Étape 3 : contrôles préalables, lecture seule (admin)"),
+    ("micro_selection", "Étape 3 : passe de sélection et gel 2 (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -435,6 +436,12 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         #: l'étape 3, en lecture seule.
         self._micro_essai: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
+        #: `argument -> (rapport, fichiers)` : la passe de sélection de
+        #: l'étape 3, en lecture seule, lancée en tâche de fond (une demi-
+        #: heure : les autres commandes ne doivent pas attendre).
+        self._micro_selection: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._selection_en_cours: asyncio.Task | None = None
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -713,6 +720,25 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         await self.client.envoyer(
                             chat, f"Fiche {nom} non envoyée : {erreur}",
                             CLAVIER)
+        elif texte.startswith("/micro_selection"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._micro_selection is None:
+                await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
+            elif (self._selection_en_cours is not None
+                  and not self._selection_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "🧪 La passe de sélection est déjà en cours.",
+                    CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "🧪 Passe de sélection lancée (lecture seule, sur "
+                    "la relève ; une demi-heure environ). Le rapport et les "
+                    "fichiers arriveront ici ; les autres commandes restent "
+                    "disponibles.", CLAVIER)
+                self._selection_en_cours = asyncio.create_task(
+                    self._envoyer_la_selection(
+                        chat, texte[len("/micro_selection"):].strip()))
         elif texte.startswith("/ticks"):
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
@@ -806,6 +832,25 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             await self.client.envoyer(chat, AIDE, CLAVIER)
 
     # --- inscription --------------------------------------------------------
+
+    async def _envoyer_la_selection(self, chat: str, argument: str) -> None:
+        try:
+            resume, fiches = await self._micro_selection(argument)
+        except Exception as erreur:                      # noqa: BLE001
+            log.exception("Passe de sélection interrompue")
+            await self.client.envoyer(
+                chat, "🧪 Passe de sélection interrompue : "
+                + _sans_balises(str(erreur))[:300], CLAVIER)
+            return
+        await self.client.envoyer(chat, resume, CLAVIER)
+        for contenu, nom, legende in fiches:
+            try:
+                await self.client.envoyer_document(chat, contenu, nom, legende)
+            except Exception as erreur:                  # noqa: BLE001
+                log.error("Fichier %s non envoyé : %s", nom, erreur)
+                await self.client.envoyer(
+                    chat, f"Fichier {nom} non envoyé : "
+                    f"{_sans_balises(str(erreur))[:200]}", CLAVIER)
 
     async def _commande_start(self, chat: str, texte: str, nom: str,
                               message_id: int | None) -> None:

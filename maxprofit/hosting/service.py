@@ -365,6 +365,9 @@ async def _servir(args) -> int:
             bot._micro_essai = lambda argument: asyncio.to_thread(
                 _micro_essai, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._micro_selection = lambda argument: asyncio.to_thread(
+                _micro_selection, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -783,6 +786,63 @@ def _micro_essai(chemin, course, argument: str
         return (f"🔬 Contrôles impossibles : "
                 f"{html.escape((str(erreur).splitlines() or [repr(erreur)])[0][:300])}",
                 [])
+
+
+def _micro_selection(chemin, course, argument: str, environ=None,
+                     ouvrir_url=None
+                     ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/micro_selection` : la passe de sélection de l'étape 3, en lecture
+    seule. Elle lit la RELÈVE (son propre quota de transfert), et vérifie la
+    copie sur l'active ; `/micro_selection active` lit tout sur l'active."""
+    import html
+    from maxprofit.live.selection3 import selection
+    from maxprofit.store import pool, postgres
+    from maxprofit.store.db import open_read_only
+    from maxprofit.store.diagnostic_stockage import lecture_seule
+    if course is None:
+        return "Course indisponible.", []
+    environ = os.environ if environ is None else environ
+    ouvrir_url = ouvrir_url or postgres.ouvrir
+    url_releve = environ.get(pool.ENV_RELEVE, "")
+    sur_l_active = argument.strip().lower() == "active"
+    if not sur_l_active and not url_releve:
+        return ("🧪 Aucune relève déclarée ou joignable au démarrage. "
+                "/micro_selection active lit tout sur la base active "
+                "(son quota de transfert)."), []
+    ouvertes = []
+
+    def ouvrir(faire):
+        conn = faire()
+        ouvertes.append(conn)
+        lecture_seule(conn)
+        return conn
+
+    try:
+        try:
+            active = ouvrir(lambda: open_read_only(chemin))
+        except Exception as erreur:                      # noqa: BLE001
+            if sur_l_active:
+                raise
+            log.warning("Passe de sélection : l'active ne répond pas (%s) ; "
+                        "copie non vérifiée", erreur)
+            active = None
+        if sur_l_active:
+            return selection(active, None, course, nom_lecture="active",
+                             code=version_deployee.commit())
+        releve = ouvrir(lambda: ouvrir_url(url_releve))
+        return selection(releve, active, course, nom_lecture="relève",
+                         code=version_deployee.commit())
+    except Exception as erreur:                          # noqa: BLE001
+        log.exception("Passe de sélection impossible")
+        return (f"🧪 Passe de sélection impossible : "
+                f"{html.escape((str(erreur).splitlines() or [repr(erreur)])[0][:300])}",
+                [])
+    finally:
+        for conn in ouvertes:
+            try:
+                conn.close()
+            except Exception:                            # noqa: BLE001
+                pass
 
 
 def _ligne_stockage(tailles: dict) -> str | None:
