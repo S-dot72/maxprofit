@@ -212,6 +212,18 @@ def test_le_fil_reapprend_depuis_la_base_et_le_DIT(tmp_path, monkeypatch):
     assert course.etat.apprentissage is not None
     assert course.etat.apprentissage.n > 0
     assert messages and "Apprentissage" in messages[-1]
+    # Étape 3 : les signaux sans issue décisive sont relevés au passage,
+    # avec leur sens, et chaque signal a son niveau de zone.
+    exemples = course.rejeu_en_memoire[0]
+    sans_issue = course.sans_issue_en_memoire
+    assert isinstance(sans_issue, list)
+    assert all(s["issue"] in ("egalite", "manquante") and "call" in s
+               for s in sans_issue)
+    assert not ({(e.pair, e.ts_sec) for e in exemples}
+                & {(s["pair"], s["ts_sec"]) for s in sans_issue})
+    assert set(course.niveaux_en_memoire) == (
+        {(e.pair, e.ts_sec) for e in exemples}
+        | {(s["pair"], s["ts_sec"]) for s in sans_issue})
     simulations = course.etat.apprentissage.simulations
     assert "ZoneH1 (15 min), comme en direct" in simulations
     assert course.etat.apprentissage.laboratoire, "le laboratoire est calculé"

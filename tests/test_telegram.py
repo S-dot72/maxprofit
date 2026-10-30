@@ -699,6 +699,47 @@ def test_micro_essai_est_reserve_aux_administrateurs_et_envoie_ses_fiches(
     assert client.envoyes[-1] == (CHAT, "rapport")
 
 
+def test_micro_selection_tourne_en_tache_de_fond_et_envoie_ses_fichiers(
+        tmp_path):
+    """La passe de sélection dure une demi-heure : la commande répond tout
+    de suite, la passe tourne à part, et un second lancement est refusé
+    tant que la première n'a pas fini."""
+    client = FauxClient()
+    documents = []
+
+    async def envoyer_document(chat_id, contenu, nom, legende=""):
+        documents.append(nom)
+
+    client.envoyer_document = envoyer_document
+    bot = _bot(client, annuaire=_annuaire(
+        tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
+    appels = []
+    feu = asyncio.Event()
+
+    async def micro_selection(argument):
+        appels.append(argument)
+        await feu.wait()
+        return "passe", [(b"{}", "parametres_gel2.json", "gel")]
+
+    bot._micro_selection = micro_selection
+
+    async def scenario():
+        await bot._traiter(_message("/micro_selection", chat=INTRUS)["message"])
+        assert appels == [] and bot._selection_en_cours is None
+        await bot._traiter(_message("/micro_selection")["message"])
+        assert "lancée" in client.envoyes[-1][1]
+        await asyncio.sleep(0)
+        await bot._traiter(_message("/micro_selection")["message"])
+        assert "déjà en cours" in client.envoyes[-1][1]
+        feu.set()
+        await bot._selection_en_cours
+
+    asyncio.run(scenario())
+    assert appels == [""]
+    assert client.envoyes[-1] == (CHAT, "passe")
+    assert documents == ["parametres_gel2.json"]
+
+
 def test_transfert_est_reserve_aux_administrateurs(tmp_path):
     client = FauxClient()
     documents = []

@@ -155,9 +155,14 @@ def _empreinte(objet: Any) -> str:
 # --------------------------------------------------------------------------- #
 
 def paire_jour(conn: ConnexionTracee, course, paire: str, debut: int,
-               signaux: Sequence[tuple[int, bool, float | None]]
-               ) -> dict[str, Any]:
-    """`signaux` : (décision, call, niveau de zone) du rejeu en mémoire."""
+               signaux: Sequence[tuple[int, bool, float | None]], *,
+               variantes: Sequence[tuple[str, int]] = (),
+               fenetre_variantes: int = 300) -> dict[str, Any]:
+    """`signaux` : (décision, call, niveau de zone) du rejeu en mémoire.
+
+    `variantes` : (traitement, k) calculés EN PLUS à la seule fenêtre
+    `fenetre_variantes`, pour les sensibilités des deux hypothèses
+    principales (passe de sélection). Vide pour l'essai : rien ne change."""
     from maxprofit.live.ticks import lire_ouvertures
     from maxprofit.store.market import MarketReader
     lecteur = MarketReader(conn)
@@ -201,6 +206,7 @@ def paire_jour(conn: ConnexionTracee, course, paire: str, debut: int,
                 >= DOUBLES_MIN * len(ticks)}
     delta = mp.pas_de_cotation(c.echelle for c in chemins_l)
     fiches, lignes, autotests, sans_niveau = [], [], [0, 0], 0
+    en_variantes: list[dict[str, Any]] = []
     for d, call, niveau in signaux:
         if niveau is None or delta is None:
             sans_niveau += 1
@@ -227,6 +233,13 @@ def paire_jour(conn: ConnexionTracee, course, paire: str, debut: int,
                  "hors_niveau_2": ", ".join(causes), **q}
         fiches.append(fiche)
         lignes += [{**fiche, **r} for r in rangs]
+        for traitement, k in variantes:
+            ticks = mp.ticks_de_la_fenetre(par_minute, d, fenetre_variantes,
+                                           k_sec=k, traitement=traitement)
+            en_variantes.append({
+                "paire": paire, "decision": d, "traitement": traitement,
+                "k": k, "w": fenetre_variantes, "n": len(ticks),
+                **mp.variables(ticks, ctx, fenetre_variantes, k)})
     temps["variables"] = time.monotonic() - t
     entree = _empreinte(
         [[c.pair, c.minute_sec, c.n_ticks, c.echelle, c.octets.hex()]
@@ -235,7 +248,8 @@ def paire_jour(conn: ConnexionTracee, course, paire: str, debut: int,
             x.complete] for x in bougies_l] + [list(o) for o in
                                                (ouvertures or [])])
     return {"paire": paire, "temps": temps, "fiches": fiches,
-            "lignes": lignes, "autotests": autotests,
+            "lignes": lignes, "variantes": en_variantes,
+            "autotests": autotests,
             "sans_niveau": sans_niveau, "chemins": len(chemins_l),
             "octets": sum(len(c.octets) for c in chemins_l),
             "bougies": len(bougies_l), "releves": len(ouvertures or []),
