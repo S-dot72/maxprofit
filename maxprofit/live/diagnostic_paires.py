@@ -34,6 +34,7 @@ plus, aucune paire n'est déclarée muette pour autant : l'en-tête le dit.
 
 from __future__ import annotations
 
+import html
 from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Iterable, Mapping, Sequence
@@ -282,8 +283,10 @@ def texte_observation(obs: Mapping[str, Any], ecrits: Mapping[str, int],
         r, a = c.get("recus", 0), c.get("transmis", 0)
         e = ecrits.get(p, 0)
         ligne = (f"- {p} : reçus {r} (dans {c.get('messages', 0)} messages, "
-                 f"en tête {c.get('en_tete', 0)}) → transmis {a} → "
-                 f"enregistrés {e}")
+                 f"en tête {c.get('en_tete', 0)}"
+                 + (f", répétés à l'identique {c['repetes']}"
+                    if c.get("repetes") else "")
+                 + f") → transmis {a} → enregistrés {e}")
         if r > a:
             ligne += f" · ⚠ {r - a} reçus non transmis"
         if a != e:
@@ -298,10 +301,14 @@ def texte_observation(obs: Mapping[str, Any], ecrits: Mapping[str, int],
     if autres:
         l.append(f"- reçues hors collecte (suivies par le courtier) : "
                  f"{len(autres)} paire(s)")
+    if obs.get("exemple_malforme"):
+        l.append(f"- exemple d'élément malformé (ignoré) : "
+                 f"{html.escape(obs['exemple_malforme'])}")
     l.append("Reçus et transmis sont comptés à la minute de réception, "
              "enregistrés à la minute du tick : quelques secondes de décalage "
              "aux bords. « En tête » = premier élément d'un message, le seul "
-             "que la bibliothèque ajoute à son tampon.")
+             "que la bibliothèque d'origine gardait ; depuis le 31/10, le lot "
+             "entier est lu et « transmis » doit suivre « reçus ».")
     return "\n".join(l)
 
 

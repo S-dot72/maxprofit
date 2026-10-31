@@ -105,3 +105,43 @@ Vérifié sur SQLite et sur un PostgreSQL local : résultat identique, et
     (VALID, PARTIAL ou INVALID ; niveau 1 ou 2).
 - **Après le 28/10** : période potentiellement affectée, à ne pas intégrer
   automatiquement à la confirmation.
+
+## 6. Résultat (31/10, 23:44–00:44 UTC) et correction
+
+L'observation tranche pour l'explication **(a), le regroupement** :
+- 15 269 messages de ticks en une heure, sur les deux sockets ;
+- 99 % portent plusieurs paires, 20,4 éléments en moyenne ;
+- chaque paire figure dans environ 15 000 messages : le serveur envoie bien
+  les 20 paires, les abonnements sont actifs ;
+- seul l'élément de tête est transmis à l'adaptateur. AUDCAD, en tête
+  12 538 fois : 12 537 transmis. GBPAUD : 15 030 reçus, 0 transmis. Ce qui
+  est transmis est bien enregistré (12 537 transmis, 12 538 enregistrés pour
+  AUDCAD).
+
+**Correction** (`pocketoption.lecture_du_lot_entier`) : la lecture des
+messages de ticks lit le lot ENTIER. Ce qui reste inchangé :
+- le drapeau `updateStream`, remis à faux ;
+- la priorité des ordres clos ;
+- la forme des entrées du tampon ;
+- la même liste par paire, donc la position de lecture de l'adaptateur.
+
+Ce qui change : l'horloge du serveur prend l'instant le plus récent du lot.
+Un élément qui n'est pas `[actif, instant, prix]` est ignoré. Tout autre
+message est remis à la bibliothèque d'origine. Ni réabonnement, ni
+stratégie, ni séries.
+
+**Tests** (`tests/test_lot_de_ticks.py`) :
+- la logique d'origine de la bibliothèque est recopiée ;
+- sans la correction, seule la tête est gardée ;
+- avec la correction, le lot entier est gardé ;
+- un message d'un seul tick est traité exactement comme avant ;
+- les autres messages restent à la bibliothèque ;
+- de bout en bout, reçus = transmis.
+
+**À vérifier après le déploiement**, avec l'observation passive gardée en
+place :
+- « transmis » doit suivre « reçus » pour les 20 paires ;
+- les paires muettes doivent redevenir ACTIVE en moins d'une demi-heure.
+
+Les compteurs « répétés à l'identique » diront si le serveur renvoie des
+ticks inchangés dans ses lots. Un exemple d'élément malformé est affiché.
