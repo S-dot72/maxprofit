@@ -130,10 +130,13 @@ def test_les_trois_situations_sont_comptees_a_part():
     m = obs["messages"]
     assert (m["messages"], m["plusieurs_ticks"], m["plusieurs_paires"],
             m["meme_paire_repetee"], m["max_elements"]) == (3, 2, 1, 1, 2)
+    # Le second tick de A est identique au premier : une répétition.
     assert obs["paires"]["A_otc"] == {"recus": 2, "messages": 2,
-                                      "en_tete": 2, "transmis": 0}
+                                      "en_tete": 2, "transmis": 0,
+                                      "repetes": 1}
     assert obs["paires"]["B_otc"] == {"recus": 1, "messages": 1,
-                                      "en_tete": 0, "transmis": 0}
+                                      "en_tete": 0, "transmis": 0,
+                                      "repetes": 0}
     assert obs["paires"]["C_otc"]["recus"] == 2
     assert obs["paires"]["C_otc"]["en_tete"] == 1
     assert obs["sockets"] == 1
@@ -167,7 +170,8 @@ def test_recus_contre_transmis_montre_ce_que_la_bibliotheque_ne_garde_pas():
     obs = observation.instantane(T0 - 60, T0 + 60)
     assert obs["paires"]["A_otc"]["transmis"] == 10
     assert obs["paires"]["B_otc"] == {"recus": 10, "messages": 10,
-                                      "en_tete": 0, "transmis": 0}
+                                      "en_tete": 0, "transmis": 0,
+                                      "repetes": 0}
     # Le tampon de la bibliothèque n'a rien perdu par l'observation.
     assert len(client.pairs["A_otc"]["ticks"]) == 10
 
@@ -229,10 +233,11 @@ def test_le_texte_de_l_etat_compare_les_trois_niveaux():
     obs = observation.instantane(T0 // 60 * 60, T0 // 60 * 60 + 60)
     texte = dp.texte_observation(obs, {"A_otc": 5, "B_otc": 0},
                                  ["A_otc", "B_otc"])
-    assert ("- B_otc : reçus 5 (dans 5 messages, en tête 0) → transmis 0 → "
-            "enregistrés 0 · ⚠ 5 reçus non transmis") in texte
-    assert "- A_otc : reçus 5 (dans 5 messages, en tête 5) → transmis 5 → " \
-        "enregistrés 5" in texte
+    assert ("- B_otc : reçus 5 (dans 5 messages, en tête 0, répétés à "
+            "l'identique 4) → transmis 0 → enregistrés 0 · ⚠ 5 reçus non "
+            "transmis") in texte
+    assert ("- A_otc : reçus 5 (dans 5 messages, en tête 5, répétés à "
+            "l'identique 4) → transmis 5 → enregistrés 5") in texte
     assert "plusieurs paires : 5 (100 %)" in texte
     assert texte.index("B_otc") < texte.index("- A_otc")
 

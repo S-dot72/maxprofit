@@ -18,9 +18,11 @@ situations sont distinguées, car elles n'ont pas le même sens :
   - il porte PLUSIEURS PAIRES ;
   - il porte plusieurs ticks d'une MÊME paire.
 
-La bibliothèque n'ajoute à son tampon que le PREMIER élément d'un message, et
-seulement s'il a trois champs (pocketoptionapi `ws/client.py` l. 215-222) :
-c'est l'élément « en tête ». Trouver plusieurs éléments dans un message ne
+La bibliothèque n'ajoutait à son tampon que le PREMIER élément d'un message,
+et seulement s'il avait trois champs (pocketoptionapi `ws/client.py`
+l. 215-222) : l'élément « en tête ». Mesuré le 31/10, c'était la cause des
+paires muettes ; depuis, l'adaptateur lit le lot entier
+(`pocketoption.lecture_du_lot_entier`), et « transmis » doit suivre « reçus ». Trouver plusieurs éléments dans un message ne
 prouve pas une perte : il faut que des éléments REÇUS ne soient pas TRANSMIS.
 La comparaison des niveaux 1 et 2 le montre, ou l'infirme.
 
@@ -51,8 +53,8 @@ log = logging.getLogger(__name__)
 #: close).
 MINUTES_GARDEES = 70
 #: Indices des compteurs par paire.
-RECUS, MESSAGES, EN_TETE, TRANSMIS = range(4)
-NIVEAUX = ("recus", "messages", "en_tete", "transmis")
+RECUS, MESSAGES, EN_TETE, TRANSMIS, REPETES = range(5)
+NIVEAUX = ("recus", "messages", "en_tete", "transmis", "repetes")
 #: Compteurs des messages.
 CLES_MESSAGES = ("messages", "plusieurs_ticks", "plusieurs_paires",
                  "meme_paire_repetee", "elements", "malformes",
@@ -75,6 +77,11 @@ class ObservationFlux:
         self._cumul_messages = _vide_messages()
         self._remplacements: dict[str, int] = {}
         self._sockets: dict[int, int] = {}
+        #: Dernier (instant, prix) vu par (socket, paire) : un élément
+        #: identique au précédent est une RÉPÉTITION (le serveur renvoie-t-il
+        #: des ticks inchangés dans ses lots ?).
+        self._derniers: dict[tuple[int, str], tuple] = {}
+        self.exemple_malforme: str | None = None
 
     # --- ce que la collecte appelle -----------------------------------------
 
@@ -135,13 +142,21 @@ class ObservationFlux:
                     m["pas_une_liste"] += 1
                 return
             par_paire: dict[str, int] = {}
+            repetes: dict[str, int] = {}
             malformes = 0
             for element in liste:
                 if (isinstance(element, list) and len(element) >= 3
                         and isinstance(element[0], str)):
                     par_paire[element[0]] = par_paire.get(element[0], 0) + 1
+                    cle = (socket, element[0])
+                    valeur = (element[1], element[2])
+                    if self._derniers.get(cle) == valeur:
+                        repetes[element[0]] = repetes.get(element[0], 0) + 1
+                    self._derniers[cle] = valeur
                 else:
                     malformes += 1
+                    if self.exemple_malforme is None:
+                        self.exemple_malforme = repr(element)[:120]
             # Ce que la bibliothèque retiendra : le premier élément, s'il a
             # exactement trois champs, et seulement si son drapeau est armé.
             tete = None
@@ -166,6 +181,7 @@ class ObservationFlux:
                                  self._cumul(paire)):
                     compteur[RECUS] += n
                     compteur[MESSAGES] += 1
+                    compteur[REPETES] += repetes.get(paire, 0)
                     if paire == tete:
                         compteur[EN_TETE] += 1
 
@@ -180,10 +196,10 @@ class ObservationFlux:
         return minute
 
     def _paire(self, minute: int, paire: str) -> list[int]:
-        return self._minutes[minute]["paires"].setdefault(paire, [0, 0, 0, 0])
+        return self._minutes[minute]["paires"].setdefault(paire, [0] * 5)
 
     def _cumul(self, paire: str) -> list[int]:
-        return self._cumul_paires.setdefault(paire, [0, 0, 0, 0])
+        return self._cumul_paires.setdefault(paire, [0] * 5)
 
     def _desactiver(self, erreur: Exception) -> None:
         self.actif = False
@@ -206,8 +222,8 @@ class ObservationFlux:
                     messages[k] = (max(messages[k], v) if k == "max_elements"
                                    else messages[k] + v)
                 for paire, c in seau["paires"].items():
-                    total = paires.setdefault(paire, [0, 0, 0, 0])
-                    for i in range(4):
+                    total = paires.setdefault(paire, [0] * 5)
+                    for i in range(5):
                         total[i] += c[i]
             return {
                 "actif": self.actif, "erreur": self.erreur,
@@ -219,6 +235,7 @@ class ObservationFlux:
                                  for p, c in self._cumul_paires.items()},
                 "cumul_messages": dict(self._cumul_messages),
                 "remplacements": dict(self._remplacements),
+                "exemple_malforme": self.exemple_malforme,
                 "sockets": len(self._sockets),
             }
 

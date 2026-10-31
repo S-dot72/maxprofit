@@ -558,8 +558,85 @@ def envoyer_sur_le_socket(ws_client, data: str, global_value) -> bool:
         verrou.release()
 
 
+def _nombre(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def ajouter_les_ticks_du_lot(liste, pairs) -> tuple[int, int, float | None]:
+    """Ajoute au tampon de la bibliothèque CHAQUE tick d'un message de ticks,
+    et non le seul premier. Rend (ajoutés, ignorés, instant le plus récent).
+
+    ⚠ LE SERVEUR REGROUPE LES TICKS, ET LA BIBLIOTHÈQUE N'EN GARDAIT QU'UN.
+    Mesuré le 31/10 (`/etat`, observation passive) : 99 % des messages
+    portent plusieurs paires, environ 20 éléments chacun, chaque paire dans
+    15 000 messages par heure ; la bibliothèque n'ajoutait que l'élément de
+    tête (`ws/client.py` l. 215-222). GBPAUD : 15 030 reçus, 0 transmis. Seules
+    les paires souvent en tête (AUDCAD, EURUSD) avaient encore des bougies.
+
+    Un élément est un tick s'il a exactement trois champs : un actif (texte),
+    un instant et un prix (nombres) — la forme que la bibliothèque attend. Le
+    reste est ignoré et compté, jamais deviné. Le tampon d'une paire est la
+    MÊME liste qu'avant (l'adaptateur y garde sa position de lecture) ; elle
+    n'est créée que si elle manque."""
+    ajoutes = ignores = 0
+    plus_recent = None
+    for element in liste:
+        if not (isinstance(element, list) and len(element) == 3
+                and isinstance(element[0], str) and _nombre(element[1])
+                and _nombre(element[2])):
+            ignores += 1
+            continue
+        actif, instant, prix = element
+        entree = pairs.get(actif)
+        if entree is None:
+            entree = pairs[actif] = {"ticks": [], "history": []}
+        entree.setdefault("ticks", []).append({"time": instant,
+                                               "price": prix})
+        ajoutes += 1
+        if plus_recent is None or instant > plus_recent:
+            plus_recent = instant
+    return ajoutes, ignores, plus_recent
+
+
+def lecture_du_lot_entier(original, global_value):
+    """Le `on_message` de la bibliothèque, sauf pour les messages de ticks :
+    ceux-là sont lus EN ENTIER (`ajouter_les_ticks_du_lot`).
+
+    Seul change ce que la bibliothèque faisait d'un message de ticks : même
+    drapeau (`updateStream`, remis à faux), même priorité des ordres clos
+    (`updateClosedDeals`) sur les ticks, même forme des entrées du tampon,
+    même horloge du serveur (l'instant le plus récent du lot, au lieu de
+    celui de la tête). Tout autre message lui est remis tel quel."""
+    async def on_message(self, message):
+        if (type(message) is bytes and getattr(self, "updateStream", False)
+                and not getattr(self, "updateClosedDeals", False)):
+            try:
+                contenu = json.loads(message.decode("utf-8"))
+            except Exception:                            # noqa: BLE001
+                contenu = None
+            if (isinstance(contenu, list) and "balance" not in contenu
+                    and "requestId" not in contenu):
+                self.updateStream = False
+                _, ignores, plus_recent = ajouter_les_ticks_du_lot(
+                    contenu, global_value.pairs)
+                if plus_recent is not None:
+                    try:
+                        self.api.time_sync.server_timestamp = plus_recent
+                    except Exception:                    # noqa: BLE001
+                        pass
+                if ignores:
+                    log.debug("Message de ticks : %d élément(s) ignoré(s) "
+                              "(forme inattendue).", ignores)
+                return None
+        return await original(self, message)
+
+    on_message._maxprofit = True
+    return on_message
+
+
 def installer_connexion_maitrisee() -> None:
-    """Remplace `WebsocketClient.connect` de la bibliothèque. Idempotent."""
+    """Remplace `WebsocketClient.connect` de la bibliothèque, et sa lecture
+    des messages de ticks (`lecture_du_lot_entier`). Idempotent."""
     try:
         import json
         import ssl
@@ -599,6 +676,12 @@ def installer_connexion_maitrisee() -> None:
     connect._maxprofit = True
     module_ws.WebsocketClient.connect = connect
     PocketOptionAPI.send_websocket_request = send_websocket_request
+    # La lecture d'origine des messages, si la bibliothèque en a une : le lot
+    # de ticks est lu en entier, tout le reste lui est remis.
+    origine = getattr(module_ws.WebsocketClient, "on_message", None)
+    if origine is not None and not getattr(origine, "_maxprofit", False):
+        module_ws.WebsocketClient.on_message = lecture_du_lot_entier(
+            origine, global_value)
 
 
 #: La table des adresses TELLE QU'ELLE ÉTAIT, avant qu'on y touche.
