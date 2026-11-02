@@ -443,6 +443,9 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._micro_selection: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._selection_en_cours: asyncio.Task | None = None
+        #: `() -> (texte, bloquée) | None` : où en est la passe en cours.
+        self._avancement_selection: Callable[[], tuple[str, bool] | None] \
+            | None = None
         #: `argument -> (rapport, fichiers)` : l'historique des ticks par
         #: paire et par heure, en lecture seule, en tâche de fond.
         self._historique_ticks: Callable[[str], Awaitable[tuple[
@@ -732,11 +735,20 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             elif self._micro_selection is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
             elif (self._selection_en_cours is not None
-                  and not self._selection_en_cours.done()):
+                  and not self._selection_en_cours.done()
+                  and not self._selection_bloquee()):
+                etat = (self._avancement_selection()
+                        if self._avancement_selection else None)
                 await self.client.envoyer(
-                    chat, "🧪 La passe de sélection est déjà en cours.",
-                    CLAVIER)
+                    chat, "🧪 La passe de sélection est déjà en cours."
+                    + (f"\n{etat[0]}" if etat else ""), CLAVIER)
             else:
+                if (self._selection_en_cours is not None
+                        and not self._selection_en_cours.done()):
+                    await self.client.envoyer(
+                        chat, "🧪 La passe précédente ne progresse plus "
+                        "depuis plus de 15 min (requête bloquée) : nouvelle "
+                        "passe.", CLAVIER)
                 await self.client.envoyer(
                     chat, "🧪 Passe de sélection lancée (lecture seule, sur "
                     "la relève ; une demi-heure environ). Le rapport et les "
@@ -860,6 +872,11 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
             await self.client.envoyer(chat, AIDE, CLAVIER)
 
     # --- inscription --------------------------------------------------------
+
+    def _selection_bloquee(self) -> bool:
+        etat = (self._avancement_selection()
+                if self._avancement_selection else None)
+        return bool(etat and etat[1])
 
     async def _envoyer_en_fond(self, chat: str, appel, argument: str,
                                libelle: str) -> None:

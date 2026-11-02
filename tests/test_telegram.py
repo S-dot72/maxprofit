@@ -740,6 +740,40 @@ def test_micro_selection_tourne_en_tache_de_fond_et_envoie_ses_fichiers(
     assert documents == ["parametres_gel2.json"]
 
 
+def test_micro_selection_dit_ou_elle_en_est_et_se_relance_si_bloquee(
+        tmp_path):
+    client = FauxClient()
+    bot = _bot(client, annuaire=_annuaire(tmp_path,
+                                          inscrits=((CHAT, "admin"),)))
+    appels, etat = [], {"bloquee": False}
+    feu = asyncio.Event()
+
+    async def micro_selection(argument):
+        appels.append(argument)
+        await feu.wait()
+        return "passe", []
+
+    bot._micro_selection = micro_selection
+    bot._avancement_selection = lambda: (
+        "Étape « lecture des paires-jours » : 120/340", etat["bloquee"])
+
+    async def scenario():
+        await bot._traiter(_message("/micro_selection")["message"])
+        await asyncio.sleep(0)
+        await bot._traiter(_message("/micro_selection")["message"])
+        assert "déjà en cours" in client.envoyes[-1][1]
+        assert "120/340" in client.envoyes[-1][1]
+        etat["bloquee"] = True
+        await bot._traiter(_message("/micro_selection")["message"])
+        assert any("ne progresse plus" in t for _, t in client.envoyes)
+        await asyncio.sleep(0)
+        assert len(appels) == 2, "une nouvelle passe est lancée"
+        feu.set()
+        await bot._selection_en_cours
+
+    asyncio.run(scenario())
+
+
 def test_historique_ticks_tourne_en_tache_de_fond(tmp_path):
     client = FauxClient()
     documents = []

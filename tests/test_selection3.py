@@ -319,3 +319,40 @@ def test_le_payout_est_celui_connu_avant_la_decision():
     assert selection3.payout_a(releves, 50) is None
     assert selection3.payout_a(releves, 200) == 92.0
     assert selection3.payout_a(releves, 201) == 90.0
+
+
+def test_l_avancement_suit_la_passe_jusqu_a_la_fin(bases):
+    active, releve = bases
+
+    class Suivi(selection3.Progres):
+        def __init__(self):
+            super().__init__()
+            self.etapes = []
+
+        def noter(self, etape, fait=0, total=0):
+            super().noter(etape, fait, total)
+            self.etapes.append((etape, fait, total))
+
+    suivi = Suivi()
+    _passe(releve, active, progres=suivi)
+    noms = [e for e, _, _ in suivi.etapes]
+    assert noms[0] == "vérification de la copie"
+    lectures = [(f, t) for e, f, t in suivi.etapes
+                if e == "lecture des paires-jours"]
+    assert lectures[-1] == (6, 6)
+    assert "modèles du gel" in noms
+    assert any(e.startswith("criblage exploratoire") for e in noms)
+    assert noms[-1] == "envoi du rapport" and suivi.finie
+
+
+def test_une_passe_sans_progression_est_dite_bloquee():
+    horloge = {"t": 1000.0}
+    progres = selection3.Progres(horloge=lambda: horloge["t"])
+    progres.noter("lecture des paires-jours", 3, 10)
+    horloge["t"] += selection3.BLOCAGE_SEC - 1
+    assert not progres.bloquee()
+    assert "3/10" in progres.texte()
+    horloge["t"] += 2
+    assert progres.bloquee()
+    progres.finie = True
+    assert not progres.bloquee()

@@ -76,6 +76,40 @@ PLAFOND_SIGNAUX = em.REGARDS[-1]
 #: processus.
 RESPIRATION_SEC = 0.02
 
+#: Sans progression pendant ce temps, la passe est réputée bloquée (une
+#: requête qui ne revient pas) : /micro_selection peut la relancer.
+BLOCAGE_SEC = 15 * 60
+
+
+class Progres:
+    """Où en est la passe, lu par /micro_selection pendant qu'elle tourne.
+    Chaque paire-jour lu, chaque modèle ajusté le met à jour."""
+
+    def __init__(self, horloge=time.time) -> None:
+        self._horloge = horloge
+        self.debut = self.maj = horloge()
+        self.etape, self.fait, self.total = "démarrage", 0, 0
+        self.finie = False
+
+    def noter(self, etape: str, fait: int = 0, total: int = 0) -> None:
+        if etape != self.etape or (total and fait % 20 == 0):
+            log.info("Passe de sélection : %s %s(%.0f min)", etape,
+                     f"{fait}/{total} " if total else "",
+                     (self._horloge() - self.debut) / 60)
+        self.etape, self.fait, self.total = etape, fait, total
+        self.maj = self._horloge()
+
+    def bloquee(self) -> bool:
+        return not self.finie and self._horloge() - self.maj > BLOCAGE_SEC
+
+    def texte(self) -> str:
+        maintenant = self._horloge()
+        avance = (f" : {self.fait}/{self.total}" if self.total else "")
+        return (f"Étape « {self.etape} »{avance} ; lancée il y a "
+                f"{(maintenant - self.debut) / 60:.0f} min, dernière "
+                f"progression il y a {maintenant - self.maj:.0f} s.")
+
+
 REQUETES_COPIE: dict[str, str] = {
     "tick_paths": (
         "SELECT pair, minute_sec / 86400, COUNT(*), SUM(n_ticks), "
@@ -238,11 +272,13 @@ ATTENDRE_LE_REJEU = (
 
 def selection(releve, active, course, *, nom_lecture: str = "relève",
               maintenant: float | None = None, code: str | None = None,
-              respirer=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+              respirer=None, progres: Progres | None = None
+              ) -> tuple[str, list[tuple[bytes, str, str]]]:
     """(rapport, fichiers). `releve` : la base lue (déjà en lecture seule) ;
     `active` : la base de référence de la copie, ou None."""
     maintenant = time.time() if maintenant is None else maintenant
     respirer = respirer or (lambda: time.sleep(RESPIRATION_SEC))
+    progres = progres or Progres()
     t0 = time.monotonic()
     memoire = getattr(course, "rejeu_en_memoire", None)
     niveaux = getattr(course, "niveaux_en_memoire", None)
@@ -273,6 +309,7 @@ def selection(releve, active, course, *, nom_lecture: str = "relève",
     fin = em.FIN_VALIDATION
 
     # La copie, vérifiée par paire × jour.
+    progres.noter("vérification de la copie")
     t = time.monotonic()
     copie: dict[str, Any] = {"verifiee": reference is not None}
     divergents: set = set()
@@ -300,7 +337,8 @@ def selection(releve, active, course, *, nom_lecture: str = "relève",
     resultats, lignes, lus = [], [], Counter()
     variantes = [m for m in MESURES if m != (TRAITEMENT, K)]
     t = time.monotonic()
-    for paire, jour in sorted(par_pj):
+    for rang, (paire, jour) in enumerate(sorted(par_pj), 1):
+        progres.noter("lecture des paires-jours", rang, len(par_pj))
         sur_releve = (reference is None or
                       lu_sur_la_releve(divergents, paire, jour))
         conn = lue if sur_releve else reference
@@ -323,7 +361,7 @@ def selection(releve, active, course, *, nom_lecture: str = "relève",
     lignes.sort(key=lambda x: (x["decision"], x["paire"]))
     controles = controler(resultats, lignes)
     t = time.monotonic()
-    calcul = calculer(lignes, respirer=respirer)
+    calcul = calculer(lignes, respirer=respirer, progres=progres)
     duree_calcul = time.monotonic() - t
 
     entrees = hashlib.sha256(json.dumps(
@@ -348,6 +386,8 @@ def selection(releve, active, course, *, nom_lecture: str = "relève",
     document = None
     if not controles["arrets"]:
         document = document_du_gel(resume, controles, calcul)
+    progres.noter("envoi du rapport")
+    progres.finie = True
     return (texte(resume, controles, calcul, document),
             fichiers(lignes, calcul, document))
 
@@ -428,8 +468,8 @@ def controler(resultats: Sequence[dict], lignes: Sequence[dict]
             "arrets": arrets}
 
 
-def calculer(lignes: Sequence[dict], respirer=lambda: None
-             ) -> dict[str, Any]:
+def calculer(lignes: Sequence[dict], respirer=lambda: None,
+             progres: Progres | None = None) -> dict[str, Any]:
     """Retrait, terciles, préparation, modèles du gel ; puis, à part, le
     criblage exploratoire."""
     exploration = [x for x in lignes if x["periode"] == em.EXPLORATION
@@ -468,6 +508,8 @@ def calculer(lignes: Sequence[dict], respirer=lambda: None
 
     # 4. Modèles, sur exploration + validation, puis figés.
     modeles: dict[str, dict[str, Any]] = {}
+    if progres is not None:
+        progres.noter("modèles du gel")
     for egal in EGALITES:
         y = "y" if egal == "exclues" else "y_perdues"
         jeu = [x for x in selection_ if x[y] is not None]
@@ -532,7 +574,10 @@ def calculer(lignes: Sequence[dict], respirer=lambda: None
             continue
         m0 = ajuster(p0x, app, y)
         ref = [m0.proba(p0x.vecteur(x)) for x in jug]
-        for c in retenues:
+        for rang, c in enumerate(retenues, 1):
+            if progres is not None:
+                progres.noter(f"criblage exploratoire à {horizon} s", rang,
+                              len(retenues))
             if c in principales:
                 continue
             pc = sous_preparation(prep_x, [*em.REFERENCE_NUMERIQUES, c])

@@ -218,3 +218,17 @@ def test_le_service_refuse_sans_releve(tmp_path):
     assert "Aucune relève" in texte and fichiers == []
     texte, _ = _historique_ticks(tmp_path / "x.db", None, "99", environ={})
     assert "Jours illisibles" in texte
+
+
+def test_le_service_de_bout_en_bout_sur_la_releve(bases):
+    """Le chemin réel du service : relève et active ouvertes en lecture
+    seule, aucun réglage PostgreSQL envoyé à une base SQLite."""
+    from maxprofit.hosting import service
+    from maxprofit.store import pool
+    active, releve = bases
+    avant = (_empreinte(active), _empreinte(releve))
+    texte, fichiers = service._historique_ticks(
+        active, None, "2", environ={pool.ENV_RELEVE: str(releve)},
+        ouvrir_url=lambda url: open_read_only(url))
+    assert "Historique des ticks" in texte and len(fichiers) == 2
+    assert (_empreinte(active), _empreinte(releve)) == avant
