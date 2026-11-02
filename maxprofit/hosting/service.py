@@ -67,6 +67,10 @@ ENV_CODE_ADMIN = "TELEGRAM_ACCESS_CODE"
 
 log = logging.getLogger("hosting.service")
 
+#: Au-delà, le serveur interrompt une requête des diagnostics en lecture
+#: seule (passe de sélection, historique des ticks).
+DELAI_MAX_REQUETE_SEC = 600
+
 
 def _verifier_emplacement_base(db: Path) -> None:
     """Avertit si la base vit dans le répertoire de code (§1.1).
@@ -368,6 +372,7 @@ async def _servir(args) -> int:
             bot._micro_selection = lambda argument: asyncio.to_thread(
                 _micro_selection, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._avancement_selection = _avancement_selection
             bot._historique_ticks = lambda argument: asyncio.to_thread(
                 _historique_ticks, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
@@ -832,22 +837,38 @@ def _micro_essai(chemin, course, argument: str
                 [])
 
 
+#: L'avancement de la passe de sélection en cours (une à la fois).
+_PASSE_EN_COURS: dict = {}
+
+
+def _avancement_selection() -> tuple[str, bool] | None:
+    """(texte, bloquée) de la passe en cours, pour /micro_selection."""
+    progres = _PASSE_EN_COURS.get("progres")
+    if progres is None or progres.finie:
+        return None
+    return progres.texte(), progres.bloquee()
+
+
 def _micro_selection(chemin, course, argument: str, environ=None,
                      ouvrir_url=None
                      ) -> tuple[str, list[tuple[bytes, str, str]]]:
     """`/micro_selection` : la passe de sélection de l'étape 3, en lecture
     seule. Elle lit la RELÈVE (son propre quota de transfert), et vérifie la
     copie sur l'active ; `/micro_selection active` lit tout sur l'active."""
-    from maxprofit.live.selection3 import selection
+    from maxprofit.live.selection3 import Progres, selection
     if course is None:
         return "Course indisponible.", []
-    return _sur_la_releve(
-        chemin, argument.strip().lower() == "active", "🧪", "micro_selection",
-        "Passe de sélection",
-        lambda lue, active, nom: selection(lue, active, course,
-                                           nom_lecture=nom,
-                                           code=version_deployee.commit()),
-        environ, ouvrir_url)
+    progres = _PASSE_EN_COURS["progres"] = Progres()
+    try:
+        return _sur_la_releve(
+            chemin, argument.strip().lower() == "active", "🧪",
+            "micro_selection", "Passe de sélection",
+            lambda lue, active, nom: selection(
+                lue, active, course, nom_lecture=nom,
+                code=version_deployee.commit(), progres=progres),
+            environ, ouvrir_url)
+    finally:
+        progres.finie = True
 
 
 def _historique_ticks(chemin, course, argument: str, environ=None,
@@ -897,6 +918,11 @@ def _sur_la_releve(chemin, sur_l_active: bool, pastille: str, commande: str,
         conn = faire()
         ouvertes.append(conn)
         lecture_seule(conn)
+        if postgres.est_postgres(conn):
+            # Une requête qui ne revient pas ne doit pas figer la passe :
+            # le serveur l'interrompt, et l'erreur est rapportée.
+            conn.execute(f"SET statement_timeout = "
+                         f"'{DELAI_MAX_REQUETE_SEC}s'")
         return conn
 
     try:
