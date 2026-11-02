@@ -112,3 +112,22 @@ Les étapes suivantes possibles :
 - la confirmation de H1 et H2, pré-inscrite ;
 - la pré-inscription éventuelle de la piste « paires en USD » ;
 - d'autres familles de signaux que ZoneH1.
+
+## 6. Corrections apportées par l'audit du 02/11
+
+Voir `docs/etape3_audit_gel2.md`. Le §4 ci-dessus est corrigé sur trois
+points.
+- **Rendement** : le « +6 à +8 % » supposait un payout de 92 % pour tous les
+  signaux. Le payout observé à la décision a une médiane de 82 %. Au payout
+  observé, les paires USD rapportent −1,9 % par mise sur l'ensemble des
+  signaux.
+- **Piste USD** : dans la population jouable (payout au maximum), le groupe
+  USD ne se distingue pas d'un groupe quelconque de 7 paires (permutation,
+  p = 0,13). En exploration seule, il n'avait rien de particulier.
+- **Nombre de signaux** : les « 1 300 signaux » ignoraient la dépendance
+  entre signaux d'une même paire et d'un même jour (effet de plan de 1,8 à
+  2,5) et prenaient l'effet observé pour vrai. Un test honnête demande de
+  1 100 à 3 200 signaux selon l'effet réel supposé, soit de 2 à 5 mois.
+
+Les données, les frontières et les paramètres du gel 2 sont confirmés
+identiques par un recalcul indépendant.
