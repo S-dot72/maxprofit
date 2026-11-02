@@ -8,6 +8,13 @@ importation du projet, à partir du seul selection_signaux.csv rendu par
         docs/etape3_parametres_gel2.json
 
 Rien n'est lu en base, rien n'est écrit.
+
+⚠ ERRATUM du 02/11 : la colonne `payout` du CSV est le payout du FLUX (la
+table `payouts`), pas le payout appliqué. Le broker applique
+min(flux + 8, 92) (règle mesurée, `maxprofit/core/payout.py`, recopiée ici
+pour garder l'outil indépendant), et la course entre dès que le flux vaut 84
+(`au_plafond`). La première version prenait le flux pour le payout appliqué
+et la population « flux = 92 » pour la population jouable.
 """
 
 from __future__ import annotations
@@ -25,6 +32,10 @@ FIN_EXPLO = 1792540800       # 2026-10-21T00:00:00Z
 FIN_VALID = 1793145600       # 2026-10-28T00:00:00Z
 OUVERTURE_CONF = 1794096000  # 2026-11-03T00:00:00Z
 PAYOUT_NOMINAL = 0.92
+#: La règle du broker (core/payout.py) : payout appliqué = min(flux + 8, 92).
+BONUS_PCT, PLAFOND_PCT = 8, 92
+#: Flux à partir duquel l'appliqué vaut le plafond : le filtre de la course.
+FLUX_JOUABLE = PLAFOND_PCT - BONUS_PCT   # 84
 POINT_MORT = 1 / (1 + PAYOUT_NOMINAL)
 USD = lambda p: "USD" in p          # noqa: E731
 GRAINE, TIRAGES = 7, 2000
@@ -249,19 +260,29 @@ def ic(stat, groupes, cle):
     return tirs[int(0.025 * TIRAGES)], tirs[int(0.975 * TIRAGES) - 1], tirs
 
 
+def applique(flux):
+    """Le payout appliqué par le broker, en fraction, depuis celui du flux."""
+    return min(float(flux) + BONUS_PCT, PLAFOND_PCT) / 100
+
+
+def jouable(r):
+    """Le filtre de la course : flux ≥ 84, donc payout appliqué de 92 %."""
+    return r["payout"] not in ("",) and float(r["payout"]) >= FLUX_JOUABLE
+
+
 def rendement(j):
-    """Rendement moyen par mise au payout OBSERVÉ de chaque signal."""
-    vals = [(float(r["payout"]) / 100 if int(r["y"]) else -1.0)
+    """Rendement moyen par mise au payout APPLIQUÉ de chaque signal."""
+    vals = [(applique(r["payout"]) if int(r["y"]) else -1.0)
             for r in j if r["payout"] not in ("",)]
     return sum(vals) / len(vals) if vals else float("nan")
 
 
 def incertitude(gardees):
-    titre("D. USD / non-USD : taux, rendement aux payouts observés, IC selon "
+    titre("D. USD / non-USD : taux, rendement aux payouts appliqués, IC selon "
           "trois regroupements")
     pays = [float(r["payout"]) for r in gardees if r["payout"]]
     manquants = sum(1 for r in gardees if not r["payout"])
-    print(f"- payouts observés : min {min(pays):.0f} %, médiane "
+    print(f"- payouts du FLUX : min {min(pays):.0f} %, médiane "
           f"{mediane(pays):.0f} %, max {max(pays):.0f} % ; manquants : "
           f"{manquants}")
     for per in ("exploration", "validation", "les deux"):
@@ -269,7 +290,7 @@ def incertitude(gardees):
         u = [r for r in j if USD(r["paire"])]
         a = [r for r in j if not USD(r["paire"])]
         print(f"\n**{per}** — USD : {taux(u):.1%} (n={len(u)}), rendement "
-              f"observé {rendement(u):+.1%} ; autres : {taux(a):.1%} "
+              f"appliqué {rendement(u):+.1%} ; autres : {taux(a):.1%} "
               f"(n={len(a)}), rendement {rendement(a):+.1%} ; écart "
               f"{taux(u) - taux(a):+.1%}")
         for nom, cle in (("paire × jour", bloc_pj), ("jour", bloc_jour),
@@ -348,11 +369,11 @@ def puissance(deff, par_jour):
 
 
 def plafond(gardees):
-    titre("H. Population jouable : signaux au payout maximum (≥ 92 %)")
-    print("La course n'entre qu'au payout maximum : ce filtre est antérieur "
-          "à toute analyse.")
+    titre("H. Population jouable : flux ≥ 84, payout appliqué de 92 %")
+    print("La course n'entre qu'au payout maximum (`au_plafond` : flux ≥ 84) "
+          ": ce filtre est antérieur à toute analyse.")
     for per in ("exploration", "validation", "les deux"):
-        j = [r for r in gardees if float(r["payout"]) >= 92
+        j = [r for r in gardees if jouable(r)
              and (per == "les deux" or r["periode"] == per)]
         u = [r for r in j if USD(r["paire"])]
         a = [r for r in j if not USD(r["paire"])]
@@ -362,10 +383,20 @@ def plafond(gardees):
               f"rendement {rendement(u):+.1%}, IC paire × jour "
               f"{lo:+.1%}–{hi:+.1%}) ; autres {taux(a):.1%} (n={len(a)}, "
               f"rendement {rendement(a):+.1%})")
-    reste = [r for r in gardees if float(r["payout"]) < 92]
-    print(f"- signaux sous le plafond : {taux(reste):.1%} (n={len(reste)}, "
-          f"rendement observé {rendement(reste):+.1%})")
-    jouables = [r for r in gardees if float(r["payout"]) >= 92]
+    lo, hi, _ = ic(rendement, [[r for r in gardees if jouable(r)]], bloc_pj)
+    lo_t, hi_t, _ = ic(taux, [[r for r in gardees if jouable(r)]], bloc_pj)
+    print(f"- jouables, les deux périodes : taux IC paire × jour "
+          f"{lo_t:.1%}–{hi_t:.1%} ; rendement IC {lo:+.1%}–{hi:+.1%}")
+    reste = [r for r in gardees if not jouable(r)]
+    print(f"- signaux sous le plafond (flux < 84) : {taux(reste):.1%} "
+          f"(n={len(reste)}, rendement appliqué {rendement(reste):+.1%})")
+    # Découpage APRÈS COUP, sans valeur de règle : les deux paient 92 %.
+    for nom, garde in (("flux = 92", lambda r: float(r["payout"]) >= 92),
+                       ("flux 84 à 91", lambda r: float(r["payout"]) < 92)):
+        j = [r for r in gardees if jouable(r) and garde(r)]
+        print(f"- dont {nom} (découpage après coup) : {taux(j):.1%} "
+              f"(n={len(j)}, rendement {rendement(j):+.1%})")
+    jouables = [r for r in gardees if jouable(r)]
     permutation(jouables)
 
 
@@ -386,8 +417,8 @@ def main(chemin_csv, chemin_doc):
     puissance(deff, par_jour)
     plafond(gardees)
     print("\n# Mêmes calculs (F, G) sur la population jouable : paires USD "
-          "au payout maximum")
-    jouables = [r for r in gardees if float(r["payout"]) >= 92]
+          "au flux ≥ 84")
+    jouables = [r for r in gardees if jouable(r)]
     deff_j, par_jour_j = effet_de_plan(jouables)
     puissance(deff_j, par_jour_j)
 

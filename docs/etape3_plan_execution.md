@@ -565,6 +565,7 @@ brouillon.
 | 4 bis. Diagnostic du transfert | mesuré le 28/10 ; corrections A (sonde) et B (synchronisation) déployées ensemble le 29/10, 24 h de mesure à suivre (`docs/transfert_diagnostic.md`) |
 | 5. Gel des 2 hypothèses | **fait le 29/10** : empreinte `3e415576…a7a83e` (`docs/etape3_registre.md` §5) |
 | 6. Passe de sélection, puis gel des paramètres | **faite le 01/11** (`/micro_selection`) ; gel 2 commité le 02/11, empreinte `b64a289e…a0a5` ; confirmation ouverte le 03/11 à 00:00 UTC. Résultats : `docs/etape3_selection_resultats.md` |
+| 6 bis. Audit des résultats, puis rapprochement du proxy et des ordres réels | audit fait le 02/11, avec son erratum (`docs/etape3_audit_gel2.md`) ; piste USD NON gelée, exploratoire ; `/rapprochement` en lecture seule (`docs/rapprochement_proxy_ordres.md`). Aucune nouvelle hypothèse avant son rapport |
 
 ## 13 bis. La passe de sélection : `/micro_selection` (admin)
 
@@ -627,3 +628,5 @@ SQLite).
 | `maxprofit/apprentissage/audit_ticks.py` | option `garder_classes` (concordance minute par minute) |
 | `tests/test_disponibilite_collecte.py`, `tests/test_microstructure_pre.py`, `tests/test_etude_micro.py`, `tests/test_etude3.py`, `tests/test_selection3.py` | disponibilité, définitions, anti-fuite, protocole, bout en bout |
 | `docs/etape3_registre.md` | registre et pré-inscription |
+| `maxprofit/live/rapprochement.py`, `tests/test_rapprochement.py` | `/rapprochement` : chaque signal du rejeu face à l'ordre réel, lecture seule |
+| `outils/audit_gel2.py`, `docs/etape3_audit_gel2.md` | audit indépendant du gel 2 (erratum du payout appliqué) |

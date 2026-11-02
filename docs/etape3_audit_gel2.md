@@ -9,6 +9,14 @@ Demandé le 02/11, avant toute nouvelle expérience. L'audit est **indépendant*
 Il corrige trois affirmations du rapport du 02/11
 (`docs/etape3_selection_resultats.md`, §4).
 
+> **Erratum du 02/11, même jour.** La première version de cet audit
+> prenait la colonne `payout` pour le payout appliqué. C'est le payout du
+> **flux** (table `payouts`). Le broker applique **min(flux + 8, 92)**
+> (règle mesurée sans exception sur des ordres réels, `core/payout.py`), et
+> la course entre dès que le flux vaut **84** (`au_plafond`). Les §3 à §6
+> sont corrigés ; `outils/audit_gel2.py` aussi. Les §1 et §2 ne changent
+> pas.
+
 ## 1. Cohérence des données : conforme
 
 - **1 806 signaux**, sans doublon (paire, décision).
@@ -38,23 +46,32 @@ Le code indépendant redonne exactement les paramètres du gel :
 | Préparation (médianes, moyennes, écarts) | 10⁻¹³ |
 | 45 coefficients du modèle de référence M0 (1 733 signaux) | 2·10⁻¹⁵ |
 
-## 3. Rendement aux payouts réellement observés : CORRECTION
+## 3. Rendement aux payouts réellement appliqués : CORRECTION
 
 Le rapport supposait un payout de 92 % pour tous les signaux. Or le payout
-relevé à la décision a une **médiane de 82 %** (entre 20 et 92 %). Seuls
-**620 signaux sur 1 733 (36 %) sont au maximum de 92 %**.
+du flux relevé avant la décision a une **médiane de 82 %** (entre 20 et
+92 %). Le payout appliqué vaut min(flux + 8, 92) : il atteint 92 % dès un
+flux de 84. **829 signaux sur 1 733 (48 %) sont jouables**, au sens du filtre
+de la course.
 
-| Population | Taux de gain | Rendement par mise au payout observé |
+| Population | Taux de gain | Rendement par mise au payout appliqué |
 |---|---|---|
-| tous les signaux | 52,6 % | négatif |
-| sous le plafond (payout < 92 %) | 50,7 % (1 113) | **−16,1 %** |
-| **au plafond** (payout ≥ 92 %) | **56,0 %** (620) | **+7,5 %** |
-| — exploration | 54,9 % (377) | +5,4 % |
-| — validation | 57,6 % (243) | +10,6 % |
+| tous les signaux | 52,6 % (1 733) | −5,3 % |
+| sous le plafond (flux < 84) | 51,2 % (904) | **−13,5 %** |
+| **jouables** (flux ≥ 84, payout de 92 %) | **54,0 %** (829) | **+3,8 %** |
+| — exploration | 54,4 % (493) | +4,4 % |
+| — validation | 53,6 % (336) | +2,9 % |
+| — IC 95 %, blocs paire × jour | 50,1 à 58,1 % | −3,9 à +11,6 % |
 
-La course n'entre qu'au payout maximum. Ce filtre est **antérieur à toute
-analyse**, donc la population au plafond est la population jouable définie a
-priori. Les rendements « +6 à +8 % » du rapport ne valent que pour elle.
+Le filtre de la course est **antérieur à toute analyse** : les jouables
+sont la population définie a priori. Leur rendement n'est pas
+significativement positif.
+
+**Découpage après coup, sans valeur de règle.** Parmi les jouables, ceux au
+flux de 92 gagnent 56,0 % (620), ceux au flux de 84 à 91 gagnent 48,3 %
+(209). Les deux paient pourtant 92 %. Ce découpage a été vu en regardant les
+résultats : la première version de cet audit le présentait à tort comme le
+filtre de la course.
 
 **Réserve majeure** : l'issue est un PROXY (clôture de la bougie du signal,
 puis bougie complète à +900 s). La course, elle :
@@ -63,7 +80,7 @@ puis bougie complète à +900 s). La course, elle :
 - est réglée par le broker.
 
 Le `/protocole` donnait 51,1 % pour « ZoneH1 jouée ». **Il faut rapprocher
-le proxy des ordres réels**, signal par signal, avant de croire au +7,5 %.
+le proxy des ordres réels**, signal par signal, avant de croire au +3,8 %.
 
 ## 4. La piste USD : AFFAIBLIE
 
@@ -76,7 +93,7 @@ paire × jour sont la référence.
 | autres | 52,1 % (549) | 46,9 % (371) | 50,0 % (920) |
 | écart, IC paire × jour | −5,1 à +10,6 | −1,0 à +19,8 | −1,0 à +11,7 |
 | écart, IC jour | −6,9 à +12,2 | +0,3 à +21,2 | −1,3 à +13,8 |
-| rendement USD au payout observé | −2,8 % | −0,7 % | **−1,9 %** (IC −11,2 à +6,8) |
+| rendement USD au payout appliqué | −0,5 % | +1,7 % | **+0,5 %** (IC −8,9 à +9,3) |
 
 Le bootstrap par grappes de paires donne des IC plus étroits. Mais il ne
 porte que sur 7 grappes, ce qui le rend optimiste : il n'est pas retenu.
@@ -87,14 +104,19 @@ possibles de 7 paires parmi 20.
 | Population | Exploration | Validation | Les deux |
 |---|---|---|---|
 | tous les signaux | p = 0,24 | p = 0,020 | p = 0,013 |
-| **au plafond** | **p = 0,31** | **p = 0,20** | **p = 0,13** |
+| **jouables** (flux ≥ 84) | **p = 0,16** | **p = 0,14** | **p = 0,028** |
+
+**Jouables USD** : 57,3 % (412), rendement **+10,0 %** (IC paire × jour
+−1,5 à +20,9 %) ; autres jouables : 50,8 % (417), −2,4 %.
 
 **Lecture** :
-- En exploration, USD n'a rien de particulier. L'effet vient de la
-  validation, là où la piste a été remarquée.
-- Dans la population jouable, le groupe USD ne se distingue pas d'un groupe
-  quelconque de 7 paires.
-- Les p ne tiennent pas compte des autres découpages examinés avant
+- En exploration, USD n'a rien de particulier (p = 0,24 sur tous les
+  signaux, 0,16 sur les jouables). L'effet vient surtout de la validation,
+  là où la piste a été remarquée.
+- Sur les deux périodes réunies, le groupe USD jouable se distingue d'un
+  groupe quelconque de 7 paires (p = 0,028). La première version, avec le
+  mauvais payout, donnait p = 0,13.
+- Ces p ne tiennent pas compte des autres découpages examinés avant
   (paires, créneaux, 92 variables) : ils sont optimistes.
 
 ## 5. Dépendance et puissance : CORRECTION
@@ -105,39 +127,40 @@ corrélés, car ils viennent souvent de la même zone.
 | Population | Corrélation intra-bloc | Effet de plan | Taille effective |
 |---|---|---|---|
 | paires USD | 0,171 | 2,52 | 813 / 2,52 ≈ 320 |
-| paires USD au plafond | 0,158 | 1,77 | — |
+| paires USD jouables (flux ≥ 84) | 0,144 | 1,83 | 412 / 1,83 ≈ 225 |
 
 Le chiffre de « 1 300 signaux » du rapport **est faux**. Il ignorait cette
 dépendance, et prenait pour vrai l'effet observé, qui est gonflé par la
 sélection (malédiction du gagnant).
 
-**Puissance** pour la population jouable, paires USD au plafond :
-- environ 19 à 20 signaux par jour ;
-- effet de plan de 1,77 ;
+**Puissance** pour la population jouable, paires USD au flux ≥ 84 :
+- environ 26 signaux par jour ;
+- effet de plan de 1,83 ;
 - test unilatéral à 5 %, puissance de 80 % ;
 - H0 : taux ≤ 52,08 %.
 
 | Taux réel supposé | Signaux nécessaires | Durée |
 |---|---|---|
-| 58 % (l'observé, gonflé) | 763 | ≈ 40 jours |
-| 57 % | 1 111 | ≈ 58 jours |
-| 56 % | 1 760 | ≈ 92 jours |
-| 55 % | 3 184 | ≈ 157 jours |
+| 58 % (proche de l'observé, gonflé) | 788 | ≈ 31 jours |
+| 57 % | 1 148 | ≈ 44 jours |
+| 56 % | 1 818 | ≈ 70 jours |
+| 55 % | 3 292 | ≈ 128 jours |
 
 Les regards intermédiaires (O'Brien-Fleming) ajoutent quelques pour cent.
 
-## 6. Conclusions de l'audit
+## 6. Conclusions de l'audit (corrigées)
 
 1. Les données, les frontières et les paramètres du gel 2 sont **justes et
    reproductibles**. La confirmation de H1 et H2 peut s'ouvrir le 03/11.
-2. **La piste USD ne résiste pas à l'audit** comme hypothèse prioritaire :
-   - en rendement observé, elle est négative sur l'ensemble ;
-   - dans la population jouable, elle est indiscernable d'un groupe de
-     paires tiré au hasard ;
-   - un test honnête demanderait de 2 à 5 mois.
-3. **Fait nouveau** : les signaux au plafond gagnent 56,0 %, contre 50,7 %
-   pour les autres. Ce filtre est celui de la course, fixé avant l'analyse.
-   Mais c'est un proxy : la question décisive est le **rapprochement avec les
-   ordres réels**.
-4. Rien de tout cela ne justifie de passer en production ni d'engager de
+2. **La population jouable de la course** (flux ≥ 84) gagne 54,0 % au proxy,
+   soit un rendement de +3,8 % non significatif (IC −3,9 à +11,6 %).
+3. **La piste USD** reste une hypothèse née après coup :
+   - jouable, elle rapporte +10,0 % au proxy (IC −1,5 à +20,9 %) ;
+   - sa permutation donne p = 0,028 sur les deux périodes, mais 0,16 en
+     exploration seule ;
+   - un test honnête demanderait de 1 à 4 mois.
+   Décision du 02/11 : elle n'est **pas** gelée comme expérience principale.
+4. Tout repose sur un proxy. La question décisive est le **rapprochement
+   avec les ordres réels** (`/rapprochement`).
+5. Rien de tout cela ne justifie de passer en production ni d'engager de
    l'argent réel.

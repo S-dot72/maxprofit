@@ -1,12 +1,20 @@
-# Brouillon — pré-inscription de la piste « paires USD » (NON GELÉ)
+# Brouillon — pré-inscription de la piste « paires USD » (NON GELÉ, EXPLORATOIRE)
 
-Décision du 02/11 : pré-inscrire la piste USD **sans modifier la course**.
-Ce brouillon fixe tout à l'avance. Il n'est gelé (empreinte, commit) que sur
-accord explicite, et aucune donnée de la période de test n'est consultée
-avant.
+> **Statut, décision du 02/11 : NON GELÉ.** La piste USD n'est pas retenue
+> comme expérience principale ; elle reste une hypothèse exploratoire. La
+> variante recommandée (§6) a été choisie : rapprocher d'abord le proxy des
+> ordres réellement exécutés et réglés (`/rapprochement`), toutes paires,
+> sans rien changer à la course. Aucune nouvelle hypothèse avant ce
+> rapport. Ce brouillon est gardé pour mémoire.
 
-L'audit du 02/11 (`docs/etape3_audit_gel2.md`) a affaibli la piste. Une
-variante, recommandée, est proposée au §6.
+Ce brouillon fixait tout à l'avance. Il n'aurait été gelé (empreinte,
+commit) que sur accord explicite, sans consulter aucune donnée de la
+période de test.
+
+Erratum : la première version prenait le payout du flux pour le payout
+appliqué. La population jouable est **flux ≥ 84** (payout appliqué de 92 %),
+pas « payout ≥ 92 % » ; les chiffres ci-dessous sont corrigés
+(`docs/etape3_audit_gel2.md`).
 
 ## 1. Hypothèse
 
@@ -22,9 +30,9 @@ Au payout de 92 %, cela revient à un taux de gain supérieur à 52,08 %.
 - **Paires** : AUDUSD, EURUSD, GBPUSD, NZDUSD, USDCAD, USDCHF et USDJPY (OTC),
   les 7 paires collectées qui contiennent USD. Aucune n'est ajoutée ni
   retirée en cours de test.
-- **Jouable** : payout relevé avant la décision ≥ 92 %, le maximum observé.
-  Si le maximum du broker change, le test s'arrête et le dernier regard
-  devient final.
+- **Jouable** : payout du flux relevé avant la décision ≥ 84, soit un payout
+  appliqué de 92 % (`au_plafond`, le filtre de la course). Si la règle du
+  broker change, le test s'arrête et le dernier regard devient final.
 - **Issue** : le proxy du protocole. La bougie du signal est comparée à la
   bougie complète qui commence 900 s plus tard. Une égalité est exclue et
   comptée ; une issue manquante est exclue.
@@ -32,7 +40,7 @@ Au payout de 92 %, cela revient à un taux de gain supérieur à 52,08 %.
 
 ## 3. Critère, incertitude, regards
 
-- **Statistique** : le rendement moyen par mise au payout observé.
+- **Statistique** : le rendement moyen par mise au payout appliqué.
 - **Incertitude** : intervalle percentile par bootstrap de blocs paire ×
   jour, 1 000 tirages, graine 7. La p-valeur unilatérale est
   P(rendement ≤ 0).
@@ -53,19 +61,19 @@ Au payout de 92 %, cela revient à un taux de gain supérieur à 52,08 %.
 ## 4. Puissance (justification du plafond de 3 200 signaux)
 
 Paramètres mesurés par l'audit sur les paires USD jouables :
-- environ 19 à 20 signaux par jour ;
-- corrélation intra-bloc de 0,158, soit un effet de plan de 1,77.
+- environ 26 signaux par jour ;
+- corrélation intra-bloc de 0,144, soit un effet de plan de 1,83.
 
 Test unilatéral à 5 %, puissance de 80 % :
 
 | Taux réel supposé | Signaux | Durée |
 |---|---|---|
-| 58 % (observé, gonflé par la sélection) | 763 | ≈ 40 jours |
-| 57 % | 1 111 | ≈ 58 jours |
-| 56 % | 1 760 | ≈ 92 jours |
-| 55 % | 3 184 | ≈ 157 jours |
+| 58 % (proche de l'observé, gonflé par la sélection) | 788 | ≈ 31 jours |
+| 57 % | 1 148 | ≈ 44 jours |
+| 56 % | 1 818 | ≈ 70 jours |
+| 55 % | 3 292 | ≈ 128 jours |
 
-Le plafond de 3 200 signaux couvre un effet réel de 55 %. En dessous, le
+Le plafond de 3 200 signaux couvre presque un effet réel de 55 %. En dessous, le
 test ne peut pas conclure dans un délai raisonnable, et il le dira.
 
 ## 5. Interdits
@@ -77,17 +85,15 @@ test ne peut pas conclure dans un délai raisonnable, et il le dira.
 ## 6. Variante recommandée par l'audit
 
 L'audit montre trois choses :
-- dans la population jouable, le groupe USD ne se distingue pas d'un groupe
-  quelconque de 7 paires (p = 0,13) ;
-- au contraire, **toute** la population jouable (payout au maximum, filtre
-  de la course antérieur à l'analyse) gagne 56,0 %, contre 50,7 % sous le
-  plafond ;
+- la piste USD est née après coup, et ne se distingue pas en exploration
+  seule (permutation, p = 0,16 sur les jouables) ;
+- **toute** la population jouable (flux ≥ 84, filtre de la course antérieur
+  à l'analyse) gagne 54,0 % au proxy, contre 51,2 % sous le plafond ;
 - cet écart repose sur un PROXY, alors que la course entre après la
   confirmation M1, environ 2 s plus tard, au prix du broker.
 
 **Variante** : le critère principal devient « ZoneH1 jouable, toutes paires,
-rendement positif », avec environ 36 signaux par jour et un effet de plan de
-1,62. Il porte d'abord sur le **rapprochement avec les ordres réels** : même
+rendement positif ». Il porte d'abord sur le **rapprochement avec les ordres réels** : même
 signal, issue du proxy face au règlement du broker, avec le taux d'accord
 publié. La piste USD reste en analyse secondaire.
 

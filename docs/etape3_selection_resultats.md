@@ -115,19 +115,20 @@ Les étapes suivantes possibles :
 
 ## 6. Corrections apportées par l'audit du 02/11
 
-Voir `docs/etape3_audit_gel2.md`. Le §4 ci-dessus est corrigé sur trois
-points.
+Voir `docs/etape3_audit_gel2.md` (avec son erratum du même jour). Le §4
+ci-dessus est corrigé sur trois points.
 - **Rendement** : le « +6 à +8 % » supposait un payout de 92 % pour tous les
-  signaux. Le payout observé à la décision a une médiane de 82 %. Au payout
-  observé, les paires USD rapportent −1,9 % par mise sur l'ensemble des
-  signaux.
-- **Piste USD** : dans la population jouable (payout au maximum), le groupe
-  USD ne se distingue pas d'un groupe quelconque de 7 paires (permutation,
-  p = 0,13). En exploration seule, il n'avait rien de particulier.
+  signaux. La table `payouts` donne le payout du FLUX (médiane 82 %) ; le
+  broker applique min(flux + 8, 92). Au payout appliqué, les paires USD
+  rapportent +0,5 % par mise sur l'ensemble des signaux, et +10,0 % sur les
+  signaux jouables (flux ≥ 84 ; IC −1,5 à +20,9 %).
+- **Piste USD** : jouable, le groupe USD se distingue d'un groupe quelconque
+  de 7 paires sur les deux périodes (permutation, p = 0,028), mais pas en
+  exploration seule (p = 0,16), et la piste a été trouvée après coup.
 - **Nombre de signaux** : les « 1 300 signaux » ignoraient la dépendance
   entre signaux d'une même paire et d'un même jour (effet de plan de 1,8 à
   2,5) et prenaient l'effet observé pour vrai. Un test honnête demande de
-  1 100 à 3 200 signaux selon l'effet réel supposé, soit de 2 à 5 mois.
+  800 à 3 300 signaux selon l'effet réel supposé, soit de 1 à 4 mois.
 
 Les données, les frontières et les paramètres du gel 2 sont confirmés
 identiques par un recalcul indépendant.
