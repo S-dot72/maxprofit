@@ -77,3 +77,18 @@ def test_le_premier_gel_est_intact():
     doc = _doc()
     assert doc["statut"] == "gelé"
     em.exiger_le_gel(doc, em.EMPREINTE_GEL_HYPOTHESES)
+
+
+def test_le_second_gel_est_intact_et_cite_le_premier():
+    """Le document des paramètres, commité tel que `/micro_selection` l'a
+    rendu le 01/11 : toute modification change l'empreinte."""
+    import json
+    from pathlib import Path
+    chemin = (Path(__file__).resolve().parent.parent / "docs"
+              / "etape3_parametres_gel2.json")
+    doc = json.loads(chemin.read_text(encoding="utf-8"))
+    em.exiger_le_gel(doc, em.EMPREINTE_GEL_PARAMETRES)
+    assert doc["gel_hypotheses"] == em.EMPREINTE_GEL_HYPOTHESES
+    assert doc["donnees"]["fin"] == em.FIN_VALIDATION
+    assert set(doc["hypotheses"]) == {"H1", "H2"}
+    assert all(h["statut"] == "testée" for h in doc["hypotheses"].values())

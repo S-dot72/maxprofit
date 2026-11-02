@@ -81,6 +81,15 @@ REGARDS: tuple[int, ...] = (500, 1000, 2000, 4000)
 EMPREINTE_GEL_HYPOTHESES = (
     "3e415576fd083a944f62a5051bc6f04df4e076fef98fe64a9899674b93a7a83e")
 
+#: Le SECOND GEL (paramètres : terciles, préparation, coefficients, variables
+#: retenues), calculé par `/micro_selection` le 01/11 sur les décisions
+#: d'avant le 28/10 : l'empreinte de `docs/etape3_parametres_gel2.json`. La
+#: confirmation s'ouvre au premier minuit UTC qui suit son commit (option
+#: (a)) ; tout calcul de confirmation commence par `exiger_le_gel` sur ce
+#: document.
+EMPREINTE_GEL_PARAMETRES = (
+    "b64a289e10085d397c4bdda7af2ef16fb7e0f1574b87dfbc0fa6b342e182a0a5")
+
 #: La règle de retrait des variables quasi constantes (plan §4 bis), fixée
 #: avant toute lecture d'issue et appliquée sur l'EXPLORATION seule.
 VERSION_RETRAIT = 1

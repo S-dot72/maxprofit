@@ -564,7 +564,7 @@ brouillon.
 | 4. Stockage, transfert, sauvegarde, continuité | de ton côté (§12) |
 | 4 bis. Diagnostic du transfert | mesuré le 28/10 ; corrections A (sonde) et B (synchronisation) déployées ensemble le 29/10, 24 h de mesure à suivre (`docs/transfert_diagnostic.md`) |
 | 5. Gel des 2 hypothèses | **fait le 29/10** : empreinte `3e415576…a7a83e` (`docs/etape3_registre.md` §5) |
-| 6. Passe de sélection, puis gel des paramètres | **autorisée le 30/10** : `/micro_selection` (§13 bis) ; le gel 2 est le commit de `parametres_gel2.json` |
+| 6. Passe de sélection, puis gel des paramètres | **faite le 01/11** (`/micro_selection`) ; gel 2 commité le 02/11, empreinte `b64a289e…a0a5` ; confirmation ouverte le 03/11 à 00:00 UTC. Résultats : `docs/etape3_selection_resultats.md` |
 
 ## 13 bis. La passe de sélection : `/micro_selection` (admin)
 
