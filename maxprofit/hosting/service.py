@@ -376,6 +376,9 @@ async def _servir(args) -> int:
             bot._historique_ticks = lambda argument: asyncio.to_thread(
                 _historique_ticks, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._rapprochement = lambda argument: asyncio.to_thread(
+                _rapprochement, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -892,6 +895,21 @@ def _historique_ticks(chemin, course, argument: str, environ=None,
         lambda lue, active, nom: historique(lue, active, paires,
                                             maintenant=_time.time(),
                                             jours=jours, nom_lecture=nom),
+        environ, ouvrir_url)
+
+
+def _rapprochement(chemin, course, argument: str = "", environ=None,
+                   ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/rapprochement` : chaque signal du rejeu (le proxy) face à l'ordre
+    réellement passé, en lecture seule. Sur la base ACTIVE : le journal des
+    ordres y fait foi (la relève ne reprend que les mises à jour récentes),
+    et le volume lu est petit (la table des ordres, un payout par signal)."""
+    from maxprofit.live.rapprochement import rapprochement
+    if course is None:
+        return "🔗 Course indisponible : le rejeu n'est pas en mémoire.", []
+    return _sur_la_releve(
+        chemin, True, "🔗", "rapprochement", "Rapprochement",
+        lambda lue, active, nom: rapprochement(lue, course, nom_lecture=nom),
         environ, ouvrir_url)
 
 

@@ -305,6 +305,7 @@ COMMANDES = [
     ("micro_essai", "Étape 3 : contrôles préalables, lecture seule (admin)"),
     ("micro_selection", "Étape 3 : passe de sélection et gel 2 (admin)"),
     ("historique_ticks", "Ticks par paire et par heure, 7 jours (admin)"),
+    ("rapprochement", "Signaux du proxy ↔ ordres réels du broker (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -451,6 +452,11 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._historique_ticks: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._historique_en_cours: asyncio.Task | None = None
+        #: `argument -> (rapport, fichiers)` : chaque signal du rejeu face à
+        #: l'ordre réellement passé, en lecture seule, en tâche de fond.
+        self._rapprochement: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._rapprochement_en_cours: asyncio.Task | None = None
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -779,6 +785,25 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         chat, self._historique_ticks,
                         texte[len("/historique_ticks"):].strip(),
                         "📜 Historique des ticks"))
+        elif texte.startswith("/rapprochement"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._rapprochement is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._rapprochement_en_cours is not None
+                  and not self._rapprochement_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "🔗 Le rapprochement est déjà en cours.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "🔗 Rapprochement lancé (lecture seule, sur la base "
+                    "active ; quelques minutes). Le rapport et les fichiers "
+                    "arriveront ici.", CLAVIER)
+                self._rapprochement_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(
+                        chat, self._rapprochement,
+                        texte[len("/rapprochement"):].strip(),
+                        "🔗 Rapprochement"))
         elif texte.startswith("/ticks"):
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
