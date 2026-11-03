@@ -1,0 +1,74 @@
+{
+  "confirmation": {
+    "abandonnee": "à un regard, borne haute de l'IC 95 % de C2 sous 52,0833 % ou borne haute de C1 sous 0",
+    "arret": "si la règle de payout du broker ou la stratégie ZoneH1 change, le regard suivant devient final",
+    "confirmee": "C1 et C2 rejetées par Holm au seuil nominal du regard",
+    "indeterminee": "au dernier regard, ni confirmée ni abandonnée",
+    "ouverture_utc": "2026-11-04T00:00:00Z",
+    "regard": "le regard N porte sur toutes les décisions jusqu'à celle du N-ième signal favorable et jouable, dans l'ordre chronologique ; aucun résultat n'est montré avant le premier regard",
+    "regards_favorables_jouables": [
+      300,
+      600,
+      900
+    ],
+    "seuils": "O'Brien-Fleming (Lan-DeMets), incrément de dépense à chaque regard (etude_micro.seuils_des_regards)"
+  },
+  "criteres": {
+    "C1": "taux de gain du groupe favorable − taux du groupe défavorable > 0 (toutes paires, tous payouts)",
+    "C2": "taux de gain du groupe favorable ET jouable > 52,0833 %",
+    "famille": "Holm sur C1 et C2, alpha de famille 5 % unilatéral, au seuil nominal du regard",
+    "incertitude": "bootstrap par blocs paire × jour, 1 000 tirages, graine 7 ; IC 95 % percentile ; p unilatérale par l'approximation normale de l'écart-type bootstrap"
+  },
+  "groupes": {
+    "borne_basse": 5,
+    "borne_haute": 6,
+    "defavorable": "incluse_50 >= 6",
+    "exclu": "incluse_50 = 5",
+    "favorable": "incluse_50 < 5"
+  },
+  "interdits": [
+    "aucune modification des seuils, de la population, de l'issue ni des regards après le gel",
+    "aucun résultat de la confirmation consulté hors des regards",
+    "aucune règle de la course modifiée par cette pré-inscription"
+  ],
+  "issue": {
+    "definition": "clôture de la bougie complète qui finit 900 s après la décision, face à la clôture de la bougie du signal, dans le sens du trade",
+    "egalite": "exclue et comptée",
+    "horizon_sec": 900,
+    "manquante": "exclue et comptée"
+  },
+  "mesure": {
+    "definition": "nombre de bougies M1 dont le plus haut est inférieur ou égal au plus haut de la précédente ET le plus bas supérieur ou égal au plus bas de la précédente, parmi les 50 bougies M1 complètes et contiguës qui finissent à la bougie du signal, celle-ci comprise ; la première est comparée à la bougie qui la précède si elle est contiguë",
+    "fenetre_bougies": 50,
+    "fenetre_incomplete": "signal exclu et compté",
+    "nom": "incluse_50"
+  },
+  "nom": "H_IB — moins de bougies incluses avant l'entrée, plus de gains",
+  "origine": "/bougies du 03/11 : e_incluse_50, groupe et sens choisis sur l'exploration (10/10-21/10 : 58,2 % contre 51,1 %), jugés sur la validation (21/10-28/10 : 60,5 % contre 45,0 %, p = 0,0007), seule découverte au BH de 10 % parmi 64 mesures distinctes. Piste née des données : elle n'est pas une règle.",
+  "payout": {
+    "flux_min": 84,
+    "jouable": "payout du flux du dernier relevé strictement avant la décision >= 84 (appliqué : 92 %)",
+    "point_mort": 0.520833
+  },
+  "puissance": {
+    "effet_de_plan": 1.6,
+    "rythme_favorables_jouables_par_jour": 14.6,
+    "signaux_necessaires_C2": {
+      "57 %": 1003,
+      "58 %": 689,
+      "60 %": 379
+    }
+  },
+  "redige_le": "2026-11-03",
+  "replication_quarantaine": {
+    "debut_utc": "2026-10-28T00:00:00Z",
+    "fin_utc": "2026-11-03T00:00:00Z",
+    "role": "réplication immédiate sur des données jamais examinées sous cet angle ; un seul calcul, Holm à 5 % ; rapportée, sans pouvoir de verdict"
+  },
+  "signaux": {
+    "entree": "immédiate : clôture de la bougie du signal, quel que soit le mode de confirmation de la course",
+    "justification_entree": "mode 0 de la course ; /rapprochement du 03/11 : même issue que le broker pour 81 ordres sur 86",
+    "source": "ZoneH1 du rejeu, stratégie et paramètres de production, recalculés sur les bougies de la période"
+  },
+  "version": 1
+}

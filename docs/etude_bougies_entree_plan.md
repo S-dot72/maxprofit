@@ -208,3 +208,29 @@ octobre ne peut donc montrer qu'un écart d'environ 8 points ou plus. Un
     période, avec un IC.
 - Aucune table dérivée, aucune écriture.
 - Tests : `tests/test_bougies_entree.py`.
+
+## 7. Résultat du 03/11 et suite : la piste H_IB
+
+Résultats de `/bougies` du 03/11, sur 1 790 signaux du 10 au 28/10, en
+mode 0 (la touche y est l'entrée) :
+- **P1 n'est pas soutenue.** Avec la tendance : 52,8 % ; contre : 56,1 % ;
+  range : 50,8 %. Les deux périodes se contredisent.
+- **Une seule découverte** parmi 64 mesures distinctes : le nombre de
+  **bougies incluses** sur les 50 bougies avant le signal. Moins de 5 : 58,2 %
+  puis 60,5 % ; 6 ou plus : 51,1 % puis 45,0 % (p = 0,0007).
+  - Elle tient à l'intérieur des paires et dans les trois régimes.
+  - Elle n'est corrélée à aucune autre mesure.
+
+La piste est **gelée** (`docs/preinscription_incluses.md`, empreinte
+`ccc23575…3d36b1e`). L'épreuve se fait par `/incluses` (admin, lecture
+seule, `maxprofit/live/incluses.py`) :
+- réplication sur la quarantaine, calculée dès maintenant ;
+- confirmation à partir du 04/11, regards à 300, 600 et 900 signaux
+  favorables et jouables ;
+- aucun résultat de la confirmation n'est montré avant le premier regard,
+  ni dans le rapport ni dans les fichiers ;
+- les signaux sont recalculés sur les bougies : l'épreuve ne dépend pas
+  de la fenêtre de 30 jours du rejeu.
+
+`/bougies` corrigé pour le mode 0 : les variables de la touche ne sont plus
+testées en double, et le contrôle de l'issue compare à la même entrée.

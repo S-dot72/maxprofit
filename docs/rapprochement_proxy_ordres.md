@@ -184,3 +184,48 @@ cet ordre :
 - Il ne corrige pas le proxy.
 - Un écart entre le proxy et le réel est un fait sur la course. Il ne
   valide ni n'invalide aucune règle.
+
+## 8. Résultats du 03/11
+
+Le rapport porte sur les décisions du 10/10 au 03/11. La course était en
+mode de confirmation « 0 » : entrée immédiate à la clôture de la bougie du
+signal.
+
+**Données.** Les 86 ordres réglés ont tous :
+- leur prix d'entrée, leur prix de règlement et leur payout du broker ;
+- le message de dénouement ;
+- le contexte du signal.
+
+Les contrôles passent à 100 %. Les 33 ordres refusés n'ont pas de contexte,
+par construction.
+
+**Correspondance.** Les 86 ordres réglés ont une correspondance exacte,
+avec une empreinte de 23 grandeurs sur 23. Le placement se fait 2,7 s en
+médiane après la fin de la bougie.
+
+**Le proxy est fidèle** sur les MÊMES 86 signaux :
+- proxy 45,3 %, broker 44,2 %, même issue dans 94 % des cas ;
+- écart de +1,2 point (IC −3,8 à +6,8) ;
+- prix d'entrée du broker égal à la clôture de la bougie : écart médian
+  nul, extrêmes de ±5 points de base.
+
+Sur les 5 désaccords, 3 viennent d'un ordre parti en retard (6, 35 et
+82 s) ; dans les 2 autres, le prix finit à un point près.
+
+**La course** (ordres du 24/10 au 02/11) :
+- 38 gains et 48 pertes, soit 44,2 % ;
+- rendement de −15,2 % par mise (IC −36,8 à +7,8), au payout appliqué de
+  92 %.
+
+Sur la même fenêtre, au proxy :
+
+| Population | Signaux | Gains |
+|---|---|---|
+| signaux jouables non joués | 315 | 51,7 % |
+| tous les signaux jouables | 393 | 50,9 % |
+| signaux jouables avant le 24/10, course inactive | 680 | 55,0 % |
+
+**Exécution.** 33 tentatives sur 119 (28 %) ont été refusées par le
+broker, « sans motif », avec une mise de 0,98 $ dans 30 cas. C'est
+probablement une mise sous le minimum du broker. La correction touche au
+calcul des mises de la course : elle attend une autorisation.

@@ -338,7 +338,9 @@ def fiche(paire: str, bougies: Sequence, index: Mapping[int, int], e,
     else:
         sortie["issue"] = (em.GAIN if (bougies[s].close > entree.close)
                            == call else em.PERTE)
-    rejeu = ctx.get("gagne_confirme")
+    # Le contrôle compare à l'issue du rejeu pour la MÊME entrée : la bougie
+    # du signal en mode 0 (`gagne`), la bougie de confirmation sinon.
+    rejeu = e.gagne if k == 0 else ctx.get("gagne_confirme")
     sortie["issue_rejeu"] = ("" if rejeu is None else
                              em.GAIN if rejeu else em.PERTE)
     debut = max(0, j - FENETRE_TENDANCE + 1)
@@ -629,7 +631,10 @@ def etude(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
                   "ensemble": p1(retenues),
                   "ensemble_ema": p1(retenues, "orientation_ema"),
                   "jouables": p1([f for f in retenues if f.get("jouable")])}
-    variables = [f"{a}_{n}" for a in ANCRES for n in noms_des_variables()] \
+    # En mode 0, la touche EST l'entrée : ses variables seraient des
+    # doublons, qui compteraient deux fois chaque découverte.
+    ancres = ("e",) if mode in ("0", "meme") else tuple(ANCRES)
+    variables = [f"{a}_{n}" for a in ancres for n in noms_des_variables()] \
         + ["confirmation_fav"]
     tests = criblage(explo, valid, variables, respirer)
     regimes = par_regime(retenues)
@@ -709,8 +714,11 @@ def texte(fiches, retenues, principale, tests, regimes, meta) -> str:
           else "Copie NON vérifiée (active injoignable ou lue seule)."),
          f"Décisions du {_utc(meta['debut'], '%d/%m')} au 28/10 (la "
          f"confirmation du gel 2 n'est pas lue) ; mode de confirmation "
-         f"{html.escape(meta['mode'])}. Issue : entrée confirmée, bougie "
-         f"complète à +900 s (proxy, à valider par /rapprochement).",
+         f"{html.escape(meta['mode'])}. Issue : "
+         + ("entrée immédiate (bougie du signal)" if meta["mode"] in
+            ("0", "meme") else "entrée confirmée")
+         + ", bougie complète à +900 s (proxy ; /rapprochement : même issue "
+           "que le broker pour 81 ordres sur 86 en mode 0).",
          "",
          "<b>1. Population</b>",
          f"- {len(fiches)} signaux du rejeu ; retenus {len(retenues)} "
@@ -719,7 +727,7 @@ def texte(fiches, retenues, principale, tests, regimes, meta) -> str:
          "- écartés : " + (" ; ".join(
              f"{html.escape(m)} {n}" for m, n in exclusions.most_common())
              or "aucun"),
-         f"- contrôle de l'issue face au rejeu (gagne_confirme) : "
+         f"- contrôle de l'issue face au rejeu (même entrée) : "
          f"{accord}/{len(controle)} identiques",
          "",
          "<b>2. La tendance M1</b> (sommets et creux, 5 h)",
@@ -747,7 +755,9 @@ def texte(fiches, retenues, principale, tests, regimes, meta) -> str:
                    key=lambda t: -t["explo_ecart"])
     l += ["",
           f"<b>4. Le reste, choisi sur l'exploration, jugé sur la "
-          f"validation</b> ({len(tests)} variables, entrée et touche)",
+          f"validation</b> ({len(tests)} variables"
+          + (", la touche étant l'entrée en mode 0)" if meta["mode"] in
+             ("0", "meme") else ", entrée et touche)"),
           "- " + " ; ".join(f"{html.escape(v)} {n}"
                             for v, n in verdicts.most_common())]
     if decouvertes:

@@ -307,6 +307,7 @@ COMMANDES = [
     ("historique_ticks", "Ticks par paire et par heure, 7 jours (admin)"),
     ("rapprochement", "Signaux du proxy ↔ ordres réels du broker (admin)"),
     ("bougies", "Tendance M1 et 50 bougies avant l'entrée (admin)"),
+    ("incluses", "Épreuve gelée de la piste des bougies incluses (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -463,6 +464,11 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._bougies: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._bougies_en_cours: asyncio.Task | None = None
+        #: `argument -> (rapport, fichiers)` : l'épreuve gelée de la piste
+        #: H_IB (bougies incluses), en lecture seule, en tâche de fond.
+        self._incluses: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._incluses_en_cours: asyncio.Task | None = None
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -829,6 +835,25 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         chat, self._bougies,
                         texte[len("/bougies"):].strip(),
                         "🕯 Étude des bougies"))
+        elif texte.startswith("/incluses"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._incluses is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._incluses_en_cours is not None
+                  and not self._incluses_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "🔬 L'épreuve H_IB est déjà en cours.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "🔬 Épreuve H_IB lancée (lecture seule, sur la "
+                    "relève ; quelques minutes). Le rapport et les fichiers "
+                    "arriveront ici.", CLAVIER)
+                self._incluses_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(
+                        chat, self._incluses,
+                        texte[len("/incluses"):].strip(),
+                        "🔬 Épreuve H_IB"))
         elif texte.startswith("/ticks"):
             if self._ticks is None:
                 await self.client.envoyer(chat, "Course indisponible.", CLAVIER)
