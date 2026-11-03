@@ -382,6 +382,9 @@ async def _servir(args) -> int:
             bot._bougies = lambda argument: asyncio.to_thread(
                 _bougies, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._incluses = lambda argument: asyncio.to_thread(
+                _incluses, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -928,6 +931,22 @@ def _bougies(chemin, course, argument: str = "", environ=None,
         chemin, "active" in argument.lower().split(), "🕯", "bougies",
         "Étude des bougies",
         lambda lue, active, nom: etude(lue, active, course, nom_lecture=nom),
+        environ, ouvrir_url)
+
+
+def _incluses(chemin, course, argument: str = "", environ=None,
+              ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/incluses [active]` : l'épreuve gelée de la piste H_IB (bougies
+    incluses), réplication sur la quarantaine puis regards de la
+    confirmation, en lecture seule sur la relève."""
+    from maxprofit.live.incluses import epreuves
+    if course is None:
+        return "🔬 Course indisponible : la stratégie n'est pas chargée.", []
+    return _sur_la_releve(
+        chemin, "active" in argument.lower().split(), "🔬", "incluses",
+        "Épreuve H_IB",
+        lambda lue, active, nom: epreuves(lue, active, course,
+                                          nom_lecture=nom),
         environ, ouvrir_url)
 
 

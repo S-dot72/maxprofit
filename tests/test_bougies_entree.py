@@ -389,3 +389,21 @@ def test_une_copie_divergente_est_relue_sur_l_active(passe, tmp_path):
     assert "1 divergence(s), lues sur l'active (1 paires-jours" in rapport
     assert _csv(autres, "bougies_signaux.csv") == _csv(
         fichiers, "bougies_signaux.csv")
+
+
+def test_en_mode_0_la_touche_n_est_pas_testee_deux_fois(passe):
+    active, releve, _, course, _, _ = passe
+    mode_0 = SimpleNamespace(rejeu_en_memoire=course.rejeu_en_memoire,
+                             confirmation_m1="0")
+    a, r = open_read_only(active), open_read_only(releve)
+    try:
+        rapport, fichiers = be.etude(r, a, mode_0, respirer=lambda: None)
+    finally:
+        a.close()
+        r.close()
+    tests = [t for t in _csv(fichiers, "bougies_tests.csv")
+             if t["nature"] == "exploratoire"]
+    assert len(tests) == len(be.noms_des_variables()) + 1
+    assert not any(t["variable"].startswith("t_") for t in tests)
+    assert "la touche étant l'entrée en mode 0" in rapport
+    assert "Issue : entrée immédiate" in rapport
