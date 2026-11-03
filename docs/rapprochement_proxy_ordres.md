@@ -225,7 +225,16 @@ Sur la même fenêtre, au proxy :
 | tous les signaux jouables | 393 | 50,9 % |
 | signaux jouables avant le 24/10, course inactive | 680 | 55,0 % |
 
-**Exécution.** 33 tentatives sur 119 (28 %) ont été refusées par le
-broker, « sans motif », avec une mise de 0,98 $ dans 30 cas. C'est
-probablement une mise sous le minimum du broker. La correction touche au
-calcul des mises de la course : elle attend une autorisation.
+**Exécution.** 33 tentatives ont été refusées par le broker, « sans
+motif ».
+- **30 refus, tous le 26/10** entre 01:14 et 21:44 UTC, avec une mise de
+  0,98 $, sous le minimum de 1 $ du broker. Le relèvement de la mise au
+  minimum (`configuration.MISE_MINIMALE`, message « Mise relevée au
+  minimum du broker ») corrige ce cas depuis le 26/10 à 22:14 UTC. Depuis,
+  toutes les mises sont d'au moins 1,00 $.
+- **3 refus depuis**, le 01/11 à 21:58, 21:59 et 22:00 UTC, à 1,00 $. C'est
+  une autre cause, brève : l'ordre suivant passe à 22:25. Le détail
+  (`refus_contexte` : erreur du websocket, réponse brute) est au journal ;
+  il n'est pas exporté dans le CSV.
+
+Depuis la correction : 64 ordres réglés, 3 refusés.
