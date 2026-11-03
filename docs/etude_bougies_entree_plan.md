@@ -1,4 +1,4 @@
-# Étude des bougies avant l'entrée — plan (BROUILLON, non gelé)
+# Étude des bougies avant l'entrée — plan et passe `/bougies`
 
 Demandé le 03/11 :
 
@@ -10,12 +10,18 @@ Demandé le 03/11 :
 > ou acheteuses, est-ce qu'avant l'entrée ce sont les vendeurs ou les
 > acheteurs qui sont puissants à ce moment. »
 
-**Statut** : brouillon. Aucune donnée n'a été lue pour l'écrire. Il n'est
-lancé qu'après deux choses :
-1. le rapport de `/rapprochement`, qui doit montrer que l'issue mesurée
-   depuis l'entrée confirmée colle aux résultats du broker ;
-2. la validation des définitions du §2 à §4, qui reprennent la méthode de
-   trading de l'utilisateur.
+Puis, le même jour :
+
+> « Dans une tendance haussière le creux est plus haut que le creux
+> précédent, on a des higher high et des higher low. Dans une tendance
+> baissière on a des creux plus bas que le creux précédent, des lower high
+> et lower low. Dans un range on n'a pas ces deux, le marché stagne. Les
+> autres c'est à toi de les déterminer dans les données. »
+
+**Statut** : la passe est écrite (`maxprofit/live/bougies_entree.py`,
+commande `/bougies`, admin, en tâche de fond). Son issue ne vaut que si
+`/rapprochement` montre que l'issue mesurée depuis l'entrée confirmée
+s'accorde avec le règlement du broker.
 
 Lecture seule ; la course, ses règles d'entrée et ses expirations ne
 changent pas.
@@ -30,24 +36,29 @@ signal**, et jugeait l'issue depuis la bougie du signal. Celle-ci :
   signal) ;
 - juge l'issue **depuis l'entrée réelle**.
 
-## 2. La tendance M1 (proposition, à valider)
+## 2. La tendance M1 (définition de l'utilisateur, 03/11)
 
-Mesurée sur les **120 bougies M1 (2 h)** qui finissent à l'ancre, puis
-orientée par rapport au trade : **avec la tendance**, **contre la
-tendance**, **range**.
+| Tendance | Sommets | Creux |
+|---|---|---|
+| haussière | plus hauts que le précédent (higher high) | plus hauts que le précédent (higher low) |
+| baissière | plus bas (lower high) | plus bas (lower low) |
+| range | tout autre cas : le marché stagne | |
 
-- **Définition principale : la structure.** Elle se lit sur les deux
-  derniers sommets et les deux derniers creux confirmés du ZigZag, celui de
-  la stratégie (`zones_zigzag.pivots`), qui est causal.
-  - sommets et creux montants : haussière ;
-  - sommets et creux descendants : baissière ;
-  - sinon : range.
-- **Sensibilité : les moyennes.** EMA 20 face à EMA 50, avec un écart de
-  moins de 0,05 % classé neutre. C'est la règle déjà écrite dans
-  `potentiel.py`.
-
-Le résultat de la sensibilité est publié à côté du principal. Il ne le
-remplace jamais.
+- **Sommets et creux** : les deux derniers pivots CONFIRMÉS de chaque sorte
+  du ZigZag de la stratégie (`zones_zigzag.pivots`). Un pivot n'existe qu'à
+  partir de la bougie où le retournement l'a établi, ce qui garantit que
+  rien n'est lu dans l'avenir.
+- **Horizon** : les **300 bougies M1 (5 h)** qui finissent à l'entrée. Ce
+  ZigZag trace environ huit pivots par tranche de cinq heures. Cet horizon
+  donne donc deux sommets et deux creux à comparer, ce que 2 h ne
+  donneraient pas.
+- **Fenêtre insuffisante** : une fenêtre trouée de plus de 10 %, ou qui n'a
+  pas deux sommets et deux creux, est « indéterminée ». Elle est comptée à
+  part.
+- **Orientation** : la tendance est rapportée au trade, AVEC, CONTRE ou
+  RANGE.
+- **Sensibilité** : EMA 20 face à EMA 50, neutre sous 0,05 % d'écart. Elle
+  est publiée à côté, et ne remplace jamais la structure.
 
 ## 3. Les 50 bougies avant l'ancre
 
@@ -105,25 +116,36 @@ mesure :
 Le nombre de ticks par bougie n'est pas utilisé : il est faussé par la
 double réception.
 
-## 4. Hypothèses principales (proposition, à valider)
+## 4. Hypothèses : une seule a priori, le reste déterminé par les données
 
-Elles sont **peu nombreuses**, et leur sens est fixé avant de lire une seule
-issue. Chacune traduit une règle de trading, pas une trouvaille. Les 92
-grandeurs du 01/11 ont montré ce que coûte l'inverse : à force de tester,
-le hasard finit par ressembler à un pattern.
+**P1, fixée à l'avance** : les trades AVEC la tendance gagnent plus que
+les trades CONTRE elle. Elle est jugée sur l'exploration, sur la
+validation et sur l'ensemble. La sensibilité EMA et les jouables sont
+publiés à côté.
 
-| | Hypothèse | Sens attendu |
-|---|---|---|
-| P1 | trades avec la tendance M1 face aux trades contre elle | avec > contre |
-| P2 | pression des corps du camp du trade sur les 10 dernières bougies | plus elle est forte, plus on gagne |
-| P3 | figure de confirmation du camp du trade (englobante, marteau ou étoile, rejet) sur la touche ou l'entrée | présente > absente |
-| P4 | grandes bougies adverses juste avant l'entrée (plus grande des 10 dernières ≥ 2 amplitudes) | présente < absente |
+**Le reste est déterminé dans les données, sans tricher.** Les 127
+variables (63 à l'entrée, 63 à la touche, plus `confirmation_fav`) suivent
+le circuit de l'étape 3 :
+1. **sur l'exploration (avant le 21/10)**, pour chaque variable, on fixe
+   le groupe comparé et son sens :
+   - le groupe est le tercile haut contre le tercile bas, ou, quand les
+     terciles se confondent (figures rares), la présence contre l'absence ;
+   - le sens est celui que montrent les données de l'exploration ;
+2. **sur la validation (21 au 28/10)**, ce même groupe est jugé dans ce
+   même sens. On publie l'écart, son IC par blocs paire × jour et sa p
+   unilatérale. La p vient de l'approximation normale de l'écart-type
+   bootstrap : 1 000 tirages ne descendent pas sous 0,001, alors que BH
+   sur 127 tests demande moins ;
+3. **Benjamini-Hochberg à 10 %** sur toutes les variables jugées. Un
+   groupe de moins de 30 signaux, dans une période, n'est pas jugé.
 
-- **Par régime de tendance**, P2 à P4 sont aussi lues dans chacun des trois
-  régimes. C'est la logique « une fois la tendance établie ». Ces lectures
-  sont secondaires : couper l'échantillon en trois divise la puissance.
-- **Le reste du §3 est exploratoire**, avec correction pour comparaisons
-  multiples. Une trouvaille exploratoire est une piste, pas une règle.
+Une **découverte** reste une piste. Elle ne devient une règle qu'après un
+gel (groupe, sens, bornes) et une confirmation sur des données
+postérieures.
+
+Le rapport montre aussi ce que deviennent en validation les 5 plus forts
+écarts de l'exploration. C'est là que se voit un effet qui tient, ou un
+effet qui s'effondre.
 
 ## 5. Issue, données, découpage
 
@@ -163,24 +185,26 @@ exigée : le taux de confirmation reste à mesurer. Une recherche sur
 octobre ne peut donc montrer qu'un écart d'environ 8 points ou plus. Un
 écart plus petit ne se tranche que sur des semaines de données neuves.
 
-## 6. Mise en œuvre envisagée
+## 6. La passe `/bougies`
 
-- Une passe en lecture seule, du même type que `/micro_selection`. Elle
-  lit les **bougies M1** sur la relève, sans les ticks : la lecture est
-  légère.
-- Sorties : CSV seulement. Un signal par ligne, avec toutes les mesures
-  du §3, le régime, l'issue et l'appartenance aux hypothèses ; plus un
-  registre des tests.
+- **Lecture seule**, sur la **relève** ; `/bougies active` lit sur l'active.
+  - Elle lit les **bougies M1**, sans les ticks, une paire et un jour à la
+    fois.
+  - Chaque paire × jour est vérifié face à l'active (comptes et sommes
+    calculés par le serveur). Un jour divergent est relu sur l'active, et
+    compté.
+  - Elle lit aussi le payout du flux avant chaque décision, sur l'active.
+- **Signaux** : le rejeu quotidien en mémoire, confirmés en M1 au mode
+  actuel de la course. Seules les décisions d'avant le 28/10 sont lues,
+  car la confirmation du gel 2 est ouverte.
+- **Issue** : recalculée sur les bougies, et contrôlée face au
+  `gagne_confirme` du rejeu.
+- **Sorties**, en CSV seulement :
+  - `bougies_signaux.csv` : un signal par ligne, avec sa tendance, ses
+    sommets et creux, son orientation et les mesures `e_` et `t_` ;
+  - `bougies_tests.csv` : P1, puis chaque variable, avec son groupe, son
+    sens, l'exploration, la validation et le verdict ;
+  - `bougies_tendance.csv` : le taux de gain par orientation et par
+    période, avec un IC.
 - Aucune table dérivée, aucune écriture.
-
-## 7. Décisions attendues de l'utilisateur
-
-1. **La tendance.** Structure des sommets et creux (proposée) ou moyennes
-   mobiles ? Sur 2 h, ou un autre horizon ? Qu'appelles-tu « range » ?
-2. **Les types de bougies.** Le catalogue du §3.1 te convient-il ?
-   Lesquels regardes-tu en premier ?
-3. **La taille.** Des grandes bougies dans le sens du trade juste avant
-   l'entrée, c'est pour toi de la force (on gagne plus) ou de
-   l'essoufflement (on gagne moins) ?
-4. **L'ancre.** L'entrée réelle (proposée en principal) et la touche en
-   second, ou l'inverse ?
+- Tests : `tests/test_bougies_entree.py`.
