@@ -958,13 +958,20 @@ def _graphiques(chemin, course, argument: str = "", environ=None,
     """`/graphiques [active]` : 40 gagnants et 40 perdants jouables d'avant
     le 03/11, dessinés au moment de l'entrée, pour une revue à l'aveugle,
     en lecture seule sur la relève."""
-    from maxprofit.live.graphiques import revue
+    import html
+    from maxprofit.live.graphiques import analyser_lot, revue
     if course is None:
         return "🖼 Course indisponible : le rejeu n'est pas en mémoire.", []
+    mots = argument.lower().split()
+    try:
+        lot = analyser_lot(" ".join(m for m in mots if m != "active"))
+    except ValueError as erreur:
+        return f"🖼 Lot illisible : {html.escape(str(erreur))}", []
     return _sur_la_releve(
-        chemin, "active" in argument.lower().split(), "🖼", "graphiques",
+        chemin, "active" in mots, "🖼", "graphiques",
         "Revue des graphiques",
-        lambda lue, active, nom: revue(lue, active, course, nom_lecture=nom),
+        lambda lue, active, nom: revue(lue, active, course, nom_lecture=nom,
+                                       lot=lot),
         environ, ouvrir_url)
 
 

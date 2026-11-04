@@ -135,15 +135,21 @@ def test_les_bases_ne_changent_pas_et_les_fichiers(passe):
     assert "requêtes refusées : 0" in rapport
     assert [n for _, n, _ in fichiers] == [
         "graphiques_aveugles.html", "graphiques_reponses.html",
-        "graphiques_bougies.csv", "graphiques_signaux.csv"]
+        "graphiques_bougies.csv", "graphiques_signaux.csv",
+        "graphiques_issues.csv"]
     aveugle = next(c for c, n, _ in fichiers if n.endswith("aveugles.html"))
     assert b"GAGN" not in aveugle and b"PERDU" not in aveugle
     assert aveugle.count(b"<svg") == 80
-    signaux = next(c for c, n, _ in fichiers if n == "graphiques_signaux.csv")
-    lignes = signaux.decode("utf-8").splitlines()[1:]
-    issues = [l.split(";")[-1] for l in lignes]
-    assert issues.count("gain") == 40 and issues.count("perte") == 40
+    # Aucun résultat hors du fichier des issues.
+    for nom in ("graphiques_bougies.csv", "graphiques_signaux.csv"):
+        contenu = next(c for c, n, _ in fichiers if n == nom).decode("utf-8")
+        assert "gain" not in contenu and "perte" not in contenu
+        assert "apres_entree" not in contenu
+    issues = next(c for c, n, _ in fichiers if n == "graphiques_issues.csv")
+    lignes = [l.split(";")[1] for l in issues.decode("utf-8").splitlines()[1:]]
+    assert lignes.count("gain") == 40 and lignes.count("perte") == 40
     assert "80 graphiques (40 gagnants, 40 perdants" in rapport
+    assert "<b>Lot 1</b>" in rapport
 
 
 def test_le_service_et_la_commande(passe, tmp_path):
@@ -155,7 +161,9 @@ def test_le_service_et_la_commande(passe, tmp_path):
     texte, fichiers = service._graphiques(
         active, course, "", environ={pool.ENV_RELEVE: str(releve)},
         ouvrir_url=lambda url: open_read_only(url))
-    assert "Revue des graphiques" in texte and len(fichiers) == 4
+    assert "Revue des graphiques" in texte and len(fichiers) == 5
+    texte, _ = service._graphiques(active, course, "lot 12")
+    assert "Lot illisible" in texte
 
     from tests.test_telegram import (CHAT, INTRUS, FauxClient, _annuaire,
                                      _bot, _message)
@@ -184,3 +192,29 @@ def test_le_service_et_la_commande(passe, tmp_path):
 
     asyncio.run(deroule())
     assert documents == ["graphiques_aveugles.html"]
+
+
+def test_les_lots_suivants_excluent_le_lot_1(monkeypatch):
+    assert gr.analyser_lot("") == 1 and gr.analyser_lot("lot 2") == 2
+    assert gr.analyser_lot("3 active") == 3
+    with pytest.raises(ValueError):
+        gr.analyser_lot("0")
+    paire, d = sorted(gr.DEJA_REVUS)[0]
+    assert len(gr.DEJA_REVUS) == 80
+    assert gr.deja_revu(_exemple(paire, d, True))
+    assert gr.deja_revu(_exemple(paire, d + 600, True)), "même zone"
+    assert not gr.deja_revu(_exemple(paire, d + 3600, True))
+
+
+def test_un_autre_lot_donne_d_autres_graphiques(passe):
+    active, releve, _, course, _, fichiers = passe
+    a, r = open_read_only(active), open_read_only(releve)
+    try:
+        _, autres = gr.revue(r, a, course, lot=2, respirer=lambda: None)
+    finally:
+        a.close()
+        r.close()
+    def decisions(f):
+        c = next(c for c, n, _ in f if n == "graphiques_signaux.csv")
+        return {l.split(";")[2] for l in c.decode("utf-8").splitlines()[1:]}
+    assert decisions(autres) != decisions(fichiers)

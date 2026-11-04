@@ -26,8 +26,13 @@ Les fichiers rendus :
   sens prévu. Aucune issue n'y figure ;
 - `graphiques_reponses.html` : les mêmes graphiques, avec les 15 minutes
   qui suivent et le résultat ;
-- `graphiques_bougies.csv` (bougies, dont celles d'après l'entrée, marquées)
-  et `graphiques_signaux.csv` (avec l'issue), pour une revue hors ligne.
+- `graphiques_bougies.csv` (bougies jusqu'à l'entrée) et
+  `graphiques_signaux.csv` (paire, sens, zone), pour une revue hors ligne ;
+- `graphiques_issues.csv` : les résultats, À PART, à n'envoyer qu'une fois
+  la revue figée.
+
+`/graphiques 2` (lot 2, puis 3…) tire un nouveau lot, graine 7 + lot − 1,
+sans aucun signal du lot 1 ni de sa zone.
 
 Une revue visuelle FAIT NAÎTRE des idées ; elle n'en valide aucune. Tout
 indice qui en sort se vérifie sur l'ensemble des signaux, puis se gèle et se
@@ -61,6 +66,55 @@ ZOOM = 60                             # les 60 dernières bougies
 APRES = em.HORIZON_SEC // 60 + 1      # les 15 minutes qui suivent, et la sortie
 PAYOUTS_MAX = 1500                    # plafond de requêtes de payout
 RESPIRATION_SEC = 0.02
+
+#: Le lot 1, revu le 04/11 (graine 7) : exclu des lots suivants, qui doivent
+#: porter sur des graphiques JAMAIS vus. Liste figée (paire, décision).
+DEJA_REVUS: frozenset[tuple[str, int]] = frozenset({
+    ("AUDCAD_otc", 1791935520), ("AUDCAD_otc", 1792176300), ("AUDCAD_otc", 1793200800),
+    ("AUDCAD_otc", 1793406780), ("AUDCHF_otc", 1792364340), ("AUDCHF_otc", 1792439940),
+    ("AUDCHF_otc", 1793620620), ("AUDNZD_otc", 1792526880), ("AUDNZD_otc", 1793643360),
+    ("AUDUSD_otc", 1792676760), ("AUDUSD_otc", 1792690440), ("AUDUSD_otc", 1792835880),
+    ("AUDUSD_otc", 1792849560), ("AUDUSD_otc", 1793502840), ("CADCHF_otc", 1792431720),
+    ("CADCHF_otc", 1792685160), ("CADJPY_otc", 1793460840), ("CHFJPY_otc", 1791869400),
+    ("CHFJPY_otc", 1791929160), ("CHFJPY_otc", 1792539780), ("CHFJPY_otc", 1792787040),
+    ("CHFJPY_otc", 1792954140), ("CHFJPY_otc", 1793564220), ("EURCHF_otc", 1792518960),
+    ("EURCHF_otc", 1793439960), ("EURCHF_otc", 1793608500), ("EURGBP_otc", 1791780420),
+    ("EURJPY_otc", 1791773640), ("EURJPY_otc", 1791840060), ("EURJPY_otc", 1791967200),
+    ("EURJPY_otc", 1792067460), ("EURJPY_otc", 1792549020), ("EURJPY_otc", 1792856640),
+    ("EURJPY_otc", 1793520180), ("EURJPY_otc", 1793522880), ("EURNZD_otc", 1792018260),
+    ("EURNZD_otc", 1792436340), ("EURNZD_otc", 1793018520), ("EURNZD_otc", 1793623020),
+    ("EURUSD_otc", 1791676920), ("EURUSD_otc", 1791810480), ("EURUSD_otc", 1791918180),
+    ("EURUSD_otc", 1792033020), ("EURUSD_otc", 1792622820), ("EURUSD_otc", 1792707000),
+    ("EURUSD_otc", 1792976100), ("EURUSD_otc", 1793541600), ("EURUSD_otc", 1793600340),
+    ("GBPAUD_otc", 1792448760), ("GBPAUD_otc", 1792466520), ("GBPAUD_otc", 1792535760),
+    ("GBPAUD_otc", 1792650420), ("GBPJPY_otc", 1791774000), ("GBPJPY_otc", 1791872280),
+    ("GBPJPY_otc", 1792013100), ("GBPJPY_otc", 1792153440), ("GBPJPY_otc", 1792574580),
+    ("GBPJPY_otc", 1792991160), ("GBPJPY_otc", 1793091720), ("GBPJPY_otc", 1793570280),
+    ("GBPJPY_otc", 1793574360), ("GBPUSD_otc", 1791665100), ("GBPUSD_otc", 1791865080),
+    ("GBPUSD_otc", 1791866400), ("GBPUSD_otc", 1791991740), ("GBPUSD_otc", 1792684620),
+    ("NZDUSD_otc", 1791895560), ("NZDUSD_otc", 1792059600), ("NZDUSD_otc", 1792154100),
+    ("NZDUSD_otc", 1792442940), ("USDCAD_otc", 1792526400), ("USDCAD_otc", 1792763040),
+    ("USDCAD_otc", 1792848060), ("USDCAD_otc", 1793478180), ("USDCHF_otc", 1791813360),
+    ("USDCHF_otc", 1793093640), ("USDJPY_otc", 1791646500), ("USDJPY_otc", 1791729060),
+    ("USDJPY_otc", 1793520720), ("USDJPY_otc", 1793557200),
+})
+LOT_MAX = 9
+
+
+def analyser_lot(argument: str) -> int:
+    """« », « 2 » ou « lot 2 » → le numéro du lot (1 par défaut)."""
+    chiffres = [m for m in argument.lower().replace("lot", " ").split()
+                if m.isdigit()]
+    lot = int(chiffres[0]) if chiffres else 1
+    if not 1 <= lot <= LOT_MAX:
+        raise ValueError(f"lot entre 1 et {LOT_MAX}")
+    return lot
+
+
+def deja_revu(e) -> bool:
+    """Un signal du lot 1, ou de sa zone (même paire, à moins de 15 min)."""
+    return any(p == e.pair and abs(d - e.ts_sec) < ECART_ZONE_SEC
+               for p, d in DEJA_REVUS)
 
 ATTENDRE_LE_REJEU = (
     "🖼 Le rejeu quotidien n'est pas encore en mémoire : il tourne quelques "
@@ -210,9 +264,11 @@ def page(titre: str, graphiques: Sequence[str], intro: str) -> bytes:
 # --------------------------------------------------------------------------- #
 
 def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
-          respirer: Callable[[], None] | None = None
+          lot: int = 1, respirer: Callable[[], None] | None = None
           ) -> tuple[str, list[tuple[bytes, str, str]]]:
-    """(rapport, fichiers). Les bases sont déjà en lecture seule."""
+    """(rapport, fichiers). Les bases sont déjà en lecture seule. À partir
+    du lot 2, la graine change et le lot 1 est exclu ; les issues partent
+    dans un fichier À PART, à n'ouvrir qu'après la revue."""
     respirer = respirer or (lambda: time.sleep(RESPIRATION_SEC))
     t0 = time.monotonic()
     memoire = getattr(course, "rejeu_en_memoire", None)
@@ -234,7 +290,9 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
             float(ligne[0]) >= FLUX_POUR_LE_PLAFOND
 
     tous = candidats(memoire[0])
-    tirage = tirer(tous, jouable)
+    if lot >= 2:
+        tous = [e for e in tous if not deja_revu(e)]
+    tirage = tirer(tous, jouable, graine=GRAINE + lot - 1)
     if not tirage:
         return "🖼 Aucun signal jouable à dessiner avant le 03/11.", []
     debut = min(e.ts_sec for e in tirage) - CONTEXTE_MIN * 60 - 86400
@@ -243,7 +301,7 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
     lecteurs = {"lue": MarketReader(lue),
                 "active": MarketReader(active) if active is not None
                 else None}
-    aveugles, reponses, lignes_b, lignes_s = [], [], [], []
+    aveugles, reponses, lignes_b, lignes_s, lignes_i = [], [], [], [], []
     for numero, e in enumerate(tirage, 1):
         d = e.ts_sec
         jours = {(d - CONTEXTE_MIN * 60 - 120) // 86400,
@@ -258,18 +316,22 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
         apres = [b for b in bougies if b.ts_sec >= d][:APRES]
         aveugles.append(svg(numero, e, avant, apres, False))
         reponses.append(svg(numero, e, avant, apres, True))
-        for b in avant + apres:
+        # Les bougies d'AVANT l'entrée seulement : celles d'après donnent
+        # l'issue, qui part dans son propre fichier.
+        for b in avant:
             lignes_b.append({"graphique": numero, "paire": e.pair,
                              "ts_utc": _utc(b.ts_sec, "%Y-%m-%d %H:%M"),
                              "ts": b.ts_sec, "open": b.open, "high": b.high,
-                             "low": b.low, "close": b.close,
-                             "apres_entree": int(b.ts_sec >= d)})
+                             "low": b.low, "close": b.close})
         lignes_s.append({"graphique": numero, "paire": e.pair,
                          "decision": d, "decision_utc": _utc(d),
                          "sens": "call" if e.contexte.get("sens_call")
                          else "put", "zone": e.contexte.get("niveau"),
-                         "bougies_avant": len(avant),
-                         "issue": em.GAIN if e.gagne else em.PERTE})
+                         "bougies_avant": len(avant)})
+        lignes_i.append({"graphique": numero,
+                         "issue": em.GAIN if e.gagne else em.PERTE,
+                         **{f"close_{k}": b.close
+                            for k, b in enumerate(apres)}})
         respirer()
     gagnes = sum(1 for e in tirage if e.gagne)
     intro_aveugle = html.escape(
@@ -288,15 +350,18 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
         f"({', '.join(f'{k} : {v}' for k, v in lecture.items())}) ; "
         f"requêtes refusées : {lue.refusees + (active.refusees if active else 0)}"
         f". Rien n'a été écrit en base.",
-        f"{len(tirage)} graphiques ({gagnes} gagnants, {len(tirage) - gagnes} "
-        f"perdants, mélangés), tirés parmi {len(tous)} signaux d'avant le "
-        f"03/11, un par zone.",
+        f"<b>Lot {lot}</b> : {len(tirage)} graphiques ({gagnes} gagnants, "
+        f"{len(tirage) - gagnes} perdants, mélangés), tirés parmi "
+        f"{len(tous)} signaux d'avant le 03/11, un par zone"
+        + (", lot 1 exclu." if lot >= 2 else "."),
         "1. Ouvre <b>graphiques_aveugles.html</b> : note pour chaque "
         "graphique ce qui confirme ou infirme le trade, sans regarder le "
         "résultat.",
         "2. Ensuite seulement, <b>graphiques_reponses.html</b>.",
-        "Envoie-moi les CSV (et tes notes si tu en fais) : je fais la même "
-        "revue de mon côté, à l'aveugle.",
+        "Envoie-moi d'abord <b>graphiques_bougies.csv</b> et "
+        "<b>graphiques_signaux.csv</b> (sans résultat). Garde "
+        "<b>graphiques_issues.csv</b> : je te le demanderai une fois ma revue "
+        "figée.",
         f"Durée : {time.monotonic() - t0:.0f} s."])
     return texte, [
         (page("Graphiques à l'aveugle", aveugles, intro_aveugle),
@@ -306,12 +371,16 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
          "graphiques_reponses.html",
          "Les mêmes, avec les 15 minutes d'après et le résultat"),
         (etude3._csv(lignes_b, ["graphique", "paire", "ts_utc", "ts", "open",
-                                "high", "low", "close", "apres_entree"]),
+                                "high", "low", "close"]),
          "graphiques_bougies.csv",
-         "Les bougies de chaque graphique (apres_entree = 1 : après)"),
+         "Les bougies de chaque graphique, jusqu'à l'entrée"),
         (etude3._csv(lignes_s, ["graphique", "paire", "decision",
                                 "decision_utc", "sens", "zone",
-                                "bougies_avant", "issue"]),
+                                "bougies_avant"]),
          "graphiques_signaux.csv",
-         "Chaque graphique : paire, sens, zone, et l'issue"),
+         "Chaque graphique : paire, sens, zone (sans le résultat)"),
+        (etude3._csv(lignes_i, ["graphique", "issue",
+                                *(f"close_{k}" for k in range(APRES))]),
+         "graphiques_issues.csv",
+         "LES RÉSULTATS : à n'envoyer qu'une fois la revue figée"),
     ]

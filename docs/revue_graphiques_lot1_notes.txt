@@ -1,0 +1,82 @@
+# Revue à l'aveugle — notes écrites AVANT la lecture de la clé
+# id;tendance5h(avec/contre/range);arrivee(impulsion/escalier/oscillation);touche(1re/retest/usee);dernieres_bougies;rejet(oui/non);verdict(C/N/I)
+A01;range;impulsion baissière (3 rouges dont 2 grandes);retest;fin en série de rouges accélérée, aucune mèche basse;non;I
+A02;contre;impulsion haussière (2 grandes vertes);retest;série verte forte jusqu'à la zone;non;I
+A03;range;escalier haussier (6 vertes) puis rejet;1re;grande rouge englobante après une mèche haute sur la zone;oui;C
+A04;avec;oscillation autour de la zone;usee;remontée verte puis petite rouge, zone traversée plusieurs fois;non;N
+A05;range;escalier haussier puis rejet;retest;grande verte puis grande rouge englobante sur la zone;oui;C
+A06;contre;escalier haussier long;1re;petites bougies et dojis au contact, sans rejet net;non;I
+A07;avec;escalier baissier (repli dans tendance haussière);retest;grande rouge puis doji au contact;faible;C
+A08;range;impulsion baissière;retest;grande rouge jusqu'à la zone, mèche haute;non;I
+A09;range;impulsion baissière (3 rouges croissantes);retest (3e touche d'un support 5 h);dernière petite rouge au contact, pas de mèche;non;N
+A10;contre;escalier haussier vers l'ancien sommet;retest (double sommet);grande verte, petite verte, petite rouge au contact;faible;N
+A11;avec;escalier baissier (repli dans tendance haussière);retest;rouges puis petite verte au contact;faible;C
+A12;contre;impulsion haussière en V (8-10 vertes);1re;grande verte pleine sur la zone;non;I
+A13;avec;glissement lent puis plat au contact (20 bougies);usee;petites bougies, support qui tient sans élan;non;N
+A14;range;oscillation violente autour de la zone;usee;grande verte au-dessus, doji, grande rouge en dessous;oui;N
+A15;avec;chute rapide, rebond, puis retour lent;retest;deux rouges jusqu'à la zone, clôture au contact;non;N
+A16;avec;repli de 3 rouges dans tendance haussière;retest (ancienne résistance);doji au contact;faible;C
+A17;avec;repli de 3 rouges (2 grandes) dans tendance haussière;retest (cassure);petite verte au contact;faible;C
+A18;range;impulsion baissière (grandes rouges);retest (bas de range);petite verte un peu au-dessus de la zone;non;N
+A19;range;escalier baissier puis rejet;retest (mèche longue plus tôt);grande verte englobante depuis la zone;oui;C
+A20;avec;impulsion haussière en V puis rejet;retest;grande verte puis rouge avec mèche haute;oui;C
+A21;avec;deux grandes rouges, marché très volatil;retest;petite verte quasi doji au contact;faible;C
+A22;avec;escalier baissier (4 rouges);retest (support touché 3 fois en 5 h);petite verte au contact;faible;C
+A23;avec;cassure puis consolidation au-dessus;retest lointain;grande rouge puis verte, prix encore au-dessus de la zone;faible;N
+A24;avec;escalier haussier vers résistance, essoufflement;retest;petites bougies, mèches hautes, petite rouge;oui;C
+A25;avec;escalier haussier vers ancienne support devenue résistance;1re;verte, doji à mèche haute, rouge plus grande;oui;C
+A26;range;impulsion haussière (2 grandes vertes) puis rejet;retest (rejet net plus tôt);grande rouge à mèche haute après la course;oui;C
+A27;range;escalier baissier;retest (bas de range touché souvent);petite rouge, doji, petite verte au contact;faible;C
+A28;contre;escalier haussier long (60 bougies);1re;deux vertes puis doji à mèche sur la zone;faible;I
+A29;avec;escalier baissier qui accélère (grande rouge à la fin);retest (cassure);petite verte au contact après accélération;non;N
+A30;range;retour vers la zone par en dessous après cassure, rejet;retest;grande verte puis grande rouge;oui;C
+A31;avec;escalier haussier, double sommet sur la zone;retest;grande verte puis rouge franche;oui;C
+A32;range;impulsion haussière, double sommet;retest (rejet net plus tôt);doji vert puis petite rouge;faible;C
+A33;avec;escalier haussier vers une zone déjà rejetée;retest;petite verte puis doji à mèche haute;faible;N
+A34;avec;repli de 4 rouges vers l'ancienne résistance;retest (3e touche);doji au contact;faible;C
+A35;range;impulsion haussière en V (6 grandes vertes) puis rejet;1re;verte à longue mèche haute puis rouge moyenne;oui;C
+A36;contre;escalier haussier long (60 bougies);1re;petites bougies alternées, petite rouge à mèche;faible;I
+A37;contre;retour vers l'ancien sommet, collé à la zone;usee;petites bougies alternées sur la zone;non;N
+A38;avec;impulsion haussière en V;1re;verte, doji, verte, petite rouge à mèche;faible;N
+A39;range;deux grandes vertes vers un triple sommet puis rejet;retest (3e touche);grande rouge englobante au sommet;oui;C
+A40;avec;deux grandes rouges vers le support;retest (mèche longue plus tôt);petite verte au contact après grandes rouges;non;N
+A41;range;remontée en escalier vers la zone, saut de prix anormal dans le contexte;retest;petites vertes au contact;non;N
+A42;range;escalier haussier vers une résistance touchée 4 fois en 5 h;retest (4e touche);petites bougies puis grande rouge;oui;C
+A43;avec;impulsion baissière (3 grandes rouges);retest (cassure);grande rouge qui perce la zone;non;I
+A44;avec;grandes rouges vers le bas de range, marché volatil;retest;petite verte après grandes rouges;faible;N
+A45;range;deuxième descente en escalier;retest;petite verte à mèche basse au contact;oui;C
+A46;avec;escalier baissier long (repli dans tendance haussière);retest (cassure);petite verte au contact;faible;C
+A47;avec;série de rouges en escalier;retest (rebond net plus tôt);petite rouge qui clôture au contact;non;N
+A48;avec;escalier baissier qui accélère;retest (cassure);grande rouge puis petite verte au contact;faible;N
+A49;range;grande verte vers une résistance touchée 3 fois;retest (3e touche);doji à longue mèche haute (étoile filante);oui;C
+A50;avec;glissement très régulier en petites bougies (60 bougies);1re;petites rouges puis doji au contact;non;N
+A51;range;consolidation juste au-dessus de la zone (20 bougies);usee;petites rouges, doji rouge au contact;non;N
+A52;avec;grande rouge jusqu'à la zone après une baisse;retest (rebond plus tôt);petite verte après grande rouge;faible;N
+A53;range;escalier haussier vers résistance touchée 3 fois;retest (3e touche);grande verte qui touche la zone;non;I
+A54;range;impulsion haussière en V (4 grandes vertes);retest (résistance touchée 5 fois);grande verte qui touche la zone;non;I
+A55;avec;repli de petites rouges vers la cassure;retest (cassure);grande verte englobante depuis la zone;oui;C
+A56;range;oscillation autour de la zone puis vertes;usee;grande verte qui repasse au-dessus;non;I
+A57;contre;grosse chute puis prix collé à la zone (20 bougies);1re (nouveau plus bas);petites bougies au contact, aucune reprise;non;I
+A58;range;oscillation violente à travers la zone;usee;verte, grande rouge, petite verte;non;N
+A59;avec;escalier haussier vers résistance touchée 4 fois;retest (4e touche);doji à mèche puis grande rouge englobante;oui;C
+A60;avec;impulsion baissière (2 grandes rouges qui accélèrent);1re (cassure);doji rouge au contact;non;I
+A61;range;consolidation sous la zone, touches répétées;usee;grande verte qui touche la zone;non;N
+A62;range;remontée en V puis plat sous la zone;usee;verte à longue mèche haute;faible;N
+A63;avec;oscillation puis grande verte vers la zone;retest (rejet plus tôt);grande verte qui touche la zone;non;I
+A64;avec;grosse baisse puis base au contact (15 bougies);retest;petites bougies, doji, puis verte franche;oui;C
+A65;range;rouges dont une grande vers le support;retest (bas de range);doji après grande rouge;faible;N
+A66;avec;deux grandes rouges puis base au contact (20 bougies);retest (cassure);petite rouge puis verte moyenne;oui;C
+A67;range;escalier haussier puis prix collé à la zone;usee;grande verte, doji, petite verte;non;N
+A68;range;oscillation large, retour vers la zone déjà rejetée;retest;trois vertes à mèches au contact;faible;N
+A69;avec;marché désordonné, zone traversée plusieurs fois;usee;vertes puis rouge moyenne sous la zone;faible;N
+A70;range;grande rouge vers le bas de range, très volatil;retest;petite verte après grande rouge;faible;N
+A71;avec;grandes bougies dans les deux sens, retour en vertes;retest (rejet plus tôt);petite rouge au contact;faible;N
+A72;avec;repli vers la cassure (ancien sommet);retest (cassure);petite verte au contact;faible;C
+A73;contre;escalier haussier long puis prix collé au sommet 5 h;retest (anciens sommets);doji puis petite rouge au contact;faible;I
+A74;avec;vertes vers une résistance déjà rejetée;retest (rejet plus tôt);rouge à longue mèche haute;oui;C
+A75;avec;grande rouge puis remontée en V (2 grandes vertes);retest;petite rouge au contact;faible;N
+A76;avec;repli vers la cassure, marteau plus tôt;retest (3e touche);petite verte au contact;faible;C
+A77;range;escalier baissier, double creux;retest (double creux);petite verte au contact;faible;C
+A78;range;escalier haussier en V vers la zone;retest;deux vertes puis petite rouge;faible;N
+A79;range;escalier haussier qui accélère (2 grandes vertes);retest (haut de range);petite rouge après grandes vertes;faible;I
+A80;avec;escalier baissier (repli dans tendance haussière);retest (cassure);grande rouge puis verte moyenne;faible;C
