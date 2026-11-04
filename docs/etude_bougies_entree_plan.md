@@ -234,3 +234,25 @@ seule, `maxprofit/live/incluses.py`) :
 
 `/bougies` corrigé pour le mode 0 : les variables de la touche ne sont plus
 testées en double, et le contrôle de l'issue compare à la même entrée.
+
+### Réplication sur la quarantaine (`/incluses`, 04/11) : ÉCHEC
+
+L'échantillon compte 373 signaux à issue décisive. Il porte essentiellement
+sur les 31/10, 01/11 et 02/11 : avant le 31/10, la collecte dégradée ne
+laissait qu'AUDCAD.
+
+| | Tous | Jouables |
+|---|---|---|
+| favorable (moins de 5 incluses) | 42,1 % (107) | **35,8 % (67)** |
+| exactement 5 | 50,0 % (78) | 59,5 % (42) |
+| défavorable (6 ou plus) | 49,5 % (188) | 62,5 % (96) |
+
+- C1 : écart de −7,4 points (IC −23,7 à +10,9).
+- C2 : 35,8 %, soit 16,3 points sous le point mort (IC −29,7 à −1,3).
+- L'effet s'inverse. La suite des écarts est de +7,1 (exploration), +15,5
+  (validation), puis −7,4 (quarantaine).
+
+Selon le gel, la quarantaine n'a pas de pouvoir de verdict : la
+confirmation continue, sans rien changer, jusqu'au regard à 300 (vers le
+24/11). Mais la piste est fortement affaiblie, et rien ne doit s'appuyer
+dessus d'ici là.

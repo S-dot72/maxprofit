@@ -385,6 +385,9 @@ async def _servir(args) -> int:
             bot._incluses = lambda argument: asyncio.to_thread(
                 _incluses, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._graphiques = lambda argument: asyncio.to_thread(
+                _graphiques, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -947,6 +950,21 @@ def _incluses(chemin, course, argument: str = "", environ=None,
         "Épreuve H_IB",
         lambda lue, active, nom: epreuves(lue, active, course,
                                           nom_lecture=nom),
+        environ, ouvrir_url)
+
+
+def _graphiques(chemin, course, argument: str = "", environ=None,
+                ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/graphiques [active]` : 40 gagnants et 40 perdants jouables d'avant
+    le 03/11, dessinés au moment de l'entrée, pour une revue à l'aveugle,
+    en lecture seule sur la relève."""
+    from maxprofit.live.graphiques import revue
+    if course is None:
+        return "🖼 Course indisponible : le rejeu n'est pas en mémoire.", []
+    return _sur_la_releve(
+        chemin, "active" in argument.lower().split(), "🖼", "graphiques",
+        "Revue des graphiques",
+        lambda lue, active, nom: revue(lue, active, course, nom_lecture=nom),
         environ, ouvrir_url)
 
 
