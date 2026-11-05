@@ -110,3 +110,27 @@ exclus).
    aucun résultat ;
 2. les notes sont figées par leur empreinte ;
 3. ensuite seulement, `graphiques_issues.csv`.
+
+## Combinaisons de bougies vues au lot 1, gelées comme prédictions du lot 2
+
+Elles ont été comptées après la révélation du lot 1 (outil :
+`outils/combinaisons_graphiques.py`). Ce sont des pistes, sur des groupes
+de 5 à 18 graphiques. Toutes portent sur la bougie du signal et sa voisine,
+au contact de la zone. Le corps moyen est celui des 50 dernières bougies.
+
+| Code | Combinaison | Lot 1 | Prédiction pour le lot 2 |
+|---|---|---|---|
+| K1 | bougie du signal dans le sens du trade, corps ≥ 1,5 fois le corps moyen | 9/11 = 82 % | gagne plus que le reste |
+| K2 | englobante : avant-dernière contre, bougie du signal pour, corps plus grand | 13/18 = 72 % | gagne plus que le reste |
+| K3 | grande bougie contre (≥ 1,5 fois), puis doji (corps ≤ 10 % de l'étendue) | 5/5 | gagne plus que le reste |
+| K4 | longue mèche du côté de la zone (≥ 50 % de l'étendue) sur la bougie du signal | 5/15 = 33 % | gagne MOINS que le reste |
+| K5 | bougie du signal qui clôture contre le trade | 6/20 = 30 % | gagne MOINS que le reste |
+
+K4 est la seule qui se voit aussi sur des données indépendantes. Dans
+`/bougies`, `marteau_fav_ancre` donnait 40,5 % (42 signaux) en
+exploration, puis 38,1 % (42) en validation.
+
+Le lot 2 donnera environ 80 graphiques : trop peu pour trancher une
+combinaison rare. Il dira si le SENS se répète. Une combinaison qui se
+répète sera ensuite éprouvée sur l'ensemble des signaux, puis sur des
+données neuves.
