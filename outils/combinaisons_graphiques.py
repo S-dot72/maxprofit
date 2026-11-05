@@ -1,16 +1,24 @@
 #!/usr/bin/env python
 """Les combinaisons de bougies au contact, comptées sur un lot de
 /graphiques (bougies avant l'entrée + issues). Hors ligne, sans base :
-    python3 -I outils/combinaisons_graphiques.py graphiques_bougies.csv graphiques_signaux.csv
+    python3 -I outils/combinaisons_graphiques.py graphiques_bougies.csv \
+        graphiques_signaux.csv [graphiques_issues.csv]
+
+Lot 1 : l'issue est dans graphiques_signaux.csv. À partir du lot 2, elle est
+dans graphiques_issues.csv, le troisième argument.
 """
 import csv, sys
 from collections import defaultdict
 bougies_p, signaux_p = sys.argv[1:3]
+issues_p = sys.argv[3] if len(sys.argv) > 3 else None
 par = defaultdict(list)
 for r in csv.DictReader(open(bougies_p, encoding="utf-8"), delimiter=";"):
-    if r["apres_entree"] == "0":
+    if r.get("apres_entree", "0") == "0":
         par[int(r["graphique"])].append(r)
 sig = {int(r["graphique"]): r for r in csv.DictReader(open(signaux_p, encoding="utf-8"), delimiter=";")}
+if issues_p:
+    for r in csv.DictReader(open(issues_p, encoding="utf-8"), delimiter=";"):
+        sig[int(r["graphique"])]["issue"] = r["issue"]
 def bougie(r, sens, corps_moyen):
     o, h, l, c = (float(r[k]) for k in ("open", "high", "low", "close"))
     e = h - l or 1e-12; corps = abs(c - o)
