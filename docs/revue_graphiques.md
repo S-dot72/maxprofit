@@ -110,3 +110,83 @@ exclus).
    aucun résultat ;
 2. les notes sont figées par leur empreinte ;
 3. ensuite seulement, `graphiques_issues.csv`.
+
+## Combinaisons de bougies vues au lot 1, gelées comme prédictions du lot 2
+
+Elles ont été comptées après la révélation du lot 1 (outil :
+`outils/combinaisons_graphiques.py`). Ce sont des pistes, sur des groupes
+de 5 à 18 graphiques. Toutes portent sur la bougie du signal et sa voisine,
+au contact de la zone. Le corps moyen est celui des 50 dernières bougies.
+
+| Code | Combinaison | Lot 1 | Prédiction pour le lot 2 |
+|---|---|---|---|
+| K1 | bougie du signal dans le sens du trade, corps ≥ 1,5 fois le corps moyen | 9/11 = 82 % | gagne plus que le reste |
+| K2 | englobante : avant-dernière contre, bougie du signal pour, corps plus grand | 13/18 = 72 % | gagne plus que le reste |
+| K3 | grande bougie contre (≥ 1,5 fois), puis doji (corps ≤ 10 % de l'étendue) | 5/5 | gagne plus que le reste |
+| K4 | longue mèche du côté de la zone (≥ 50 % de l'étendue) sur la bougie du signal | 5/15 = 33 % | gagne MOINS que le reste |
+| K5 | bougie du signal qui clôture contre le trade | 6/20 = 30 % | gagne MOINS que le reste |
+
+K4 est la seule qui se voit aussi sur des données indépendantes. Dans
+`/bougies`, `marteau_fav_ancre` donnait 40,5 % (42 signaux) en
+exploration, puis 38,1 % (42) en validation.
+
+Le lot 2 donnera environ 80 graphiques : trop peu pour trancher une
+combinaison rare. Il dira si le SENS se répète. Une combinaison qui se
+répète sera ensuite éprouvée sur l'ensemble des signaux, puis sur des
+données neuves.
+
+## Lot 2 (08/11) : résultats
+
+**Envoi.** Les issues sont arrivées avec les autres fichiers et se sont
+affichées. La parade du lot 1 a donc été reprise :
+- les 80 graphiques ont été renumérotés au hasard (A01 à A80), sans paire,
+  date ni prix, avec une clé tenue à part ;
+- les notes ont été écrites sur ces numéros, puis figées avant la lecture
+  de la clé : `docs/revue_graphiques_lot2_notes.txt`, empreinte
+  `811f9d0010f72e4c582123c6426184fe804960dcb58113253f4f352858043c78`,
+  poussées sur la branche (commit 68b0802) avant la révélation.
+
+**Deux précisions de lecture**, fixées pendant la revue, avant la clé :
+- le rejet compte si le corps de la bougie du signal reprend tout le corps
+  de la dernière bougie d'approche, ou si sa mèche côté zone fait au moins
+  la moitié de son étendue, ou si un doji est suivi d'une bougie dans le
+  sens du trade (écrite dans les notes, appliquée dès A05) ;
+- pour une 2e touche après un rebond, l'arrivée se compte depuis le rebond
+  (A52, A62, A67 ; non écrite dans les notes).
+
+| Verdict à l'aveugle | Gagnants |
+|---|---|
+| confirme | 14/31 = 45,2 % |
+| neutre | 14/22 = 63,6 % |
+| infirme | 12/27 = 44,4 % |
+
+**Le test fixé d'avance échoue sur ses deux points** :
+1. confirme contre infirme : p = 0,58 (Fisher unilatéral) ;
+2. les « confirme » gagnent 45,2 %, sous le point mort de 52,08 %.
+
+Ce qui suit est descriptif, sur de petits groupes :
+- avec un rejet visible, 18/36 = 50 % ; sans, 22/44 = 50 % ;
+- tendance des 5 h avec le trade, 24/44 = 54,5 % ; range, 13/28 = 46,4 % ;
+  contre, 3/8 = 37,5 % ;
+- les « neutre » font mieux que le reste (63,6 %), mais sans que ce soit
+  significatif (p = 0,21, bilatéral), et ce n'était pas prédit.
+
+**Les combinaisons K1 à K5** (outil `outils/combinaisons_graphiques.py`,
+comparées au reste du lot) :
+
+| Code | Lot 1 | Lot 2 | Reste du lot 2 | Sens prédit retrouvé |
+|---|---|---|---|---|
+| K1 grande bougie pour | 9/11 | 7/14 = 50 % | 33/66 = 50 % | non |
+| K2 englobante | 13/18 | 10/21 = 48 % | 30/59 = 51 % | non |
+| K3 grande contre puis doji | 5/5 | 1/2 | 39/78 = 50 % | non |
+| K4 longue mèche côté zone | 5/15 | 7/14 = 50 % | 33/66 = 50 % | non |
+| K5 signal qui clôture contre | 6/20 | 5/10 = 50 % | 35/70 = 50 % | non |
+
+**Conclusion.**
+- La lecture visuelle, telle qu'elle a été figée, ne sépare pas les
+  gagnants des perdants. L'écart du lot 1 (64 % contre 31 %) tenait au
+  hasard ou à un biais de lecture.
+- Aucune combinaison ne se répète, K4 comprise. L'idée d'éprouver
+  « K4 inversé » est abandonnée.
+- Rien de ceci ne touche la course, ni les épreuves gelées H1/H2 et H_IB,
+  qui continuent.

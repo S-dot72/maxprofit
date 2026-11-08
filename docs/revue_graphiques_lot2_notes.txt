@@ -1,0 +1,84 @@
+# Revue à l'aveugle du lot 2 — notes écrites AVANT la lecture de la clé et des issues
+# Critères gelés (docs/revue_graphiques.md, « Lot 2 : critères de lecture GELÉS »)
+# id;tendance5h(avec/contre/range);arrivee(impulsion/escalier/oscillation/glissement);dernieres_bougies;rejet(oui/non);verdict(C/N/I)
+A01;contre;escalier baissier puis oscillation au-dessus de la zone;grande verte qui reprend 3 bougies, mais loin de la zone;oui;N
+A02;avec;escalier baissier (~25 bougies) jusqu'à la zone;rouge qui perce la zone puis grande verte englobante;oui;C
+A03;avec;impulsion baissière (4 rouges dont 2 grandes) jusqu'à la zone;verte moyenne au contact qui reprend la dernière rouge;oui;C
+A04;contre;impulsion haussière (grandes vertes) jusqu'à la zone;petite rouge au contact, ne reprend rien;non;I
+A05;avec;escalier baissier (~20 bougies) jusqu'à la zone;rouge puis verte de même taille au contact (reprise juste);oui;C
+A06;avec;remontée en 3 vertes moyennes, zone touchée 3-4 fois (usée);petite rouge au contact, pas de reprise;non;N
+A07;avec;impulsion haussière (une très grande verte) puis 2 petites vertes;petite rouge à longue mèche haute dans la zone;oui;C
+A08;range;impulsion haussière (grandes vertes) vers la zone;grande verte, clôture contre le trade, sous la zone;non;I
+A09;avec;escalier haussier (~10 bougies), 3e touche de la zone;grande rouge qui englobe la verte précédente sous la zone;oui;C
+A10;avec;impulsion baissière (3 rouges dont 2 grandes) jusqu'à la zone;grande rouge, clôture contre le trade;non;I
+# Règle de lecture appliquée dès A05 : rejet = corps qui reprend au moins tout le corps de la dernière bougie d'approche, ou mèche côté zone >= moitié de l'étendue, ou doji suivi d'une bougie dans le sens du trade.
+A11;avec;glissement en petites rouges, 2e touche récente;petite verte au contact, reprise partielle;non;N
+A12;range;impulsion baissière (grande rouge) jusqu'à la zone;verte qui ne reprend que la moitié de la grande rouge;non;I
+A13;avec;escalier haussier puis prix collé sur la zone (~35 bougies);petites bougies alternées sur la zone;non;N
+A14;avec;impulsion baissière (3 rouges moyennes à grandes) jusqu'à la zone;petite verte qui reprend la moitié de la dernière rouge;non;I
+A15;range;escalier haussier (~25 bougies) jusqu'à la zone;petite rouge à longue mèche haute dans la zone;oui;C
+A16;range;glissement baissier lent jusqu'à la zone;verte qui englobe les petites rouges précédentes au contact;oui;C
+A17;contre;oscillation large, zone touchée 4-5 fois (usée), dernière impulsion en une grande verte;petite verte à longue mèche haute, clôture contre le trade;non;N
+A18;range;escalier baissier (~8 rouges) jusqu'à la zone, après un trou de prix géant 3 h plus tôt;petite verte qui reprend toute la dernière rouge;oui;C
+A19;range;impulsion haussière (2 grandes vertes) jusqu'à la zone, 3e-4e touche;rouge moyenne qui reprend les 2/3 de la grande verte;non;I
+A20;contre;escalier baissier long (~50 bougies) puis prix collé à la zone;petits dojis sur la zone;non;I
+A21;avec;escalier puis impulsion baissière (2 grandes rouges) jusqu'à la zone;verte qui reprend toute la dernière rouge juste au-dessus de la zone;oui;C
+A22;avec;impulsion baissière puis base de ~15 petites bougies sur la zone;grande verte qui englobe la base;oui;C
+A23;avec;escalier baissier long (~40 bougies) jusqu'à la zone;petite verte après un doji sur la zone;oui;I
+A24;contre;escalier haussier long (~45 bougies) jusqu'à la zone;petite rouge au contact;non;I
+A25;range;escalier baissier long (~55 bougies) jusqu'à la zone;petite verte qui reprend la petite rouge précédente;oui;I
+A26;range;escalier baissier (~20 bougies, 2 grandes rouges) jusqu'à la zone;verte qui reprend toute la dernière rouge au contact;oui;C
+A27;avec;une grande verte vers la zone après une base;rouge qui reprend la moitié de la grande verte, sous la zone;non;N
+A28;range;escalier haussier (~30 bougies) finissant par une grande verte;petite rouge au contact (1/3 de la verte);non;N
+A29;avec;impulsion baissière (3 rouges dont 2 grandes) jusqu'à la zone;petite verte qui reprend 2/3 de la dernière rouge;non;I
+A30;range;impulsion baissière (grandes rouges) jusqu'au-dessus de la zone;petite verte qui reprend 1/3 de la grande rouge;non;I
+A31;range;impulsion baissière (grandes rouges) jusqu'à la zone, 2e touche;petite verte à longue mèche basse sous la zone (marteau);oui;C
+A32;range;escalier haussier (~28 bougies) puis grande verte jusqu'à la zone;petite rouge à longue mèche haute (étoile filante);oui;C
+A33;range;escalier haussier (~30 bougies) jusqu'à la zone, après un trou de prix géant;petite verte au contact, clôture contre le trade;non;N
+A34;avec;impulsion haussière (2 grandes vertes) jusqu'à la zone, 4e touche;rouge qui reprend 1/3 de la grande verte;non;I
+A35;contre;escalier haussier long (~35 bougies) puis prix collé à la zone (~25 bougies);rouge moyenne qui reprend la petite verte précédente;oui;I
+A36;avec;impulsion baissière (3 rouges dont une grande) jusqu'à la zone;doji puis petite verte au contact;oui;C
+A37;avec;oscillation descendante (~25 bougies) jusqu'à la zone, 2e touche;petite verte qui reprend 1/3 de la dernière rouge;non;N
+A38;avec;escalier haussier (~15 bougies) jusqu'à la zone, 3e touche;rouge qui reprend 70 % de la dernière verte;non;N
+A39;range;impulsion baissière (2 grandes rouges) jusqu'à la zone, 2e touche;petite verte, reprise partielle;non;I
+A40;range;escalier haussier (~30 bougies) jusqu'à la zone;petites vertes au contact, clôture contre le trade;non;N
+A41;avec;cassure sous la zone puis retour et oscillation juste dessous (~15 bougies);tout petit doji au contact;non;N
+A42;range;escalier haussier long puis ~20 bougies d'oscillation sous la zone (dernière approche ~12 bougies);grande rouge qui englobe la verte à longue mèche haute (cas ambigu : C retenu);oui;C
+A43;avec;impulsion haussière (grandes vertes) jusqu'à la zone, 2e touche;rouge qui reprend toute la dernière verte;oui;C
+A44;range;escalier haussier (~35 bougies) jusqu'à la zone, 2e touche;petite rouge qui reprend la petite verte précédente (rejet faible);oui;C
+A45;avec;remontée rapide (~18 bougies, vertes moyennes) jusqu'à la zone;rouge qui reprend toute la grande verte, mèche haute dans la zone;oui;C
+A46;range;escalier baissier (~25 bougies) puis une très grande rouge jusqu'à la zone, après un trou de prix géant;petit doji vert au contact;non;N
+A47;avec;impulsion baissière (5 rouges dont 2 grandes) jusqu'à la zone;grande verte qui englobe les 2 dernières rouges;oui;C
+A48;avec;chute puis base de ~30 bougies au-dessus de la zone;petite rouge puis tout petit doji au contact;non;N
+A49;range;escalier baissier (~10 rouges moyennes), 2e touche;petite verte qui reprend 1/3 de la rouge qui a percé la zone;non;N
+A50;avec;impulsion baissière (3 rouges dont une grande) jusqu'à la zone;petite verte à longue mèche basse (marteau);oui;C
+A51;avec;escalier haussier finissant par 2 vertes moyennes à grandes, 3e touche;petite rouge qui reprend 1/4 de la grande verte;non;I
+A52;range;escalier baissier long, 1re touche puis rebond et retour en glissement (2e touche);petit doji au contact;non;N
+A53;avec;escalier haussier (~25 bougies) puis grande verte qui dépasse la zone;grande rouge qui reprend la verte et repasse sous la zone;oui;C
+A54;avec;impulsion haussière (grandes vertes) vers la zone, 2e touche;petite rouge sous la zone, ne reprend rien;non;I
+A55;avec;escalier baissier finissant par une grande rouge jusqu'à la zone;petite verte qui reprend 1/3 de la grande rouge;non;I
+A56;contre;escalier baissier (~20 bougies, une grande rouge) jusqu'au plus bas des 5 h;petite verte qui reprend la petite rouge précédente;oui;N
+A57;range;impulsion haussière (4 vertes de plus en plus grandes) jusqu'à la zone, 2e touche;petite rouge qui reprend 1/5 de la dernière verte;non;I
+A58;range;glissement lent (~40 bougies) puis prix collé à la zone;petites rouges au contact, clôture contre le trade;non;N
+A59;avec;oscillation descendante (~35 bougies), plusieurs mèches basses près de la zone;grande verte qui englobe les petites rouges précédentes;oui;C
+A60;contre;escalier haussier long (~60 bougies) jusqu'à la zone;petite rouge au contact;non;I
+A61;range;oscillation large, zone touchée 3 fois, dernière approche en 2 rouges;verte à longue mèche basse sous la zone (marteau);oui;C
+A62;avec;escalier baissier, 1re touche puis petit rebond et retour (~10 bougies, une grande rouge);petite verte qui reprend la petite rouge précédente (rejet faible);oui;C
+A63;range;impulsion haussière (3 grandes vertes) jusqu'à la zone, 2e touche;doji à mèche haute puis rouge qui le reprend;oui;C
+A64;avec;impulsion haussière (grande verte puis verte) vers la zone, 2e touche;petite rouge sous la zone, reprend 1/3;non;I
+A65;range;impulsion baissière (grande rouge puis rouge), zone touchée 4 fois (usée);verte qui englobe la dernière rouge au contact;oui;C
+A66;range;impulsion haussière (2 grandes vertes) jusqu'à la zone;petit doji vert au contact, clôture contre le trade;non;I
+A67;avec;escalier baissier long, 1re touche puis rebond et retour en glissement (~10 bougies);petite rouge au contact, clôture contre le trade;non;N
+A68;avec;escalier haussier (~30 bougies) finissant par 2 grandes vertes;petite rouge qui reprend 1/7 de la grande verte;non;I
+A69;avec;grande verte puis petite verte à mèche haute, 3e touche;rouge qui englobe la petite verte et reprend la moitié de la grande;oui;C
+A70;avec;impulsion haussière (3 grandes vertes) jusqu'à la zone;petite rouge qui reprend 1/3 de la dernière verte;non;I
+A71;avec;impulsion baissière (5 rouges, dont 2 grandes), 2e touche;verte qui reprend toute la dernière rouge (mèche basse de celle-ci sous la zone);oui;C
+A72;avec;escalier baissier (~20 bougies) jusqu'à la zone;2 dojis puis petite verte au contact;oui;C
+A73;avec;escalier baissier (~25 bougies) jusqu'à la zone, 2e touche;petit doji vert à longue mèche basse sous la zone;oui;C
+A74;range;oscillation large, zone touchée plusieurs fois (usée);grande rouge qui annule la grande verte, clôture contre le trade;non;N
+A75;avec;escalier baissier (~35 bougies) finissant par une grande rouge;petit doji au contact;non;N
+A76;avec;descente oscillante puis rouges (une grande) jusqu'à la zone;rouge au contact, clôture contre le trade;non;I
+A77;range;3 rouges après une grande verte, 2e touche;grande verte qui englobe les dernières rouges;oui;C
+A78;avec;escalier baissier, base sur la zone, puis 2 rouges (la dernière grande);petite verte qui reprend la moitié de la grande rouge;non;I
+A79;avec;escalier haussier (~15 bougies) avec une grande verte, 3e touche;petite verte à mèche haute, clôture contre le trade;non;N
+A80;avec;impulsion haussière (3 vertes dont une grande) après oscillation autour de la zone;rouge qui reprend 3/4 de la dernière verte;non;I
