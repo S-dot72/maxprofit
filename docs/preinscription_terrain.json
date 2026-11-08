@@ -1,0 +1,51 @@
+{
+  "objet": "Le prix M1 des paires OTC est-il prévisible par une règle simple, au-delà du point mort de 52,0833 % ? Étude du terrain, indépendante de ZoneH1.",
+  "donnees": {
+    "table": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période (résumé calculé par le serveur)",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation_utc": "2026-11-10T00:00:00Z",
+    "validation": "jours UTC complets du 03/11 à la veille du lancement, au plus jusqu'au 09/11 inclus",
+    "confirmation": "les bougies à partir du 10/11 00:00 UTC ne sont jamais lues par /terrain : elles servent à confirmer une piste gelée"
+  },
+  "issue": {
+    "decision": "à la clôture de chaque bougie M1 t",
+    "entree": "clôture de la bougie t",
+    "horizons_min": [1, 5, 15],
+    "sortie": "clôture de la bougie t + h",
+    "gain": "mouvement strict dans le sens parié ; une égalité est une perte (sensibilité publiée : égalités exclues)",
+    "contiguite": "toutes les bougies de t − k à t + h présentes et complètes (k = 0 pour F5)",
+    "saut_aberrant": "une variation de clôture à clôture de plus de 1 % en une minute ; toute décision dont la fenêtre [t − k, t + h] en contient un est écartée et comptée à part"
+  },
+  "jouable": "dernier payout du flux relevé au plus tard à la décision (fin de la bougie t) ≥ 84, soit 92 % appliqués ; sans relevé, la décision n'est pas jouable",
+  "point_mort": 0.5208333333,
+  "familles": {
+    "F1_suite": "signe de close_t − close_{t−k}, k ∈ {1, 5, 15} ; mouvement nul : pas de décision ; pari dans ce sens (suite) ou à l'inverse (retour)",
+    "F2_exces": "|close_t − close_{t−k}| ≥ 3 × la médiane des |close_u − close_{u−k}| du jour UTC précédent de la paire (au moins 720 valeurs), k ∈ {1, 5} ; pari dans le sens du mouvement ou à l'inverse",
+    "F3_meneur": "couples ordonnés (X, Y) de paires distinctes qui partagent exactement une devise, bougies de la même minute ; signe du mouvement de X sur k minutes, k ∈ {1, 5}, orienté (+1 si la devise commune est à la même place dans X et Y, −1 sinon) ; pari sur Y dans ce sens ou à l'inverse",
+    "F4_triangle": "trois paires qui forment un triangle de devises ; pour chaque paire T = U/V du triangle, e = ln(T) − ln(prix de U/V impliqué par les deux autres) ; z = (e − moyenne des 60 minutes précédentes) / écart-type de ces 60 minutes (au moins 50 valeurs, écart-type > 0) ; si |z| ≥ 2, pari que T revient (baisse si z > 0, hausse si z < 0) ou l'inverse",
+    "F5_heure": "pari haussier ou baissier sur la paire, selon l'heure UTC de la décision, horizon 15 seulement"
+  },
+  "cases": {
+    "F1": "k × horizon, toutes paires ensemble, et par paire",
+    "F2": "k × horizon, toutes paires ensemble, et par paire",
+    "F3": "k × horizon, tous couples ensemble, et par couple ordonné",
+    "F4": "horizon, tous triangles ensemble, et par (triangle, paire jouée)",
+    "F5": "paire × heure UTC"
+  },
+  "selection": "sur l'exploration, chaque case prend le sens (suite / retour, hausse / baisse) au meilleur taux jouable ; elle est retenue si ce taux atteint 52,0833 % avec au moins 500 décisions jouables",
+  "validation": "chaque case retenue est jugée sur la validation dans le sens choisi : taux jouable, IC 95 % et p unilatérale contre 52,0833 % ; une case qui a moins de 200 décisions jouables en validation n'est pas jugée ; Benjamini-Hochberg à 10 % sur toutes les cases jugées",
+  "incertitude": "bootstrap par blocs (paire jouée × jour UTC), 1 000 tirages, graine 7 ; IC 95 % percentile ; p unilatérale par l'approximation normale de l'écart-type bootstrap",
+  "verdicts": {
+    "piste": "case découverte en BH dans la validation : elle est gelée puis confirmée sur les bougies à partir du 10/11, avant toute autre décision",
+    "terrain_muet": "aucune case découverte : aucune de ces règles ne bat le point mort sur l'OTC"
+  },
+  "descriptif": "par paire : minutes lues, part jouable, part des minutes sans mouvement, autocorrélation des rendements 1 min aux retards 1 à 5 ; jamais un critère",
+  "interdits": [
+    "aucune écriture en base, sorties en CSV seulement",
+    "aucune lecture des bougies à partir du 10/11 00:00 UTC",
+    "la course, la collecte, la stratégie, les entrées et les échéances ne changent pas",
+    "aucun paramètre ne se rechoisit après le gel : un changement fait une nouvelle pré-inscription, avec une nouvelle empreinte"
+  ]
+}
