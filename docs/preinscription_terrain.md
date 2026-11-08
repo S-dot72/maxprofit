@@ -75,3 +75,23 @@ de chaque bougie M1. Il n'y a pas de filtre de zone, ni de choix à la main.
 - **Terrain muet** : aucune case découverte. Aucune de ces règles ne bat
   le point mort sur l'OTC. C'est un argument fort pour changer de terrain
   plutôt que de stratégie.
+
+## Lancer l'étude
+
+Code : `maxprofit/live/terrain.py`. Tests : `tests/test_terrain.py` (une
+base synthétique où deux failles sont plantées, et que l'étude retrouve).
+
+- **`/terrain`**, à partir du 10/11 00:00 UTC : une seule lecture, sur la
+  semaine de validation entière. Avant cette date, la commande explique
+  qu'il faut attendre.
+- **`/terrain partielle`** : juge tout de suite, sur les jours complets
+  déjà écoulés. Ce premier jugement est alors le seul, et on ne relance pas
+  pour en obtenir un meilleur.
+- **`/terrain active`** : lit tout sur la base active (son quota de
+  transfert), si la relève ne répond pas.
+
+L'étude dure quelques minutes. Elle rend un rapport et deux fichiers :
+- `terrain_cases.csv` : une ligne par case, avec l'exploration, la
+  validation et le verdict ;
+- `terrain_paires.csv` : le descriptif par paire (minutes, part jouable,
+  minutes immobiles, autocorrélations, sauts), qui n'est jamais un critère.

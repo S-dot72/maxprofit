@@ -388,6 +388,9 @@ async def _servir(args) -> int:
             bot._graphiques = lambda argument: asyncio.to_thread(
                 _graphiques, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._terrain = lambda argument: asyncio.to_thread(
+                _terrain, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -972,6 +975,22 @@ def _graphiques(chemin, course, argument: str = "", environ=None,
         "Revue des graphiques",
         lambda lue, active, nom: revue(lue, active, course, nom_lecture=nom,
                                        lot=lot),
+        environ, ouvrir_url)
+
+
+def _terrain(chemin, course, argument: str = "", environ=None,
+             ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/terrain [partielle] [active]` : le prix M1 des paires OTC est-il
+    prévisible par une règle simple ? Étude gelée (60e6ddaf), sans ZoneH1,
+    en lecture seule sur la relève. Elle ne lit pas le rejeu : la course
+    n'est pas requise."""
+    from maxprofit.live import terrain as tr
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "🧭", "terrain", "Étude du terrain",
+        lambda lue, active, nom: tr.terrain(
+            lue, active, course, nom_lecture=nom,
+            partielle="partielle" in mots),
         environ, ouvrir_url)
 
 
