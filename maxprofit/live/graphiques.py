@@ -32,7 +32,7 @@ Les fichiers rendus :
   la revue figée.
 
 `/graphiques 2` (lot 2, puis 3…) tire un nouveau lot, graine 7 + lot − 1,
-sans aucun signal du lot 1 ni de sa zone.
+sans aucun signal des lots déjà revus ni de leurs zones (`REVUS`).
 
 Une revue visuelle FAIT NAÎTRE des idées ; elle n'en valide aucune. Tout
 indice qui en sort se vérifie sur l'ensemble des signaux, puis se gèle et se
@@ -98,6 +98,41 @@ DEJA_REVUS: frozenset[tuple[str, int]] = frozenset({
     ("USDCHF_otc", 1793093640), ("USDJPY_otc", 1791646500), ("USDJPY_otc", 1791729060),
     ("USDJPY_otc", 1793520720), ("USDJPY_otc", 1793557200),
 })
+#: Le lot 2, revu le 08/11 (graine 8, issues lues après les notes figées) :
+#: exclu à partir du lot 3. Liste figée (paire, décision).
+DEJA_REVUS_LOT2: frozenset[tuple[str, int]] = frozenset({
+    ("AUDCAD_otc", 1791689280), ("AUDCAD_otc", 1791701340), ("AUDCAD_otc", 1791737400),
+    ("AUDCAD_otc", 1792138860), ("AUDCAD_otc", 1792155660), ("AUDCAD_otc", 1793307600),
+    ("AUDCAD_otc", 1793398020), ("AUDCHF_otc", 1793505840), ("AUDCHF_otc", 1793594400),
+    ("AUDNZD_otc", 1791759600), ("AUDNZD_otc", 1792475580), ("AUDNZD_otc", 1792525080),
+    ("AUDNZD_otc", 1792893240), ("AUDUSD_otc", 1792582920), ("AUDUSD_otc", 1792785240),
+    ("AUDUSD_otc", 1793595240), ("CADCHF_otc", 1792069020), ("CADCHF_otc", 1793632500),
+    ("CADJPY_otc", 1791815820), ("CADJPY_otc", 1792525440), ("CADJPY_otc", 1793631660),
+    ("CHFJPY_otc", 1791655500), ("CHFJPY_otc", 1791951060), ("CHFJPY_otc", 1792742280),
+    ("CHFJPY_otc", 1792946700), ("CHFJPY_otc", 1793454720), ("CHFJPY_otc", 1793528820),
+    ("EURCHF_otc", 1792496700), ("EURCHF_otc", 1792859460), ("EURCHF_otc", 1793607240),
+    ("EURGBP_otc", 1791767640), ("EURGBP_otc", 1792535820), ("EURGBP_otc", 1793065620),
+    ("EURJPY_otc", 1791685860), ("EURJPY_otc", 1792091880), ("EURJPY_otc", 1792665840),
+    ("EURJPY_otc", 1792768680), ("EURJPY_otc", 1793096580), ("EURNZD_otc", 1791905280),
+    ("EURNZD_otc", 1791943140), ("EURNZD_otc", 1791980520), ("EURNZD_otc", 1792431180),
+    ("EURUSD_otc", 1791648180), ("EURUSD_otc", 1791738540), ("EURUSD_otc", 1792669380),
+    ("EURUSD_otc", 1792865160), ("EURUSD_otc", 1792878600), ("EURUSD_otc", 1792919220),
+    ("GBPAUD_otc", 1792671420), ("GBPAUD_otc", 1792882740), ("GBPAUD_otc", 1793051160),
+    ("GBPAUD_otc", 1793097240), ("GBPAUD_otc", 1793560560), ("GBPJPY_otc", 1791793680),
+    ("GBPJPY_otc", 1792035660), ("GBPUSD_otc", 1791712620), ("GBPUSD_otc", 1791731160),
+    ("GBPUSD_otc", 1792071240), ("GBPUSD_otc", 1792918680), ("NZDJPY_otc", 1792662840),
+    ("NZDJPY_otc", 1793481540), ("NZDUSD_otc", 1791950100), ("NZDUSD_otc", 1792473780),
+    ("NZDUSD_otc", 1792911180), ("USDCAD_otc", 1791692160), ("USDCAD_otc", 1791696000),
+    ("USDCAD_otc", 1791898320), ("USDCAD_otc", 1791997500), ("USDCAD_otc", 1792084680),
+    ("USDCAD_otc", 1792520640), ("USDCAD_otc", 1792859460), ("USDCAD_otc", 1792927320),
+    ("USDCAD_otc", 1793583240), ("USDCHF_otc", 1792573920), ("USDJPY_otc", 1791645480),
+    ("USDJPY_otc", 1791927600), ("USDJPY_otc", 1792007940), ("USDJPY_otc", 1792131420),
+    ("USDJPY_otc", 1792692480), ("USDJPY_otc", 1793660520),
+})
+#: Les lots déjà revus, par numéro. Le lot N exclut les lots 1 à N − 1, et
+#: ne se tire que si tous ceux-là sont enregistrés ici.
+REVUS: dict[int, frozenset[tuple[str, int]]] = {1: DEJA_REVUS,
+                                                2: DEJA_REVUS_LOT2}
 LOT_MAX = 9
 
 
@@ -108,13 +143,19 @@ def analyser_lot(argument: str) -> int:
     lot = int(chiffres[0]) if chiffres else 1
     if not 1 <= lot <= LOT_MAX:
         raise ValueError(f"lot entre 1 et {LOT_MAX}")
+    manquants = [k for k in range(1, lot) if k not in REVUS]
+    if manquants:
+        raise ValueError(f"lot {lot} indisponible : le lot {manquants[0]} "
+                         f"n'est pas encore enregistré comme revu")
     return lot
 
 
-def deja_revu(e) -> bool:
-    """Un signal du lot 1, ou de sa zone (même paire, à moins de 15 min)."""
+def deja_revu(e, jusqu_au_lot: int = 1) -> bool:
+    """Un signal d'un lot déjà revu (1 à `jusqu_au_lot`), ou de sa zone
+    (même paire, à moins de 15 min)."""
     return any(p == e.pair and abs(d - e.ts_sec) < ECART_ZONE_SEC
-               for p, d in DEJA_REVUS)
+               for k in range(1, jusqu_au_lot + 1)
+               for p, d in REVUS.get(k, ()))
 
 ATTENDRE_LE_REJEU = (
     "🖼 Le rejeu quotidien n'est pas encore en mémoire : il tourne quelques "
@@ -267,7 +308,7 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
           lot: int = 1, respirer: Callable[[], None] | None = None
           ) -> tuple[str, list[tuple[bytes, str, str]]]:
     """(rapport, fichiers). Les bases sont déjà en lecture seule. À partir
-    du lot 2, la graine change et le lot 1 est exclu ; les issues partent
+    du lot 2, la graine change et les lots déjà revus sont exclus ; les issues partent
     dans un fichier À PART, à n'ouvrir qu'après la revue."""
     respirer = respirer or (lambda: time.sleep(RESPIRATION_SEC))
     t0 = time.monotonic()
@@ -291,7 +332,7 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
 
     tous = candidats(memoire[0])
     if lot >= 2:
-        tous = [e for e in tous if not deja_revu(e)]
+        tous = [e for e in tous if not deja_revu(e, lot - 1)]
     tirage = tirer(tous, jouable, graine=GRAINE + lot - 1)
     if not tirage:
         return "🖼 Aucun signal jouable à dessiner avant le 03/11.", []
@@ -353,7 +394,8 @@ def revue(lue_brute, active_brute, course, *, nom_lecture: str = "relève",
         f"<b>Lot {lot}</b> : {len(tirage)} graphiques ({gagnes} gagnants, "
         f"{len(tirage) - gagnes} perdants, mélangés), tirés parmi "
         f"{len(tous)} signaux d'avant le 03/11, un par zone"
-        + (", lot 1 exclu." if lot >= 2 else "."),
+        + ("." if lot < 2 else ", lot 1 exclu." if lot == 2
+           else f", lots 1 à {lot - 1} exclus."),
         "1. Ouvre <b>graphiques_aveugles.html</b> : note pour chaque "
         "graphique ce qui confirme ou infirme le trade, sans regarder le "
         "résultat.",
