@@ -218,3 +218,15 @@ def test_un_autre_lot_donne_d_autres_graphiques(passe):
         c = next(c for c, n, _ in f if n == "graphiques_signaux.csv")
         return {l.split(";")[2] for l in c.decode("utf-8").splitlines()[1:]}
     assert decisions(autres) != decisions(fichiers)
+
+
+def test_le_lot_3_exclut_aussi_le_lot_2():
+    assert len(gr.DEJA_REVUS_LOT2) == 80
+    assert not gr.DEJA_REVUS & gr.DEJA_REVUS_LOT2
+    paire, d = sorted(gr.DEJA_REVUS_LOT2)[0]
+    e = _exemple(paire, d + 300, True)
+    assert not gr.deja_revu(e, 1)
+    assert gr.deja_revu(e, 2), "même zone qu'un graphique du lot 2"
+    assert gr.analyser_lot("3") == 3
+    with pytest.raises(ValueError):
+        gr.analyser_lot("4")                 # le lot 3 n'est pas enregistré

@@ -190,3 +190,42 @@ comparées au reste du lot) :
   « K4 inversé » est abandonnée.
 - Rien de ceci ne touche la course, ni les épreuves gelées H1/H2 et H_IB,
   qui continuent.
+
+## Lot 3 : la lecture libre (proposée le 09/11)
+
+Demandé le 09/11 :
+
+> « Il faut peut-être pas juste figer les critères et l'adapter au
+> graphique, tous les graphiques ne disent pas la même chose […] pas juste
+> dépendre de nos critères figés a, b, c alors qu'on voit d. »
+
+**Ce qui se fige change.** La grille de lecture ne se fige plus. Ce qui se
+fige, c'est le verdict, écrit avant de connaître le résultat :
+- chaque graphique se lit librement, avec tout ce qu'on y voit :
+  micro-mouvements, combinaisons de bougies, niveau que le prix va
+  chercher, usure de la zone ;
+- pour chacun, on écrit **avant** de voir le résultat : *sens prévu*,
+  *inverse* ou *je passe*, avec quelques mots qui disent pourquoi ;
+- les notes sont figées par leur empreinte et poussées, puis seulement on
+  ouvre les issues.
+
+**Les lecteurs** : l'utilisateur et Claude, chacun de son côté. Aucun des
+deux ne voit les notes de l'autre avant la révélation.
+
+**Le lot** : `/graphiques 3`, graine 9, lots 1 et 2 exclus (`REVUS`).
+
+**Ordre des envois** :
+1. les notes de l'utilisateur, avec `graphiques_bougies.csv` et
+   `graphiques_signaux.csv`, sans `graphiques_issues.csv` ni
+   `graphiques_reponses.html` ;
+2. Claude lit à l'aveugle, puis fige les deux jeux de notes ;
+3. ensuite seulement, `graphiques_issues.csv`.
+
+**Ce qui comptera** : le taux de gain des trades pris, face au point mort
+de 52,08 % et face aux trades passés.
+- Un trade *inverse* gagne si la clôture à 15 minutes est strictement de
+  l'autre côté de l'entrée. Une égalité perd, comme pour le sens prévu.
+- Un lot de 80 graphiques ne donne qu'un premier signal. Pour environ 40
+  trades pris, il faut environ 65 % de gagnants pour que ce soit net
+  (binomial unilatéral, 5 %).
+- Une lecture qui a de la valeur se retrouve sur les lots suivants.
