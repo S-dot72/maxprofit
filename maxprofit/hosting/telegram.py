@@ -310,6 +310,7 @@ COMMANDES = [
     ("incluses", "Épreuve gelée de la piste des bougies incluses (admin)"),
     ("graphiques", "Revue de graphiques à l'aveugle, gagnants et perdants (admin)"),
     ("terrain", "Le prix OTC est-il prévisible ? Étude gelée, sans ZoneH1 (admin)"),
+    ("engulfing", "Étude Engulfing OTC, recherche isolée en lecture seule (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -481,6 +482,11 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._terrain: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._terrain_en_cours: asyncio.Task | None = None
+        #: `argument -> (rapport, fichiers)` : l'étude Engulfing, recherche
+        #: isolée en lecture seule, en tâche de fond.
+        self._engulfing: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._engulfing_en_cours: asyncio.Task | None = None
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -886,6 +892,26 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                         chat, self._graphiques,
                         texte[len("/graphiques"):].strip(),
                         "🖼 Revue des graphiques"))
+        elif texte.startswith("/engulfing"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._engulfing is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._engulfing_en_cours is not None
+                  and not self._engulfing_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "🕯 L'étude Engulfing est déjà en cours.", CLAVIER)
+            else:
+                await self.client.envoyer(
+                    chat, "🕯 Étude Engulfing lancée (recherche isolée, "
+                    "lecture seule sur la relève, aucun ordre ; bougies et "
+                    "ticks de plus d'un mois, compter jusqu'à une heure). Le "
+                    "rapport et les fichiers arriveront ici.", CLAVIER)
+                self._engulfing_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(
+                        chat, self._engulfing,
+                        texte[len("/engulfing"):].strip(),
+                        "🕯 Étude Engulfing"))
         elif texte.startswith("/terrain"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)

@@ -391,6 +391,9 @@ async def _servir(args) -> int:
             bot._terrain = lambda argument: asyncio.to_thread(
                 _terrain, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._engulfing = lambda argument: asyncio.to_thread(
+                _engulfing, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -991,6 +994,21 @@ def _terrain(chemin, course, argument: str = "", environ=None,
         lambda lue, active, nom: tr.terrain(
             lue, active, course, nom_lecture=nom,
             partielle="partielle" in mots),
+        environ, ouvrir_url)
+
+
+def _engulfing(chemin, course, argument: str = "", environ=None,
+               ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/engulfing [sans_ticks] [active]` : l'étude historique de
+    l'Engulfing OTC (protocole 443c3410), recherche isolée en lecture seule
+    sur la relève. Elle n'importe ni la course ni l'exécution des ordres."""
+    from maxprofit.live import engulfing as en
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "🕯", "engulfing", "Étude Engulfing",
+        lambda lue, active, nom: en.etude(
+            lue, active, course, nom_lecture=nom,
+            avec_ticks="sans_ticks" not in mots),
         environ, ouvrir_url)
 
 

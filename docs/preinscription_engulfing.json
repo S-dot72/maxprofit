@@ -1,0 +1,85 @@
+{
+  "objet": "Étude historique isolée de l'Engulfing sur les paires OTC : le retour au niveau d'ouverture de la bougie englobée, joué dans le sens défini par l'utilisateur, bat-il le point mort de 52,0833 % ?",
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), mêmes règles de copie",
+    "payouts": "payouts (points de changement), mêmes règles de copie",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation": "début du jour UTC du lancement : seuls des jours complets sont lus"
+  },
+  "motif": {
+    "c1_c2": "c1 est la bougie englobée, c2 la bougie englobante ; minutes consécutives, toutes deux complètes",
+    "haussier": "c1 rouge (close < open), c2 verte (close > open), open(c2) ≤ close(c1), close(c2) ≥ open(c1), corps de c2 strictement plus grand que celui de c1",
+    "baissier": "c1 verte, c2 rouge, open(c2) ≥ close(c1), close(c2) ≤ open(c1), corps de c2 strictement plus grand que celui de c1",
+    "corps_seulement": "les mèches n'entrent pas dans l'englobement",
+    "direction": {"haussier": "PUT", "baissier": "CALL"},
+    "niveau": "open(c1)"
+  },
+  "scenarios": {
+    "A": "entrée à l'ouverture de c1 : INVALIDE pour une stratégie, car le motif n'est connu qu'à la clôture de c2 ; calculé sur les bougies seulement pour montrer l'effet de l'anticipation",
+    "B": "principal : après la clôture de c2, la première atteinte du niveau (haussier : prix ≤ niveau ; baissier : prix ≥ niveau) dans les 10 minutes ; une seule entrée par motif, à la première atteinte ; sans atteinte, le motif n'est pas déclenché"
+  },
+  "execution": {
+    "ticks": "prioritaires : l'atteinte est le premier tick, horodaté à partir de la fin de c2, qui touche le niveau ; entrée au dernier tick connu à l'atteinte + délai ; sortie au dernier tick connu à l'entrée + échéance, qui doit dater de moins de 10 s ; toutes les minutes, de la fin de c2 à la sortie, doivent avoir leur chemin de ticks",
+    "delais_sec": [2, 0],
+    "delai_principal_sec": 2,
+    "bougies_m1": "approximation publiée à part, jamais présentée comme une exécution : première bougie dont l'étendue atteint le niveau ; entrée au niveau, ou à l'ouverture si elle est déjà au-delà ; sortie à la clôture de la bougie d'atteinte + (échéance − 1) minutes ; l'instant de l'atteinte dans la bougie est inconnu",
+    "attente_max_min": 10,
+    "echeances_min": [1, 2, 5, 10, 15],
+    "gain": "mouvement strict dans le sens du trade ; une égalité est une perte (sensibilité publiée : égalités exclues)",
+    "jouable": "dernier payout du flux relevé au plus tard à l'entrée ≥ 84, soit 92 % appliqués et un point mort de 52,0833 % ; supposé identique à toutes les échéances, ce qui reste à vérifier sur la plateforme"
+  },
+  "episodes": "dans chaque variante, un motif n'est retenu que si sa bougie c1 commence après la fin de l'épisode retenu précédent sur la même paire ; fin d'un épisode : atteinte + 15 minutes, ou fin de c2 + 10 minutes sans atteinte, au rythme des bougies M1",
+  "variantes": {
+    "V00_tous": "aucun filtre",
+    "V01_zone": "contact d'une zone ZoneH1 vivante par le corps de c1 ou de c2 : zones calculées par le code de ZoneH1, paramètres pré-inscrits (pique à ±12 bougies, tolérance 0,02 %, mémoire 240 bougies, zone non cassée, confirmée avant c2), au moins 300 bougies d'historique",
+    "V02_retouches_0_1": "V01, et la zone touchée par 0 ou 1 corps parmi les 20 bougies avant c1 (à la tolérance)",
+    "V03_retouches_2_3": "V01, et 2 ou 3 retouches",
+    "V04_retouches_4_plus": "V01, et 4 retouches ou plus",
+    "V05_corps_c2_petit": "corps de c2 < 1,5 fois le corps médian des 50 bougies avant c1",
+    "V06_corps_c2_moyen": "corps de c2 de 1,5 à 3 fois ce corps médian",
+    "V07_corps_c2_grand": "corps de c2 ≥ 3 fois ce corps médian",
+    "V08_c2_meches_longues": "corps de c2 / étendue de c2 < 0,5",
+    "V09_c2_meches_moyennes": "corps de c2 / étendue de c2 de 0,5 à 0,8",
+    "V10_c2_corps_plein": "corps de c2 / étendue de c2 ≥ 0,8",
+    "V11_apres_mouvement": "|close(c1 − 1) − close(c1 − 11)| ≥ 3 fois l'étendue médiane des 50 bougies avant c1, sur 11 minutes consécutives",
+    "V12_apres_compression": "plus haut − plus bas des 10 bougies avant c1 ≤ 2,5 fois l'étendue médiane des 50 bougies avant c1, sur 10 minutes consécutives"
+  },
+  "statistique": {
+    "cases": "variante × échéance, mode ticks, délai principal",
+    "selection": "sur l'exploration : taux jouable ≥ 52,0833 % avec au moins 200 décisions jouables",
+    "validation": "cases retenues seulement, au moins 100 décisions jouables en validation ; p unilatérale contre 52,0833 % (bootstrap par blocs paire × jour, 1 000 tirages, graine 7, approximation normale) ; Benjamini-Hochberg à 10 % sur toutes les cases jugées",
+    "verdicts": "« validée » : découverte BH en validation ; « non reproduite » : retenue en exploration, pas en validation ; aucune variante n'est retenue sur l'exploration seule",
+    "ic": "IC 95 % percentile du bootstrap pour les cases ; Wilson pour les détails par paire, par sens et par semaine",
+    "petits_echantillons": "signalés sous 100 décisions jouables pour une case, sous 30 pour un détail",
+    "avec_sans_filtre": "écart variante − V00 par période, IC bootstrap",
+    "series": "taux par semaine, et plus longue série de pertes consécutives",
+    "sensibilites": "délai de 0 s, égalités exclues, approximation M1 : publiées à part, jamais des critères"
+  },
+  "pertes": {
+    "population": "V00, mode ticks, délai principal, par échéance et par période",
+    "caracteristiques": [
+      "retouches de la zone avant le signal (signaux V01)",
+      "mouvement des 10 bougies avant c1, signé dans le sens du trade, en étendues médianes",
+      "amplitude de ce mouvement",
+      "corps / étendue de c1",
+      "corps / étendue de c2",
+      "corps de c2 / corps de c1",
+      "distance du niveau à la zone, en étendues médianes (signaux V01)",
+      "attente entre la fin de c2 et l'atteinte, en secondes",
+      "rendement dans le sens du trade à 1, 2, 3, 5 et 10 minutes après l'entrée, en étendues médianes",
+      "favorable d'abord : dans la première minute, une excursion favorable de 0,5 étendue médiane avant toute excursion défavorable de 0,5",
+      "défavorable d'abord : l'inverse"
+    ],
+    "regle": "une caractéristique n'est notée que si l'écart gagnants − perdants a un IC 95 % hors de zéro en exploration, puis le même sens avec un IC hors de zéro en validation ; les mesures d'après l'entrée sont descriptives, jamais des filtres"
+  },
+  "interdits": [
+    "aucune écriture en base, sorties en CSV seulement",
+    "aucun appel d'exécution d'ordre",
+    "la collecte, la stratégie ZoneH1, le moteur des signaux, les échéances et les réglages de production ne changent pas",
+    "aucun paramètre ne se rechoisit après le gel : un changement fait une nouvelle pré-inscription, avec une nouvelle empreinte",
+    "le premier lancement complet fait foi ; un nouveau lancement ne se justifie que par une panne technique, notée"
+  ]
+}
