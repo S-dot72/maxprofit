@@ -229,3 +229,25 @@ de 52,08 % et face aux trades passés.
   trades pris, il faut environ 65 % de gagnants pour que ce soit net
   (binomial unilatéral, 5 %).
 - Une lecture qui a de la valeur se retrouve sur les lots suivants.
+
+## Vérification d'une analyse externe : SMA20 / SMA50 (14/11)
+
+Une analyse faite à partir des images des 160 graphiques (lots 1 et 2)
+annonçait que les trades alignés sur la tendance SMA20 / SMA50 gagnaient
+72,3 % (34/47), contre 40,7 % (46/113) pour les autres.
+
+Recalculée sur les vraies bougies OHLC, avec les seules bougies d'avant
+l'entrée :
+
+| | Alignés | Non alignés |
+|---|---|---|
+| Lots 1 et 2 | 22/45 = 48,9 % | 58/115 = 50,4 % |
+| Lot 1 | 9/25 = 36,0 % | 31/55 = 56,4 % |
+| Lot 2 | 13/20 = 65,0 % | 27/60 = 45,0 % |
+
+Il n'y a aucun écart. En ajoutant les 15 minutes qui suivent l'entrée
+(celles que montrent les graphiques du fichier des réponses), les trades
+« alignés » gagnent 21 sur 21. L'effet annoncé vient très
+vraisemblablement de là : une moyenne calculée sur des bougies
+postérieures à la décision. C'est la lecture du futur que les études
+doivent exclure.

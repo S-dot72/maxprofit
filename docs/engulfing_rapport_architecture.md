@@ -103,3 +103,45 @@ motif compté.
   - le volume, les prix d'achat et de vente ;
   - le payout propre à chaque échéance. Le même payout est supposé à 1,
     2, 5, 10 et 15 minutes, et il faudra le vérifier sur la plateforme.
+
+## 8. Lancer l'étude et lire les résultats
+
+Code : `maxprofit/live/engulfing.py`, rangé avec les autres études en lecture
+seule (la règle des couches, `tests/test_layering.py`, interdit à
+`research` d'être appelé par le bot). Son isolation est vérifiée par
+`tests/test_engulfing.py` : aucun import de l'exécution des ordres, de la
+collecte, du dimensionnement, de la course ni de l'hébergement, et aucune
+requête d'écriture.
+
+- **`/engulfing`** : la passe complète, bougies et ticks. Compter jusqu'à
+  une heure. Le premier lancement complet fait foi.
+- **`/engulfing sans_ticks`** : l'approximation M1 seule, plus rapide, si
+  les ticks ne passent pas. Elle ne remplace pas l'exécution aux ticks.
+- **`/engulfing active`** : tout sur la base active (son quota de
+  transfert), si la relève ne répond pas.
+
+| Livrable demandé | Où le lire |
+|---|---|
+| 1. Données effectivement utilisées | ce rapport ; `engulfing_donnees.csv` (minutes de bougies, de ticks, relevés de payout, par paire et par jour) |
+| 2. Motifs détectés | rapport ; `engulfing_statuts.csv` (motifs haussiers et baissiers par période) |
+| 3. Signaux admissibles | `engulfing_statuts.csv` (déclenchés, non déclenchés, données manquantes) ; `engulfing_signaux.csv.gz` |
+| 4. Résultats à 1, 2, 5, 10 et 15 min | rapport ; `engulfing_cases.csv` |
+| 5. Par série et par actif | `engulfing_details.csv` (paire, sens, semaine) ; plus longue série de pertes dans `engulfing_cases.csv` |
+| 6. Gagnants contre perdants | `engulfing_pertes.csv` |
+| 7. Filtres testés un par un | `engulfing_cases.csv` (V01 à V12, écart à V00 avec son IC) |
+| 8. Erreurs et ambiguïtés | `engulfing_statuts.csv` ; statuts de chaque signal dans `engulfing_signaux.csv.gz` |
+| 9. Tests automatisés | `tests/test_engulfing.py` |
+| 10. Exploration ou validation | colonne `periode` partout ; verdicts « validée » ou « non reproduite » |
+
+**Le moteur a été éprouvé sur des prix tirés au hasard** (marche aléatoire
+au tick, 4 paires, 21 jours, 4 graines), avant tout contact avec les vraies
+données :
+- aucune variante n'est sortie « validée » ;
+- quelques cases ont paru bonnes en exploration, puis sont sorties « non
+  reproduites » en validation ;
+- le scénario A invalide a donné 100 % à 1 minute et 0 % à 2 minutes, par
+  construction ;
+- une seule caractéristique a franchi la règle de l'étude des pertes, sur
+  une graine sur quatre, par hasard.
+Ce dernier point rappelle qu'une caractéristique « notée » reste une piste :
+elle doit encore se confirmer sur des jours futurs.
