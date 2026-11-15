@@ -95,3 +95,44 @@ L'étude dure quelques minutes. Elle rend un rapport et deux fichiers :
   validation et le verdict ;
 - `terrain_paires.csv` : le descriptif par paire (minutes, part jouable,
   minutes immobiles, autocorrélations, sauts), qui n'est jamais un critère.
+
+## Résultats du 15/11
+
+Rapport `/terrain`, 20 paires, du 06/10 au 09/11, 733 496 minutes lues dont
+46,4 % jouables, en 6,9 minutes sur le serveur.
+
+- **Aucune mémoire à court terme.** L'autocorrélation des rendements d'une
+  minute reste entre −0,009 et +0,010 pour les 20 paires (médiane −0,001),
+  aux retards 1 à 5.
+- **1 974 cases, 220 retenues en exploration, 133 jugées en validation.**
+  En exploration, elles gagnaient 55,1 % en moyenne ; en validation, 49,2 %.
+  Seules 39 restent au-dessus du point mort. C'est le retour à la moyenne
+  attendu quand on choisit les meilleures cases dans du bruit.
+- Rien pour F1 (suite, retour), F2 (excès), F3 (meneur) ni F4 (triangle).
+- **Une seule découverte BH : F5, EURJPY à 22 h UTC, à la hausse, 15 min**
+  (exploration 57,9 % sur 634 ; validation 72,5 % sur 222).
+
+**Pourquoi cette découverte est très probablement due au hasard, et ce que
+le protocole avait de faible.** Pour une case d'heure (F5), les décisions
+de la même heure d'un même jour se chevauchent presque entièrement à
+15 minutes : l'information réelle est le nombre de JOURS, pas le nombre de
+décisions. Les 222 décisions de la validation viennent de 7 jours ; 72,5 %
+dit en gros « EURJPY a monté à cette heure-là 5 jours sur 7 ». Le seuil de
+200 décisions ne protégeait pas contre ce chevauchement, et le bootstrap
+sur 7 blocs donne un p beaucoup trop optimiste. Les heures voisines (21 h,
+23 h) et les autres paires à 22 h ne montrent rien de cohérent.
+
+**Confirmation figée** (`docs/preinscription_terrain_confirmation.json`,
+empreinte `a477b555…`) :
+- l'unité est le jour : le score d'un jour est la part de ses décisions
+  jouables gagnées, et un jour compte s'il en a au moins 15 ;
+- seules les bougies à partir du 10/11 sont lues, et aucune ne l'a été par
+  `/terrain` ;
+- un seul regard, sur les 20 premiers jours qui comptent. La piste est
+  confirmée si leur moyenne dépasse 52,08 % avec p ≤ 0,05 (bootstrap des
+  jours) ; sinon, elle est abandonnée ;
+- `/terrain confirmation` dit, avant ce regard, combien de jours sont
+  acquis, sans montrer aucun taux.
+
+Leçon pour les protocoles suivants : compter les unités indépendantes
+(jours, épisodes), pas les décisions qui se chevauchent.
