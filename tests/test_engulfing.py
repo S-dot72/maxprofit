@@ -430,15 +430,35 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
         tmp_path, inscrits=((CHAT, "admin"), (INTRUS, "observateur"))))
 
     async def engulfing(argument):
+        await asyncio.sleep(0.2)
         return "rapport", [(b"a;b\n", "engulfing_cases.csv", "")]
 
     bot._engulfing = engulfing
+    bot._engulfing_avancement = lambda: "paire EURUSD_otc ; 3/20 paires"
+    bot.intervalle_avancement_sec = 0.05
 
     async def deroule():
         await bot._traiter(_message("/engulfing", chat=INTRUS)["message"])
         assert documents == []
         await bot._traiter(_message("/engulfing")["message"])
+        await asyncio.sleep(0.01)
+        await bot._traiter(_message("/engulfing")["message"])
         await bot._engulfing_en_cours
 
     asyncio.run(deroule())
     assert documents == ["engulfing_cases.csv"]
+    textes = [t for _, t in client.envoyes]
+    assert any(t.startswith("🕯 L'étude Engulfing est déjà en cours : paire")
+               for t in textes)
+    assert any(t.startswith("⏳ 🕯 Étude Engulfing : paire") for t in textes)
+
+
+def test_l_avancement_suit_la_passe(passe):
+    assert en.avancement() is None, "rien en cours après la passe"
+    en._ETAT.update(debut=0, etape="paire EURUSD_otc", faites=3, total=20,
+                    signaux=1200)
+    try:
+        assert "3/20 paires" in en.avancement()
+        assert "1200 signaux" in en.avancement()
+    finally:
+        en._ETAT.clear()
