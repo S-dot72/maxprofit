@@ -263,3 +263,92 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
 
     asyncio.run(deroule())
     assert documents == ["terrain_cases.csv"]
+
+
+# --------------------------------------------------------------------------- #
+# La confirmation de la piste EURJPY 22 h
+# --------------------------------------------------------------------------- #
+
+def test_le_gel_de_la_confirmation_tient():
+    doc = json.loads((RACINE / "docs" /
+                      "preinscription_terrain_confirmation.json")
+                     .read_text(encoding="utf-8"))
+    assert doc == tr.CONFIRMATION
+    assert em.empreinte(tr.CONFIRMATION) == tr.EMPREINTE_CONFIRMATION
+    assert tr.DEBUT_CONFIRMATION == tr.FIN_VALIDATION
+
+
+def _base_confirmation(chemin: Path, jours: int) -> None:
+    """EURJPY monte chaque jour de 21:55 à 23:20 UTC : le pari à la hausse
+    décidé à 22 h gagne toujours ; ailleurs, une marche au hasard."""
+    conn = open_read_write(chemin)
+    ecrivain = MarketWriter(conn)
+    alea = random.Random(5)
+    prix, bougies = 160.0, []
+    for m in range(tr.DEBUT_CONFIRMATION,
+                   tr.DEBUT_CONFIRMATION + jours * 86400, 60):
+        seconde = m % 86400
+        derive = 0.01 if 21 * 3600 + 55 * 60 <= seconde <= 23 * 3600 + 20 * 60 \
+            else 0.0
+        o = prix
+        prix = round(prix + derive + alea.gauss(0, 0.002), 3)
+        bougies.append(Candle("EURJPY_otc", 60, m, o, max(o, prix),
+                              min(o, prix), prix, 20, True))
+    ecrivain.upsert_candles(bougies)
+    conn.execute("INSERT INTO payouts (ts_sec, pair, payout_pct, is_open)"
+                 " VALUES (?,?,?,1)",
+                 (tr.DEBUT_CONFIRMATION - 60, "EURJPY_otc", 92))
+    conn.commit()
+    conn.close()
+
+
+def test_avant_vingt_jours_aucun_taux(tmp_path):
+    chemin = tmp_path / "base.db"
+    _base_confirmation(chemin, 12)
+    r = open_read_only(chemin)
+    try:
+        texte, fichiers = tr.confirmation(
+            r, None, maintenant=tr.DEBUT_CONFIRMATION + 12 * 86400 + 3600,
+            respirer=lambda: None)
+    finally:
+        r.close()
+    assert fichiers == [] and "12 jours acquis sur 20" in texte
+    assert "%" not in texte, "aucun taux avant le regard unique"
+
+
+def test_le_regard_unique_porte_sur_les_vingt_premiers_jours(tmp_path):
+    chemin = tmp_path / "base.db"
+    _base_confirmation(chemin, 23)
+    empreinte = hashlib.sha256(chemin.read_bytes()).hexdigest()
+    r = open_read_only(chemin)
+    try:
+        texte, fichiers = tr.confirmation(
+            r, None, maintenant=tr.DEBUT_CONFIRMATION + 23 * 86400 + 3600,
+            respirer=lambda: None)
+    finally:
+        r.close()
+    assert hashlib.sha256(chemin.read_bytes()).hexdigest() == empreinte
+    assert "<b>Confirmée</b>" in texte and "20 jours sur 20" in texte
+    (contenu, nom, _), = fichiers
+    lignes = contenu.decode("utf-8").splitlines()[1:]
+    assert nom == "terrain_confirmation.csv" and len(lignes) == 20
+    assert lignes[0].startswith("2026-11-10") \
+        and lignes[-1].startswith("2026-11-29")
+
+
+def test_le_service_route_la_confirmation(monkeypatch, tmp_path):
+    from maxprofit.hosting import service
+    from maxprofit.store import pool
+    vus = []
+
+    def faux(lue, active, course=None, *, nom_lecture):
+        vus.append(nom_lecture)
+        return "🧭 Confirmation", []
+
+    monkeypatch.setattr(tr, "confirmation", faux)
+    chemin = tmp_path / "active.db"
+    open_read_write(chemin).close()
+    texte, _ = service._terrain(
+        chemin, None, "confirmation", environ={pool.ENV_RELEVE: str(chemin)},
+        ouvrir_url=lambda url: open_read_only(url))
+    assert texte == "🧭 Confirmation" and vus == ["relève"]

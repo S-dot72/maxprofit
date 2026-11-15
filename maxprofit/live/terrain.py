@@ -885,3 +885,123 @@ def fichiers(lignes: Sequence[Mapping], paires: Sequence[Mapping]
              "Une ligne par case : exploration, validation, verdict"),
             (_csv(paires, COLONNES_PAIRES), "terrain_paires.csv",
              "Descriptif par paire (jamais un critère)")]
+
+
+# --------------------------------------------------------------------------- #
+# La confirmation de la seule piste (gel a477b555, après le rapport du 15/11)
+# --------------------------------------------------------------------------- #
+
+CONFIRMATION: dict[str, Any] = json.loads(r"""
+{
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, EURJPY_otc seulement, relève (jour divergent lu sur l'active)",
+    "debut_utc": "2026-11-10T00:00:00Z",
+    "remarque": "ces bougies n'ont jamais été lues par /terrain ; aucun jour antérieur au 10/11 n'entre ici"
+  },
+  "echec": "sinon, la piste est abandonnée ; elle ne se reformule pas sur les mêmes jours",
+  "interdits": [
+    "aucune écriture en base, sortie en CSV seulement",
+    "la course, la collecte, la stratégie et les échéances ne changent pas",
+    "aucun argent réel sur cette piste avant une confirmation, et pas même après sans un essai en démo",
+    "aucun paramètre ne se rechoisit après le gel"
+  ],
+  "objet": "Confirmation de la seule découverte de /terrain (gel 60e6ddaf, rapport du 15/11) : famille F5, EURJPY_otc à 22 h UTC, pari à la hausse, échéance 15 minutes.",
+  "regard": "un seul : sur les 20 premiers jours qui comptent, dans l'ordre chronologique ; avant, la commande dit seulement combien de jours sont acquis, sans aucun taux",
+  "regle": "à la clôture de chaque bougie M1 d'EURJPY_otc dont la fin tombe dans l'heure 22 UTC (22:00:00 à 22:59:59), pari CALL ; sortie à la clôture de la bougie qui commence 15 minutes plus tard ; contiguïté, sauts aberrants (> 1 % en une minute), jouabilité (payout du flux ≥ 84 à la décision) et égalité = perte exactement comme dans /terrain",
+  "succes": "moyenne des 20 scores journaliers > 52,0833 % ET p unilatérale ≤ 0,05, p = part des moyennes rééchantillonnées (bootstrap des 20 jours, 10 000 tirages, graine 7) inférieures ou égales à 52,0833 %",
+  "unite": "le jour UTC de la décision : score du jour = part des décisions jouables gagnées ce jour-là ; un jour ne compte que s'il a au moins 15 décisions jouables"
+}
+""")
+EMPREINTE_CONFIRMATION = (
+    "a477b55580f1be33d9f17c80573da61ac5aa3292b7ed825b13ec05bd3563c503")
+DEBUT_CONFIRMATION = _instant(CONFIRMATION["donnees"]["debut_utc"])
+PAIRE_PISTE = "EURJPY_otc"
+HEURE_PISTE = 22
+ECHEANCE_PISTE = 15
+DECISIONS_MIN_JOUR = 15
+JOURS_REQUIS = 20
+TIRAGES_CONFIRMATION = 10_000
+
+
+def scores_journaliers(s: Serie) -> dict[int, list[int]]:
+    """Jour → [gains, décisions jouables] du pari CALL à 15 min, décidé à la
+    clôture des bougies qui finissent dans l'heure 22 UTC (comme F5)."""
+    jours: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    futur = s.signes_futur[ECHEANCE_PISTE]
+    for t in range(s.m):
+        fin_bougie = s.debut + 60 * (t + 1)
+        if (fin_bougie // 3600) % 24 != HEURE_PISTE or not s.jouable[t]:
+            continue
+        o = futur[t]
+        if o == ABSENT or o == SAUTE:
+            continue
+        jour = jours[fin_bougie // 86400]
+        jour[0] += o == 1
+        jour[1] += 1
+    return jours
+
+
+def confirmation(lue_brute, active_brute, course=None, *,
+                 nom_lecture: str = "relève", maintenant: float | None = None,
+                 respirer: Callable[[], None] | None = None
+                 ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """Le regard unique sur la piste EURJPY 22 h. Avant 20 jours qui
+    comptent, seulement leur nombre, aucun taux."""
+    em.exiger_le_gel(CONFIRMATION, EMPREINTE_CONFIRMATION)
+    respirer = respirer or (lambda: time.sleep(RESPIRATION_SEC))
+    maintenant = time.time() if maintenant is None else maintenant
+    fin = int(maintenant) // 86400 * 86400
+    entete = ("🧭 <b>Confirmation de la piste /terrain</b> : EURJPY à 22 h "
+              "UTC, hausse, 15 min (lecture seule, gel "
+              f"{EMPREINTE_CONFIRMATION[:8]}…).")
+    if fin <= DEBUT_CONFIRMATION:
+        return entete + "\nAucun jour complet depuis le 10/11.", []
+    lue = ConnexionTracee(lue_brute)
+    active = (ConnexionTracee(active_brute)
+              if active_brute is not None and active_brute is not lue_brute
+              else None)
+    resume_lue = resumes(lue, DEBUT_CONFIRMATION, fin)
+    divergents: set = set()
+    if active is not None:
+        resume_active = resumes(active, DEBUT_CONFIRMATION, fin)
+        divergents = {c for c in set(resume_lue) | set(resume_active)
+                      if resume_lue.get(c) != resume_active.get(c)}
+    s = lire_serie(PAIRE_PISTE, {"lue": lue, "active": active}, divergents,
+                   DEBUT_CONFIRMATION, fin, Counter(), respirer)
+    jours = scores_journaliers(s)
+    comptent = sorted(j for j, (_, n) in jours.items()
+                      if n >= DECISIONS_MIN_JOUR)
+    if len(comptent) < JOURS_REQUIS:
+        return (entete + f"\n{len(comptent)} jours acquis sur {JOURS_REQUIS} "
+                f"(au moins {DECISIONS_MIN_JOUR} décisions jouables par "
+                f"jour), du {_utc(DEBUT_CONFIRMATION)} au {_utc(fin - 86400)}"
+                ". Aucun taux n'est montré avant le regard unique."), []
+    retenus = comptent[:JOURS_REQUIS]
+    scores = [jours[j][0] / jours[j][1] for j in retenus]
+    moyenne = sum(scores) / len(scores)
+    alea = random.Random(em.GRAINE)
+    sous = sum(1 for _ in range(TIRAGES_CONFIRMATION)
+               if sum(alea.choices(scores, k=len(scores))) / len(scores)
+               <= POINT_MORT)
+    p = sous / TIRAGES_CONFIRMATION
+    confirmee = moyenne > POINT_MORT and p <= 0.05
+    gagnants = sum(1 for x in scores if x > 0.5)
+    texte = "\n".join([
+        entete,
+        f"Les {JOURS_REQUIS} premiers jours qui comptent, du "
+        f"{_utc(retenus[0] * 86400)} au {_utc(retenus[-1] * 86400)} : "
+        f"score journalier moyen {_pct(moyenne)} ; {gagnants} jours sur "
+        f"{JOURS_REQUIS} au-dessus de 50 % ; p = {_p(p)} (bootstrap des "
+        f"jours, {TIRAGES_CONFIRMATION} tirages).",
+        ("<b>Confirmée</b> : la piste passe le point mort de 52,08 %. Elle "
+         "reste à essayer en démo avant toute autre décision."
+         if confirmee else
+         "<b>Abandonnée</b> : la piste ne passe pas l'épreuve. Elle ne se "
+         "reformule pas sur les mêmes jours."),
+        "Rien ne change dans la course."])
+    lignes = [{"jour": _utc(j * 86400, "%Y-%m-%d"), "decisions": jours[j][1],
+               "gains": jours[j][0], "score": jours[j][0] / jours[j][1]}
+              for j in retenus]
+    return texte, [(_csv(lignes, ("jour", "decisions", "gains", "score")),
+                    "terrain_confirmation.csv",
+                    "Les 20 jours de la confirmation")]

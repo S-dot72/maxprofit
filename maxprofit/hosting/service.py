@@ -984,12 +984,20 @@ def _graphiques(chemin, course, argument: str = "", environ=None,
 
 def _terrain(chemin, course, argument: str = "", environ=None,
              ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
-    """`/terrain [partielle] [active]` : le prix M1 des paires OTC est-il
-    prévisible par une règle simple ? Étude gelée (60e6ddaf), sans ZoneH1,
-    en lecture seule sur la relève. Elle ne lit pas le rejeu : la course
-    n'est pas requise."""
+    """`/terrain [partielle|confirmation] [active]` : le prix M1 des paires
+    OTC est-il prévisible par une règle simple ? Étude gelée (60e6ddaf),
+    sans ZoneH1, en lecture seule sur la relève ; `confirmation` porte le
+    regard unique sur sa seule piste (gel a477b555). Ni l'une ni l'autre ne
+    lit le rejeu : la course n'est pas requise."""
     from maxprofit.live import terrain as tr
     mots = argument.lower().split()
+    if "confirmation" in mots:
+        return _sur_la_releve(
+            chemin, "active" in mots, "🧭", "terrain",
+            "Confirmation de la piste",
+            lambda lue, active, nom: tr.confirmation(
+                lue, active, course, nom_lecture=nom),
+            environ, ouvrir_url)
     return _sur_la_releve(
         chemin, "active" in mots, "🧭", "terrain", "Étude du terrain",
         lambda lue, active, nom: tr.terrain(
