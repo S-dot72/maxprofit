@@ -113,8 +113,10 @@ seule (la règle des couches, `tests/test_layering.py`, interdit à
 collecte, du dimensionnement, de la course ni de l'hébergement, et aucune
 requête d'écriture.
 
-- **`/engulfing`** : la passe complète, bougies et ticks. Compter jusqu'à
-  une heure. Le premier lancement complet fait foi.
+- **`/engulfing`** : la passe complète, bougies et ticks. Compter 20 à 60
+  minutes sur le serveur gratuit ; un point d'avancement arrive toutes les
+  15 minutes, et une seconde `/engulfing` pendant la passe dit où elle en
+  est. Le premier lancement complet fait foi.
 - **`/engulfing sans_ticks`** : l'approximation M1 seule, plus rapide, si
   les ticks ne passent pas. Elle ne remplace pas l'exécution aux ticks.
 - **`/engulfing active`** : tout sur la base active (son quota de
@@ -145,3 +147,34 @@ données :
   une graine sur quatre, par hasard.
 Ce dernier point rappelle qu'une caractéristique « notée » reste une piste :
 elle doit encore se confirmer sur des jours futurs.
+
+## 9. Le premier lancement (14-15/11) : rien n'est revenu
+
+Après deux heures, ni rapport ni message d'erreur. Une erreur pendant la
+passe envoie un message « interruption », une commande inconnue reçoit
+l'aide : le silence total désigne un processus arrêté de l'extérieur.
+
+**Cause la plus probable : la mémoire.** Le service tourne sur l'offre
+gratuite de Render (512 Mo, une fraction de processeur ; `render.yaml`). La
+première version gardait tous les signaux en mémoire, puis les mettait en
+forme d'un coup pour le fichier final. Sur un banc d'essai réaliste
+(2 paires, 10 jours, ~120 ticks par minute), cela donnait 60 Mo et 11 s.
+Rapporté à 20 paires, plus d'un mois et la vraie densité de ticks, on
+arrivait à plusieurs centaines de Mo en fin de passe, après plus d'une heure
+de calcul : de quoi faire tuer le processus sans qu'aucun message ne parte.
+
+**Version allégée** (mêmes définitions, même protocole figé, même
+empreinte) :
+- chaque paire est agrégée, puis libérée, et le fichier des signaux
+  s'écrit compressé au fil de l'eau ; la mémoire ne grandit plus qu'avec
+  quelques octets par signal jouable ;
+- une minute de ticks n'est décodée que si un prix y est lu, et la
+  continuité se juge sur la présence des chemins, sans les décoder ;
+- le décodage n'appelle plus de fonction par entier ;
+- les tirages du bootstrap (1 000, graine 7, blocs paire × jour) sont faits
+  une fois par période et partagés par toutes les cases ;
+- un point d'avancement part toutes les 15 minutes.
+
+Sur le même banc d'essai : 3,1 s au lieu de 10,7 s, et un pic de mémoire
+qui ne dépend plus du nombre de signaux, avec des résultats identiques
+(mêmes motifs, mêmes épisodes, mêmes taux).

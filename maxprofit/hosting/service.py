@@ -394,6 +394,7 @@ async def _servir(args) -> int:
             bot._engulfing = lambda argument: asyncio.to_thread(
                 _engulfing, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
+            bot._engulfing_avancement = _engulfing_avancement
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -1010,6 +1011,12 @@ def _engulfing(chemin, course, argument: str = "", environ=None,
             lue, active, course, nom_lecture=nom,
             avec_ticks="sans_ticks" not in mots),
         environ, ouvrir_url)
+
+
+def _engulfing_avancement() -> str | None:
+    """Où en est l'étude Engulfing en cours (lu en mémoire, sans requête)."""
+    from maxprofit.live import engulfing as en
+    return en.avancement()
 
 
 def _sur_la_releve(chemin, sur_l_active: bool, pastille: str, commande: str,

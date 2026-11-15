@@ -487,6 +487,10 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._engulfing: Callable[[str], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
         self._engulfing_en_cours: asyncio.Task | None = None
+        #: `() -> texte | None` : où en est l'étude Engulfing en cours.
+        self._engulfing_avancement: Callable[[], str | None] | None = None
+        #: Un point d'avancement des études longues, toutes les 15 minutes.
+        self.intervalle_avancement_sec: float = 900
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -899,19 +903,26 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 await self.client.envoyer(chat, "Indisponible.", CLAVIER)
             elif (self._engulfing_en_cours is not None
                   and not self._engulfing_en_cours.done()):
+                point = (self._engulfing_avancement()
+                         if self._engulfing_avancement else None)
                 await self.client.envoyer(
-                    chat, "🕯 L'étude Engulfing est déjà en cours.", CLAVIER)
+                    chat, "🕯 L'étude Engulfing est déjà en cours"
+                    + (f" : {point}." if point else "."), CLAVIER)
             else:
                 await self.client.envoyer(
                     chat, "🕯 Étude Engulfing lancée (recherche isolée, "
                     "lecture seule sur la relève, aucun ordre ; bougies et "
-                    "ticks de plus d'un mois, compter jusqu'à une heure). Le "
-                    "rapport et les fichiers arriveront ici.", CLAVIER)
+                    "ticks de plus d'un mois, compter 20 à 60 minutes). Un "
+                    "point d'avancement arrivera toutes les 15 minutes, puis "
+                    "le rapport et les fichiers.", CLAVIER)
                 self._engulfing_en_cours = asyncio.create_task(
                     self._envoyer_en_fond(
                         chat, self._engulfing,
                         texte[len("/engulfing"):].strip(),
                         "🕯 Étude Engulfing"))
+                asyncio.create_task(self._veiller(
+                    chat, self._engulfing_en_cours,
+                    self._engulfing_avancement, "🕯 Étude Engulfing"))
         elif texte.startswith("/terrain"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
@@ -1029,6 +1040,23 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
         etat = (self._avancement_selection()
                 if self._avancement_selection else None)
         return bool(etat and etat[1])
+
+    async def _veiller(self, chat: str, tache: asyncio.Task, avancement,
+                       libelle: str) -> None:
+        """Tant qu'une étude longue tourne, un point d'avancement toutes les
+        `intervalle_avancement_sec` : un silence de deux heures ne dit pas
+        si elle calcule encore ou si le processus est tombé."""
+        while not tache.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(tache),
+                                       timeout=self.intervalle_avancement_sec)
+            except asyncio.TimeoutError:
+                point = avancement() if avancement else None
+                if point and not tache.done():
+                    await self.client.envoyer(
+                        chat, f"⏳ {libelle} : {point}.", CLAVIER)
+            except Exception:                            # noqa: BLE001
+                return
 
     async def _envoyer_en_fond(self, chat: str, appel, argument: str,
                                libelle: str) -> None:

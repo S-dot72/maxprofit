@@ -55,6 +55,7 @@ import io
 import json
 import logging
 import math
+import operator
 import random
 import time
 import zlib
@@ -71,7 +72,6 @@ from maxprofit.core.errors import BotError
 from maxprofit.core.payout import FLUX_POUR_LE_PLAFOND
 from maxprofit.live.etude3 import ConnexionTracee, etat_lecture_seule
 from maxprofit.live.selection3 import PAYOUT_AVANT, PAYOUTS_DU_JOUR, resumes
-from maxprofit.store.chemin_ticks import _dezigzag, _lire_varint
 from maxprofit.strategies.zone_h1 import PARAMETRES_PRE_INSCRITS, ZoneH1
 
 log = logging.getLogger(__name__)
@@ -567,39 +567,79 @@ def scenario_a(s: Signal, index: Mapping[int, int],
 # --------------------------------------------------------------------------- #
 
 def ticks_de_chemin(minute_sec: int, n_ticks: int, echelle: int,
-                    octets: bytes) -> tuple[array, array]:
-    """Le décodage de `chemin_ticks.decoder`, en tableaux (sans objet par
-    tick). Mêmes contrôles : il lève sur toute incohérence."""
+                    octets: bytes) -> tuple[list[int], list[float]]:
+    """Le décodage de `chemin_ticks.decoder`, en listes, sans objet par tick
+    ni appel de fonction par entier : sur le serveur gratuit, c'est
+    l'essentiel du temps de calcul. Mêmes contrôles : il lève sur toute
+    incohérence (échelle, chemin tronqué ou trop long)."""
     brut = zlib.decompress(octets)
-    lue, i = _lire_varint(brut, 0)
-    if lue != echelle:
-        raise BotError(f"échelle incohérente ({lue} ≠ {echelle})")
+    n = len(brut)
+    i = valeur = decalage = 0
+    while True:
+        if i >= n:
+            raise BotError("chemin tronqué")
+        b = brut[i]
+        i += 1
+        valeur |= (b & 0x7F) << decalage
+        if b < 0x80:
+            break
+        decalage += 7
+    if valeur != echelle:
+        raise BotError(f"échelle incohérente ({valeur} ≠ {echelle})")
     facteur = 10 ** echelle
-    ts, px = array("q"), array("d")
+    ts = [0] * n_ticks
+    px = [0.0] * n_ticks
     ms = minute_sec * 1000
     entier = 0
-    for rang in range(n_ticks):
-        ecart, i = _lire_varint(brut, i)
-        ms += ecart
-        valeur, i = _lire_varint(brut, i)
-        entier = valeur if rang == 0 else entier + _dezigzag(valeur)
-        ts.append(ms)
-        px.append(entier / facteur)
-    if i != len(brut):
+    try:
+        for rang in range(n_ticks):
+            b = brut[i]
+            i += 1
+            ecart = b & 0x7F
+            decalage = 7
+            while b >= 0x80:
+                b = brut[i]
+                i += 1
+                ecart |= (b & 0x7F) << decalage
+                decalage += 7
+            ms += ecart
+            b = brut[i]
+            i += 1
+            v = b & 0x7F
+            decalage = 7
+            while b >= 0x80:
+                b = brut[i]
+                i += 1
+                v |= (b & 0x7F) << decalage
+                decalage += 7
+            entier = v if rang == 0 else entier + ((v >> 1) ^ -(v & 1))
+            ts[rang] = ms
+            px[rang] = entier / facteur
+    except IndexError as erreur:
+        raise BotError("chemin tronqué") from erreur
+    if i != n:
         raise BotError("chemin plus long que ses ticks")
     return ts, px
 
 
 class Ticks:
-    """Les ticks d'UNE paire, minute par minute, chargés jour par jour à la
-    demande et décodés une seule fois. Une minute sans chemin (ou illisible)
-    rend None : jamais comblée."""
+    """Les ticks d'UNE paire. Les chemins sont chargés jour par jour, à la
+    demande ; une minute n'est DÉCODÉE que si un prix y est lu. La
+    continuité se juge sur la présence des chemins, sans les décoder. Une
+    minute sans chemin, ou illisible, n'est jamais comblée."""
 
     def __init__(self, charger_jour: Callable[[int], Mapping[int, tuple]]):
         self._charger = charger_jour
         self._jours: dict[int, Mapping[int, tuple]] = {}
-        self._decodes: dict[int, tuple[array, array] | None] = {}
+        self._decodes: dict[int, tuple[list, list] | None] = {}
         self.illisibles = 0
+        self.decodees = 0
+
+    def _jour(self, minute_sec: int) -> Mapping[int, tuple]:
+        jour = minute_sec // 86400
+        if jour not in self._jours:
+            self._jours[jour] = self._charger(jour)
+        return self._jours[jour]
 
     def oublier_avant(self, ts_sec: int) -> None:
         jour = ts_sec // 86400
@@ -608,18 +648,21 @@ class Ticks:
         for m in [m for m in self._decodes if m < ts_sec - 3600]:
             del self._decodes[m]
 
-    def minute(self, minute_sec: int) -> tuple[array, array] | None:
+    def present(self, minute_sec: int) -> bool:
+        if minute_sec in self._decodes:
+            return self._decodes[minute_sec] is not None
+        return minute_sec in self._jour(minute_sec)
+
+    def minute(self, minute_sec: int) -> tuple[list, list] | None:
         if minute_sec in self._decodes:
             return self._decodes[minute_sec]
-        jour = minute_sec // 86400
-        if jour not in self._jours:
-            self._jours[jour] = self._charger(jour)
-        brut = self._jours[jour].get(minute_sec)
+        brut = self._jour(minute_sec).get(minute_sec)
         sortie = None
         if brut is not None:
             try:
                 sortie = ticks_de_chemin(minute_sec, *brut)
-            except (BotError, zlib.error, IndexError, ValueError):
+                self.decodees += 1
+            except (BotError, zlib.error, ValueError):
                 self.illisibles += 1
         self._decodes[minute_sec] = sortie
         return sortie
@@ -627,7 +670,7 @@ class Ticks:
     def continu(self, debut_ms: int, fin_ms: int) -> bool:
         m = debut_ms // 60000 * 60
         while m * 1000 <= fin_ms:
-            if self.minute(m) is None:
+            if not self.present(m):
                 return False
             m += 60
         return True
@@ -649,16 +692,17 @@ class Ticks:
 
 def issues_ticks(s: Signal, ticks: Ticks) -> None:
     """Atteinte, entrées aux deux délais, issues et trajectoire."""
-    t0 = s.fin_c2 * 1000
+    niveau, type_ = s.niveau, s.type_
     for pas in range(ATTENTE_MAX_MIN):
-        minute = s.fin_c2 + 60 * pas
-        d = ticks.minute(minute)
+        d = ticks.minute(s.fin_c2 + 60 * pas)
         if d is None:
             s.statut_ticks = SANS_TICKS
             return
         ts, px = d
         for k in range(len(ts)):
-            if ts[k] >= t0 and touche(px[k], s.niveau, s.type_):
+            # Les ticks d'une minute ≥ fin de c2 sont tous postérieurs à la
+            # clôture de c2 : aucun ne précède la confirmation du motif.
+            if (px[k] - niveau) * type_ <= 0:
                 s.touche_ms, s.prix_touche = ts[k], px[k]
                 break
         if s.touche_ms is not None:
@@ -705,10 +749,12 @@ def _trajectoire(s: Signal, ticks: Ticks, t_e: int, p_e: float) -> None:
                 s.trajectoire[h] = (connu[1] - p_e) * s.sens / s.med_etendue
     if not ticks.continu(t_e, t_e + 60000):
         return
-    s.favorable_d_abord = s.defavorable_d_abord = False
     m = t_e // 60000 * 60
-    for minute in (m, m + 60):
-        ts, px = ticks.minute(minute)
+    minutes = [ticks.minute(m), ticks.minute(m + 60)]
+    if None in minutes:
+        return
+    s.favorable_d_abord = s.defavorable_d_abord = False
+    for ts, px in minutes:
         for k in range(len(ts)):
             if ts[k] <= t_e or ts[k] > t_e + 60000:
                 continue
@@ -760,7 +806,8 @@ def paire(nom: str, bougies: Sequence[Bougie], fin: int,
             respirer()
     episodes(signaux)
     gardes = [s for s in signaux if s.retenus]
-    for s in gardes:
+    del signaux
+    for rang, s in enumerate(gardes):
         scenario_a(s, index, bougies)
         compte[("m1", s.periode, s.statut_m1)] += 1
         if ticks is not None:
@@ -771,13 +818,19 @@ def paire(nom: str, bougies: Sequence[Bougie], fin: int,
                    else s.touche_m1_ts)
         if instant is not None:
             s.payout = payout_a(instant)
+        if rang % 200 == 199:
+            respirer()
     respirer()
     return gardes
 
 
 # --------------------------------------------------------------------------- #
-# Les statistiques
+# Les statistiques, accumulées paire par paire
 # --------------------------------------------------------------------------- #
+
+_sumprod = getattr(math, "sumprod", None) or (
+    lambda a, b: sum(map(operator.mul, a, b)))
+
 
 def wilson(g: int, n: int, z: float = 1.96) -> tuple[float | None,
                                                       float | None]:
@@ -790,143 +843,418 @@ def wilson(g: int, n: int, z: float = 1.96) -> tuple[float | None,
     return c - e, c + e
 
 
-def bootstrap_taux(blocs: Sequence[tuple[int, int]], taux: float
-                   ) -> tuple[float | None, float | None, float | None]:
-    """(bas, haut, p unilatérale contre le point mort)."""
-    k = len(blocs)
-    if k < 2:
-        return None, None, None
-    alea = random.Random(em.GRAINE)
-    v = []
-    for _ in range(em.TIRAGES):
-        g = n = 0
-        for i in alea.choices(range(k), k=k):
-            g += blocs[i][0]
-            n += blocs[i][1]
-        if n:
-            v.append(g / n)
-    v.sort()
-    moy = sum(v) / len(v)
-    et = (sum((x - moy) ** 2 for x in v) / (len(v) - 1)) ** 0.5
-    p = ((1 - _N.cdf((taux - POINT_MORT) / et)) if et > 0
-         else (0.0 if taux > POINT_MORT else 1.0))
-    return v[int(0.025 * len(v))], v[int(0.975 * len(v)) - 1], p
+class Tirages:
+    """Les tirages du bootstrap par blocs paire × jour d'UNE période,
+    faits une fois (1 000 tirages, graine 7) et partagés par toutes ses
+    cases : chaque tirage est le vecteur des multiplicités des blocs."""
+
+    def __init__(self, blocs: Sequence[int]) -> None:
+        self.position = {b: j for j, b in enumerate(blocs)}
+        k = len(blocs)
+        alea = random.Random(em.GRAINE)
+        self.tirages: list[array] = []
+        for _ in range(em.TIRAGES if k >= 2 else 0):
+            m = array("H", bytes(2 * k))
+            for i in alea.choices(range(k), k=k):
+                m[i] += 1
+            self.tirages.append(m)
+
+    def dense(self, par_bloc: Mapping[int, float]) -> list[float]:
+        v = [0.0] * len(self.position)
+        for b, x in par_bloc.items():
+            v[self.position[b]] = x
+        return v
+
+    def ratio(self, g: Mapping[int, float], n: Mapping[int, float],
+              taux: float) -> tuple[float | None, float | None,
+                                    float | None]:
+        """(bas, haut, p unilatérale contre le point mort)."""
+        if not self.tirages:
+            return None, None, None
+        gd, nd = self.dense(g), self.dense(n)
+        v = []
+        for m in self.tirages:
+            nn = _sumprod(nd, m)
+            if nn:
+                v.append(_sumprod(gd, m) / nn)
+        if len(v) < len(self.tirages) // 2:
+            return None, None, None
+        v.sort()
+        moy = sum(v) / len(v)
+        et = (sum((x - moy) ** 2 for x in v) / (len(v) - 1)) ** 0.5
+        p = ((1 - _N.cdf((taux - POINT_MORT) / et)) if et > 0
+             else (0.0 if taux > POINT_MORT else 1.0))
+        return v[int(0.025 * len(v))], v[int(0.975 * len(v)) - 1], p
+
+    def ecart(self, sa, na, sb, nb) -> tuple[float | None, float | None]:
+        """IC 95 % de moyenne A − moyenne B (sommes et effectifs par bloc)."""
+        if not self.tirages:
+            return None, None
+        a, b, c, d = (self.dense(x) for x in (sa, na, sb, nb))
+        v = []
+        for m in self.tirages:
+            n1, n2 = _sumprod(b, m), _sumprod(d, m)
+            if n1 and n2:
+                v.append(_sumprod(a, m) / n1 - _sumprod(c, m) / n2)
+        if len(v) < len(self.tirages) // 2:
+            return None, None
+        v.sort()
+        return v[int(0.025 * len(v))], v[int(0.975 * len(v)) - 1]
 
 
-def bootstrap_ecart(blocs: Sequence[tuple[float, int, float, int]]
-                    ) -> tuple[float | None, float | None, float | None]:
-    """(écart, bas, haut) de moyenne A − moyenne B, blocs rééchantillonnés.
-    Chaque bloc : (somme A, n A, somme B, n B)."""
-    sa = sum(b[0] for b in blocs)
-    na = sum(b[1] for b in blocs)
-    sb = sum(b[2] for b in blocs)
-    nb = sum(b[3] for b in blocs)
-    if not na or not nb:
-        return None, None, None
-    ecart = sa / na - sb / nb
-    k = len(blocs)
-    if k < 2:
-        return ecart, None, None
-    alea = random.Random(em.GRAINE)
-    v = []
-    for _ in range(em.TIRAGES):
-        a = n1 = b = n2 = 0
-        for i in alea.choices(range(k), k=k):
-            a += blocs[i][0]
-            n1 += blocs[i][1]
-            b += blocs[i][2]
-            n2 += blocs[i][3]
-        if n1 and n2:
-            v.append(a / n1 - b / n2)
-    if len(v) < em.TIRAGES // 2:
-        return ecart, None, None
-    v.sort()
-    return ecart, v[int(0.025 * len(v))], v[int(0.975 * len(v)) - 1]
+CARACTERISTIQUES: tuple[tuple[str, bool, Callable[[Signal], Any]], ...] = (
+    # (nom, connue à la décision ?, lecture)
+    ("retouches_zone", True, lambda s: s.retouches),
+    ("mouvement_signe", True, lambda s: s.mouvement),
+    ("mouvement_amplitude", True,
+     lambda s: None if s.mouvement is None else abs(s.mouvement)),
+    ("c1_corps_sur_etendue", True, lambda s: s.c1_ce),
+    ("c2_corps_sur_etendue", True, lambda s: s.c2_ce),
+    ("c2_corps_sur_c1", True, lambda s: s.c2_sur_c1),
+    ("distance_niveau_zone", True, lambda s: s.distance_zone),
+    ("attente_atteinte_sec", True, lambda s: s.attente_sec),
+) + tuple(
+    (f"rendement_{h // 60}_min", False,
+     (lambda h: lambda s: s.trajectoire.get(h))(h))
+    for h in HORIZONS_TRAJECTOIRE_SEC) + (
+    ("favorable_d_abord", False,
+     lambda s: None if s.favorable_d_abord is None
+     else float(s.favorable_d_abord)),
+    ("defavorable_d_abord", False,
+     lambda s: None if s.defavorable_d_abord is None
+     else float(s.defavorable_d_abord)),
+)
+
+COLONNES_SIGNAUX: tuple[str, ...] = (
+    "paire", "type", "direction", "c1_utc", "c1_ts", "periode", "niveau",
+    "variantes", "retenu_dans", "corps_c2_rel", "c1_ce", "c2_ce",
+    "c2_sur_c1", "mouvement", "compression", "zone", "retouches",
+    "distance_zone", "payout", "jouable", "statut_m1", "entree_m1",
+    "entree_m1_ouverture", "statut_ticks", "attente_sec", "prix_touche",
+    "favorable_d_abord", "defavorable_d_abord",
+) + tuple(f"m1_{t}" for t in ECHEANCES) + tuple(
+    f"a_{t}" for t in ECHEANCES) + tuple(
+    f"ticks_{d}s_{t}" for t in ECHEANCES for d in DELAIS) + tuple(
+    f"statut_{d}s_{t}" for t in ECHEANCES for d in DELAIS) + tuple(
+    f"rendement_{h // 60}_min" for h in HORIZONS_TRAJECTOIRE_SEC)
+
+ABSENTE = 9            # code d'une issue absente dans les tableaux compacts
 
 
-def _cle_bloc(s: Signal) -> tuple[str, int]:
-    return (s.paire, s.jour)
+def _ligne_signal(s: Signal) -> dict[str, Any]:
+    ligne: dict[str, Any] = {
+        "paire": s.paire, "type": "haussier" if s.type_ > 0 else "baissier",
+        "direction": "CALL" if s.sens > 0 else "PUT",
+        "c1_utc": _utc(s.c1_ts, "%Y-%m-%d %H:%M"), "c1_ts": s.c1_ts,
+        "periode": s.periode, "niveau": s.niveau,
+        "variantes": ",".join(n for k, n in enumerate(NOMS_VARIANTES)
+                              if s.membres >> k & 1),
+        "retenu_dans": ",".join(n for k, n in enumerate(NOMS_VARIANTES)
+                                if s.retenus >> k & 1),
+        "corps_c2_rel": s.corps_c2_rel, "c1_ce": s.c1_ce, "c2_ce": s.c2_ce,
+        "c2_sur_c1": s.c2_sur_c1, "mouvement": s.mouvement,
+        "compression": s.compression, "zone": s.zone,
+        "retouches": s.retouches, "distance_zone": s.distance_zone,
+        "payout": s.payout, "jouable": int(s.jouable),
+        "statut_m1": s.statut_m1, "entree_m1": s.entree_m1,
+        "entree_m1_ouverture": int(s.entree_m1_ouverture),
+        "statut_ticks": s.statut_ticks, "attente_sec": s.attente_sec,
+        "prix_touche": s.prix_touche,
+        "favorable_d_abord": (None if s.favorable_d_abord is None
+                              else int(s.favorable_d_abord)),
+        "defavorable_d_abord": (None if s.defavorable_d_abord is None
+                                else int(s.defavorable_d_abord))}
+    for t in ECHEANCES:
+        ligne[f"m1_{t}"] = s.issues_m1.get(t)
+        ligne[f"a_{t}"] = s.issues_a.get(t)
+        for d in DELAIS:
+            ligne[f"ticks_{d}s_{t}"] = s.issues_ticks.get((d, t))
+            ligne[f"statut_{d}s_{t}"] = s.statuts_sortie.get((d, t))
+    for h in HORIZONS_TRAJECTOIRE_SEC:
+        ligne[f"rendement_{h // 60}_min"] = s.trajectoire.get(h)
+    return ligne
 
 
-def _comptes(signaux: Sequence[Signal], bit: int, mode, echeance: int,
-             periode: str) -> dict[tuple[str, int], list[int]]:
-    """Bloc → [gains, pertes, égalités], décisions jouables seulement."""
-    blocs: dict[tuple[str, int], list[int]] = defaultdict(lambda: [0, 0, 0])
-    for s in signaux:
-        if not (s.retenus & bit) or s.periode != periode or not s.jouable:
-            continue
-        o = s.issue(mode, echeance)
-        if o is None:
-            continue
-        blocs[_cle_bloc(s)][0 if o == GAIN else 1 if o == PERTE else 2] += 1
-    return blocs
+def _cellule_csv(v: Any) -> Any:
+    return "" if v is None else f"{v:.6f}" if isinstance(v, float) else v
 
 
-def serie_de_pertes(signaux: Sequence[Signal], bit: int, mode, echeance: int,
-                    periode: str) -> int:
-    """Plus longue suite de pertes (égalités comprises), toutes paires, dans
-    l'ordre des entrées."""
-    suite = sorted(
-        (s.touche_ms if mode[0] == "ticks" else (s.touche_m1_ts or 0) * 1000,
-         s.issue(mode, echeance))
-        for s in signaux
-        if s.retenus & bit and s.periode == periode and s.jouable
-        and s.issue(mode, echeance) is not None)
-    meilleur = cour = 0
-    for _, o in suite:
-        cour = cour + 1 if o != GAIN else 0
-        meilleur = max(meilleur, cour)
-    return meilleur
+class Agregats:
+    """Tout ce que les statistiques demandent, versé paire par paire : les
+    signaux d'une paire sont agrégés, écrits dans le fichier des signaux
+    (compressé au fil de l'eau), puis oubliés. La mémoire ne grandit
+    qu'avec quelques octets par signal jouable."""
 
+    def __init__(self) -> None:
+        self.blocs: dict[tuple[str, int], int] = {}
+        self.cellules: dict[tuple, dict[int, list[int]]] = defaultdict(dict)
+        self.pertes: dict[tuple, dict[int, list[float]]] = defaultdict(dict)
+        self.a: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+        self.v00: Counter = Counter()
+        # Le minimum par signal jouable, pour les séries et les détails.
+        self.entree = array("q")
+        self.retenus = array("l")
+        self.periode = array("b")
+        self.paire = array("h")
+        self.call = array("b")
+        self.semaine = array("h")
+        self.issues = array("b")          # 5 par signal, mode principal
+        self.noms_paires: list[str] = []
+        self.noms_semaines: list[str] = []
+        self.n_signaux = 0
+        self._tampon = io.BytesIO()
+        self._gz = gzip.GzipFile(fileobj=self._tampon, mode="wb", mtime=0)
+        self._ecrire([COLONNES_SIGNAUX])
 
-def cases(signaux: Sequence[Signal]) -> list[dict[str, Any]]:
-    """Une ligne par variante × mode × échéance × période, le verdict sur
-    le mode principal."""
-    lignes = []
-    for k, nom in enumerate(NOMS_VARIANTES):
-        bit = 1 << k
-        for mode in MODES:
-            for t in ECHEANCES:
-                for periode in (EXPLORATION, VALIDATION):
-                    blocs = _comptes(signaux, bit, mode, t, periode)
-                    g = sum(b[0] for b in blocs.values())
-                    p_ = sum(b[1] for b in blocs.values())
-                    e = sum(b[2] for b in blocs.values())
-                    n = g + p_ + e
-                    ligne: dict[str, Any] = {
-                        "variante": nom, "mode": mode[0],
-                        "delai_sec": "" if mode[1] is None else mode[1],
-                        "echeance_min": t, "periode": periode, "n": n,
-                        "gains": g, "pertes": p_, "egalites": e,
-                        "taux": g / n if n else None,
-                        "taux_sans_egalites": (g / (g + p_) if g + p_
-                                               else None)}
-                    if n and mode == MODE_PRINCIPAL:
-                        bas, haut, p = bootstrap_taux(
-                            [(b[0], sum(b)) for b in blocs.values()
-                             if sum(b)], g / n)
-                        ligne.update(ic_bas=bas, ic_haut=haut, p=p)
-                        if k:
-                            base = _comptes(signaux, 1, mode, t, periode)
-                            cles = set(blocs) | set(base)
-                            ecart = bootstrap_ecart([
-                                (blocs[c][0] if c in blocs else 0,
-                                 sum(blocs[c]) if c in blocs else 0,
-                                 base[c][0] if c in base else 0,
-                                 sum(base[c]) if c in base else 0)
-                                for c in sorted(cles)])
-                            ligne.update(ecart_v00=ecart[0],
-                                         ecart_bas=ecart[1],
-                                         ecart_haut=ecart[2])
-                        ligne["serie_pertes_max"] = serie_de_pertes(
-                            signaux, bit, mode, t, periode)
-                    if mode == MODE_PRINCIPAL and n < (
-                            N_EXPLO_MIN if periode == EXPLORATION
-                            else N_VALID_MIN):
-                        ligne["drapeau"] = "petit échantillon"
+    def _ecrire(self, lignes) -> None:
+        texte = io.StringIO()
+        w = csv.writer(texte, delimiter=";")
+        w.writerows(lignes)
+        self._gz.write(texte.getvalue().encode("utf-8"))
+
+    @staticmethod
+    def _rang(liste: list[str], valeur: str) -> int:
+        try:
+            return liste.index(valeur)
+        except ValueError:
+            liste.append(valeur)
+            return len(liste) - 1
+
+    def ajouter(self, signaux: Sequence[Signal]) -> None:
+        lignes = []
+        for s in signaux:
+            self.n_signaux += 1
+            ligne = _ligne_signal(s)
+            lignes.append([_cellule_csv(ligne.get(c))
+                           for c in COLONNES_SIGNAUX])
+            b = self.blocs.setdefault((s.paire, s.jour), len(self.blocs))
+            periode = s.periode
+            if s.retenus & 1:
+                self.v00[("ticks", s.statut_ticks)] += 1
+                self.v00[("m1", s.statut_m1)] += 1
+                for t in ECHEANCES:
+                    o = s.issues_a.get(t)
+                    if o is not None:
+                        self.a[t][0] += o == GAIN
+                        self.a[t][1] += 1
+            if not s.jouable:
+                continue
+            for k in range(len(VARIANTES)):
+                if not s.retenus >> k & 1:
+                    continue
+                for mi, mode in enumerate(MODES):
+                    for t in ECHEANCES:
+                        o = s.issue(mode, t)
+                        if o is None:
+                            continue
+                        cellule = self.cellules[(k, mi, t, periode)]
+                        l = cellule.get(b)
+                        if l is None:
+                            l = cellule[b] = [0, 0, 0]
+                        l[0 if o == GAIN else 1 if o == PERTE else 2] += 1
+            principales = [s.issue(MODE_PRINCIPAL, t) for t in ECHEANCES]
+            if all(o is None for o in principales):
+                continue
+            if s.retenus & 1:
+                for t, o in zip(ECHEANCES, principales):
+                    if o is None:
+                        continue
+                    for nom, _, lire in CARACTERISTIQUES:
+                        x = lire(s)
+                        if x is None:
+                            continue
+                        cellule = self.pertes[(t, periode, nom)]
+                        l = cellule.get(b)
+                        if l is None:
+                            l = cellule[b] = [0.0, 0, 0.0, 0]
+                        if o == GAIN:
+                            l[0] += x
+                            l[1] += 1
+                        else:
+                            l[2] += x
+                            l[3] += 1
+            self.entree.append(s.touche_ms)
+            self.retenus.append(s.retenus)
+            self.periode.append(0 if periode == EXPLORATION else 1)
+            self.paire.append(self._rang(self.noms_paires, s.paire))
+            self.call.append(1 if s.sens > 0 else 0)
+            self.semaine.append(self._rang(
+                self.noms_semaines,
+                datetime.fromtimestamp(s.fin_c2, timezone.utc)
+                .strftime("%G-S%V")))
+            self.issues.extend(ABSENTE if o is None else o
+                               for o in principales)
+        self._ecrire(lignes)
+
+    # --- les tirages, une fois par période ------------------------------
+
+    def tirages(self) -> dict[str, Tirages]:
+        explo = [b for (_, jour), b in sorted(self.blocs.items(),
+                                              key=lambda kv: kv[1])
+                 if jour * 86400 < FIN_EXPLORATION]
+        valid = [b for (_, jour), b in sorted(self.blocs.items(),
+                                              key=lambda kv: kv[1])
+                 if jour * 86400 >= FIN_EXPLORATION]
+        return {EXPLORATION: Tirages(explo), VALIDATION: Tirages(valid)}
+
+    # --- les cases --------------------------------------------------------
+
+    def cases(self, tirages: Mapping[str, Tirages],
+              respirer: Callable[[], None]) -> list[dict[str, Any]]:
+        lignes = []
+        pmode = MODES.index(MODE_PRINCIPAL)
+        ordre = sorted(range(len(self.entree)), key=self.entree.__getitem__)
+        for k, nom in enumerate(NOMS_VARIANTES):
+            respirer()
+            for mi, mode in enumerate(MODES):
+                for ti, t in enumerate(ECHEANCES):
+                    for periode in (EXPLORATION, VALIDATION):
+                        blocs = self.cellules.get((k, mi, t, periode), {})
+                        g = sum(l[0] for l in blocs.values())
+                        p_ = sum(l[1] for l in blocs.values())
+                        e = sum(l[2] for l in blocs.values())
+                        n = g + p_ + e
+                        ligne: dict[str, Any] = {
+                            "variante": nom, "mode": mode[0],
+                            "delai_sec": "" if mode[1] is None else mode[1],
+                            "echeance_min": t, "periode": periode, "n": n,
+                            "gains": g, "pertes": p_, "egalites": e,
+                            "taux": g / n if n else None,
+                            "taux_sans_egalites": (g / (g + p_) if g + p_
+                                                   else None)}
+                        if mi == pmode and n:
+                            tir = tirages[periode]
+                            bas, haut, p = tir.ratio(
+                                {b: l[0] for b, l in blocs.items()},
+                                {b: sum(l) for b, l in blocs.items()},
+                                g / n)
+                            ligne.update(ic_bas=bas, ic_haut=haut, p=p)
+                            if k:
+                                base = self.cellules.get(
+                                    (0, mi, t, periode), {})
+                                nb = sum(sum(l) for l in base.values())
+                                if nb:
+                                    eb, eh = tir.ecart(
+                                        {b: l[0] for b, l in blocs.items()},
+                                        {b: sum(l) for b, l in blocs.items()},
+                                        {b: l[0] for b, l in base.items()},
+                                        {b: sum(l) for b, l in base.items()})
+                                    ligne.update(
+                                        ecart_v00=g / n - sum(
+                                            l[0] for l in base.values()) / nb,
+                                        ecart_bas=eb, ecart_haut=eh)
+                            ligne["serie_pertes_max"] = self._serie(
+                                ordre, k, ti, periode)
+                        if mi == pmode and n < (
+                                N_EXPLO_MIN if periode == EXPLORATION
+                                else N_VALID_MIN):
+                            ligne["drapeau"] = "petit échantillon"
+                        lignes.append(ligne)
+        _verdicts(lignes)
+        return lignes
+
+    def _serie(self, ordre: Sequence[int], k: int, ti: int,
+               periode: str) -> int:
+        """Plus longue suite de pertes (égalités comprises), toutes paires,
+        dans l'ordre des entrées."""
+        code = 0 if periode == EXPLORATION else 1
+        meilleur = cour = 0
+        for i in ordre:
+            if self.periode[i] != code or not self.retenus[i] >> k & 1:
+                continue
+            o = self.issues[5 * i + ti]
+            if o == ABSENTE:
+                continue
+            cour = cour + 1 if o != GAIN else 0
+            meilleur = max(meilleur, cour)
+        return meilleur
+
+    # --- les détails ------------------------------------------------------
+
+    def details(self, variantes: Sequence[str]) -> list[dict[str, Any]]:
+        lignes = []
+        for nom in variantes:
+            k = NOMS_VARIANTES.index(nom)
+            for ti, t in enumerate(ECHEANCES):
+                for code, periode in enumerate((EXPLORATION, VALIDATION)):
+                    groupes: dict[tuple[str, str], list[int]] = \
+                        defaultdict(lambda: [0, 0])
+                    for i in range(len(self.entree)):
+                        if self.periode[i] != code \
+                                or not self.retenus[i] >> k & 1:
+                            continue
+                        o = self.issues[5 * i + ti]
+                        if o == ABSENTE:
+                            continue
+                        for dim, val in (
+                                ("paire", self.noms_paires[self.paire[i]]),
+                                ("sens", "CALL" if self.call[i] else "PUT"),
+                                ("semaine",
+                                 self.noms_semaines[self.semaine[i]])):
+                            groupes[(dim, val)][0] += o == GAIN
+                            groupes[(dim, val)][1] += 1
+                    for (dim, val), (g, n) in sorted(groupes.items()):
+                        bas, haut = wilson(g, n)
+                        lignes.append({
+                            "variante": nom, "echeance_min": t,
+                            "periode": periode, "dimension": dim,
+                            "valeur": val, "n": n, "gains": g,
+                            "taux": g / n, "ic_bas": bas, "ic_haut": haut,
+                            "drapeau": ("petit échantillon"
+                                        if n < N_DETAIL_MIN else "")})
+        return lignes
+
+    # --- gagnants contre perdants ----------------------------------------
+
+    def lignes_pertes(self, tirages: Mapping[str, Tirages]
+                      ) -> list[dict[str, Any]]:
+        lignes = []
+        for t in ECHEANCES:
+            par = {}
+            for periode in (EXPLORATION, VALIDATION):
+                for nom, decision, _ in CARACTERISTIQUES:
+                    blocs = self.pertes.get((t, periode, nom), {})
+                    ng = sum(l[1] for l in blocs.values())
+                    npe = sum(l[3] for l in blocs.values())
+                    mg = (sum(l[0] for l in blocs.values()) / ng
+                          if ng else None)
+                    mp = (sum(l[2] for l in blocs.values()) / npe
+                          if npe else None)
+                    ecart = mg - mp if ng and npe else None
+                    bas = haut = None
+                    if ecart is not None:
+                        bas, haut = tirages[periode].ecart(
+                            {b: l[0] for b, l in blocs.items()},
+                            {b: l[1] for b, l in blocs.items()},
+                            {b: l[2] for b, l in blocs.items()},
+                            {b: l[3] for b, l in blocs.items()})
+                    ligne = {
+                        "echeance_min": t, "periode": periode,
+                        "caracteristique": nom,
+                        "nature": ("connue à la décision" if decision
+                                   else "après l'entrée (descriptif)"),
+                        "n_gagnants": ng, "n_perdants": npe,
+                        "moyenne_gagnants": mg, "moyenne_perdants": mp,
+                        "ecart": ecart, "ic_bas": bas, "ic_haut": haut}
+                    par[(periode, nom)] = ligne
                     lignes.append(ligne)
-    _verdicts(lignes)
-    return lignes
+            for nom, decision, _ in CARACTERISTIQUES:
+                x, v = par[(EXPLORATION, nom)], par[(VALIDATION, nom)]
+                note = (decision and _hors_zero(x) and _hors_zero(v)
+                        and (x["ecart"] > 0) == (v["ecart"] > 0))
+                for l in (x, v):
+                    l["notee"] = ("oui" if note else
+                                  "—" if not decision else "non")
+        return lignes
+
+    def signaux_gz(self) -> bytes:
+        self._gz.close()
+        return self._tampon.getvalue()
+
+
+def _hors_zero(l: Mapping[str, Any]) -> bool:
+    return (l["ic_bas"] is not None and l["ic_haut"] is not None
+            and (l["ic_bas"] > 0 or l["ic_haut"] < 0))
 
 
 def _verdicts(lignes: list[dict[str, Any]]) -> None:
@@ -956,120 +1284,22 @@ def _verdicts(lignes: list[dict[str, Any]]) -> None:
                           and val["taux"] > POINT_MORT else "non reproduite")
 
 
-def details(signaux: Sequence[Signal], variantes: Sequence[str]
-            ) -> list[dict[str, Any]]:
-    """Par paire, par sens et par semaine : mode principal, Wilson."""
-    lignes = []
-    for nom in variantes:
-        bit = 1 << NOMS_VARIANTES.index(nom)
-        for t in ECHEANCES:
-            for periode in (EXPLORATION, VALIDATION):
-                groupes: dict[tuple[str, str], list[int]] = \
-                    defaultdict(lambda: [0, 0])
-                for s in signaux:
-                    if not (s.retenus & bit) or s.periode != periode \
-                            or not s.jouable:
-                        continue
-                    o = s.issue(MODE_PRINCIPAL, t)
-                    if o is None:
-                        continue
-                    semaine = datetime.fromtimestamp(
-                        s.fin_c2, timezone.utc).strftime("%G-S%V")
-                    for dim, val in (("paire", s.paire),
-                                     ("sens", "CALL" if s.sens > 0 else "PUT"),
-                                     ("semaine", semaine)):
-                        groupes[(dim, val)][0] += o == GAIN
-                        groupes[(dim, val)][1] += 1
-                for (dim, val), (g, n) in sorted(groupes.items()):
-                    bas, haut = wilson(g, n)
-                    lignes.append({
-                        "variante": nom, "echeance_min": t,
-                        "periode": periode, "dimension": dim, "valeur": val,
-                        "n": n, "gains": g, "taux": g / n, "ic_bas": bas,
-                        "ic_haut": haut,
-                        "drapeau": ("petit échantillon" if n < N_DETAIL_MIN
-                                    else "")})
-    return lignes
+# --------------------------------------------------------------------------- #
+# L'avancement, pour le bot
+# --------------------------------------------------------------------------- #
+
+_ETAT: dict[str, Any] = {}
 
 
-CARACTERISTIQUES: tuple[tuple[str, bool, Callable[[Signal], Any]], ...] = (
-    # (nom, connue à la décision ?, lecture)
-    ("retouches_zone", True, lambda s: s.retouches),
-    ("mouvement_signe", True, lambda s: s.mouvement),
-    ("mouvement_amplitude", True,
-     lambda s: None if s.mouvement is None else abs(s.mouvement)),
-    ("c1_corps_sur_etendue", True, lambda s: s.c1_ce),
-    ("c2_corps_sur_etendue", True, lambda s: s.c2_ce),
-    ("c2_corps_sur_c1", True, lambda s: s.c2_sur_c1),
-    ("distance_niveau_zone", True, lambda s: s.distance_zone),
-    ("attente_atteinte_sec", True, lambda s: s.attente_sec),
-) + tuple(
-    (f"rendement_{h // 60}_min", False,
-     (lambda h: lambda s: s.trajectoire.get(h))(h))
-    for h in HORIZONS_TRAJECTOIRE_SEC) + (
-    ("favorable_d_abord", False,
-     lambda s: None if s.favorable_d_abord is None
-     else float(s.favorable_d_abord)),
-    ("defavorable_d_abord", False,
-     lambda s: None if s.defavorable_d_abord is None
-     else float(s.defavorable_d_abord)),
-)
-
-
-def pertes(signaux: Sequence[Signal]) -> list[dict[str, Any]]:
-    """Gagnants contre perdants (égalités perdues), V00, mode principal."""
-    lignes = []
-    for t in ECHEANCES:
-        par_periode = {}
-        for periode in (EXPLORATION, VALIDATION):
-            for nom, decision, lire in CARACTERISTIQUES:
-                blocs: dict[tuple[str, int], list[float]] = \
-                    defaultdict(lambda: [0.0, 0, 0.0, 0])
-                for s in signaux:
-                    if not (s.retenus & 1) or s.periode != periode \
-                            or not s.jouable:
-                        continue
-                    o = s.issue(MODE_PRINCIPAL, t)
-                    x = lire(s)
-                    if o is None or x is None:
-                        continue
-                    b = blocs[_cle_bloc(s)]
-                    if o == GAIN:
-                        b[0] += x
-                        b[1] += 1
-                    else:
-                        b[2] += x
-                        b[3] += 1
-                ecart, bas, haut = bootstrap_ecart(
-                    [tuple(blocs[c]) for c in sorted(blocs)])
-                ng = sum(b[1] for b in blocs.values())
-                npe = sum(b[3] for b in blocs.values())
-                ligne = {
-                    "echeance_min": t, "periode": periode,
-                    "caracteristique": nom,
-                    "nature": ("connue à la décision" if decision
-                               else "après l'entrée (descriptif)"),
-                    "n_gagnants": ng, "n_perdants": npe,
-                    "moyenne_gagnants": (sum(b[0] for b in blocs.values()) / ng
-                                         if ng else None),
-                    "moyenne_perdants": (sum(b[2] for b in blocs.values())
-                                         / npe if npe else None),
-                    "ecart": ecart, "ic_bas": bas, "ic_haut": haut}
-                par_periode[(periode, nom)] = ligne
-                lignes.append(ligne)
-        for nom, decision, _ in CARACTERISTIQUES:
-            x = par_periode[(EXPLORATION, nom)]
-            v = par_periode[(VALIDATION, nom)]
-
-            def hors_zero(l):
-                return (l["ic_bas"] is not None and l["ic_haut"] is not None
-                        and (l["ic_bas"] > 0 or l["ic_haut"] < 0))
-            note = (decision and hors_zero(x) and hors_zero(v)
-                    and (x["ecart"] > 0) == (v["ecart"] > 0))
-            for l in (x, v):
-                l["notee"] = ("oui" if note else
-                              "—" if not decision else "non")
-    return lignes
+def avancement() -> str | None:
+    """Où en est la passe en cours ; None s'il n'y en a pas."""
+    etat = dict(_ETAT)
+    if not etat:
+        return None
+    minutes = (time.monotonic() - etat["debut"]) / 60
+    return (f"{etat['etape']} ; {etat.get('faites', 0)}/"
+            f"{etat.get('total', 0)} paires ; {etat.get('signaux', 0)} "
+            f"signaux ; {minutes:.0f} min")
 
 
 # --------------------------------------------------------------------------- #
@@ -1108,6 +1338,18 @@ def etude(lue_brute, active_brute, course=None, *,
     if fin <= FIN_EXPLORATION:
         return ("🕯 L'exploration court jusqu'au 02/11 : rien à valider "
                 "encore."), []
+    _ETAT.clear()
+    _ETAT.update(debut=t0, etape="résumés des bases", faites=0, total=0,
+                 signaux=0)
+    try:
+        return _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks,
+                      respirer, t0)
+    finally:
+        _ETAT.clear()
+
+
+def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
+           t0):
     lue = ConnexionTracee(lue_brute)
     active = (ConnexionTracee(active_brute)
               if active_brute is not None and active_brute is not lue_brute
@@ -1122,13 +1364,16 @@ def etude(lue_brute, active_brute, course=None, *,
         divergents = {c for c in set(resume_lue) | set(resume_active)
                       if resume_lue.get(c) != resume_active.get(c)}
     paires = sorted({p for (table, p, _) in resume_lue if table == "candles"})
+    _ETAT.update(total=len(paires))
 
     def base(table: str, nom: str, jour: int):
         return active if (table, nom, jour) in divergents else lue
 
     compte: Counter = Counter()
-    tous: list[Signal] = []
-    for nom in paires:
+    agregats = Agregats()
+    decodees = 0
+    for rang, nom in enumerate(paires):
+        _ETAT.update(etape=f"paire {nom}", faites=rang)
         bougies: list[Bougie] = []
         changements: list[tuple[int, float]] = []
         ligne = lue.execute(PAYOUT_AVANT, (nom, DEBUT)).fetchone()
@@ -1160,26 +1405,33 @@ def etude(lue_brute, active_brute, course=None, *,
                                           min(fin, (jour + 1) * 86400)))
                         .fetchall()}
             ticks = Ticks(charger)
-        tous += paire(nom, bougies, fin, ticks, payout_a, compte, respirer)
+        gardes = paire(nom, bougies, fin, ticks, payout_a, compte, respirer)
+        agregats.ajouter(gardes)
+        _ETAT.update(signaux=agregats.n_signaux)
         if ticks is not None:
             compte[("données", "chemins illisibles")] += ticks.illisibles
-        del bougies
+            decodees += ticks.decodees
+        del bougies, gardes, ticks
         respirer()
-    lignes_cases = cases(tous)
+    _ETAT.update(etape="statistiques", faites=len(paires))
+    tirages = agregats.tirages()
+    lignes_cases = agregats.cases(tirages, respirer)
     candidates = sorted({l["variante"] for l in lignes_cases
                          if l.get("verdict", "").startswith("retenue")})
-    lignes_details = details(tous, ["V00_tous"] + [
+    lignes_details = agregats.details(["V00_tous"] + [
         v for v in candidates if v != "V00_tous"])
-    lignes_pertes = pertes(tous)
-    rapport = texte(tous, lignes_cases, lignes_pertes, {
+    lignes_pertes = agregats.lignes_pertes(tirages)
+    _ETAT.update(etape="rapport et fichiers")
+    rapport = texte(agregats, lignes_cases, lignes_pertes, {
         "nom": nom_lecture, "lecture": lecture, "fin": fin,
         "paires": paires, "resume": resume_lue, "compte": compte,
         "divergents": len(divergents), "avec_ticks": avec_ticks,
+        "decodees": decodees,
         "requetes": sum(lue.requetes.values()) + (
             sum(active.requetes.values()) if active is not None else 0),
         "refusees": lue.refusees + (active.refusees if active else 0),
         "temps": time.monotonic() - t0})
-    return rapport, fichiers(tous, lignes_cases, lignes_details,
+    return rapport, fichiers(agregats, lignes_cases, lignes_details,
                              lignes_pertes, resume_lue, compte)
 
 
@@ -1195,16 +1447,7 @@ def _pct(x: float | None) -> str:
     return "—" if x is None else f"{100 * x:.1f} %".replace(".", ",")
 
 
-def scenario_a_resume(signaux: Sequence[Signal]) -> dict[int, tuple[int, int]]:
-    sortie = {}
-    for t in ECHEANCES:
-        issues = [s.issues_a.get(t) for s in signaux if s.retenus & 1]
-        issues = [o for o in issues if o is not None]
-        sortie[t] = (sum(o == GAIN for o in issues), len(issues))
-    return sortie
-
-
-def texte(signaux: Sequence[Signal], lignes_cases, lignes_pertes,
+def texte(agregats: Agregats, lignes_cases, lignes_pertes,
           meta: Mapping) -> str:
     fin = meta["fin"]
     compte: Counter = meta["compte"]
@@ -1216,11 +1459,8 @@ def texte(signaux: Sequence[Signal], lignes_cases, lignes_pertes,
     motifs = {p: sum(n for cle, n in compte.items()
                      if len(cle) == 3 and cle[0] == "motifs" and cle[1] == p)
               for p in (EXPLORATION, VALIDATION)}
-    v00 = [s for s in signaux if s.retenus & 1]
-
-    def statut(source, valeur):
-        return sum(1 for s in v00 if (s.statut_ticks if source == "ticks"
-                                      else s.statut_m1) == valeur)
+    v00 = agregats.v00
+    n_v00 = sum(n for (source, _), n in v00.items() if source == "m1")
     principal = {(l["variante"], l["echeance_min"], l["periode"]): l
                  for l in lignes_cases if l["mode"] == "ticks"
                  and l["delai_sec"] == DELAI_PRINCIPAL}
@@ -1237,18 +1477,19 @@ def texte(signaux: Sequence[Signal], lignes_cases, lignes_pertes,
         f"{_utc(fin - 86400)} ; exploration jusqu'au "
         f"{_utc(FIN_EXPLORATION - 86400)}, validation ensuite. Minutes de "
         f"bougies : {_entier(minutes_b)} ; minutes de ticks : "
-        f"{_entier(minutes_t)} ; jours lus sur l'active : "
+        f"{_entier(minutes_t)} ; minutes décodées : "
+        f"{_entier(meta['decodees'])} ; jours lus sur l'active : "
         f"{meta['divergents']}."
         + ("" if meta["avec_ticks"] else
            " ⚠ Lancée SANS les ticks : seule l'approximation M1 existe."),
         f"<b>Motifs</b> : {motifs[EXPLORATION]} en exploration, "
         f"{motifs[VALIDATION]} en validation. Épisodes retenus sans filtre "
-        f"(V00) : {len(v00)}.",
+        f"(V00) : {n_v00}.",
         f"Atteinte du niveau dans les 10 min (V00) : ticks "
-        f"{statut('ticks', DECLENCHE)} déclenchés, "
-        f"{statut('ticks', NON_DECLENCHE)} non déclenchés, "
-        f"{statut('ticks', SANS_TICKS)} sans ticks ; bougies M1 "
-        f"{statut('m1', DECLENCHE)} déclenchés.",
+        f"{v00[('ticks', DECLENCHE)]} déclenchés, "
+        f"{v00[('ticks', NON_DECLENCHE)]} non déclenchés, "
+        f"{v00[('ticks', SANS_TICKS)]} sans ticks ; bougies M1 "
+        f"{v00[('m1', DECLENCHE)]} déclenchés.",
         "<b>V00, sans filtre</b> (ticks, entrée 2 s après l'atteinte, "
         "décisions jouables) :"]
     for t in ECHEANCES:
@@ -1279,11 +1520,11 @@ def texte(signaux: Sequence[Signal], lignes_cases, lignes_pertes,
     if not validees:
         morceaux.append("Aucune variante ne bat le point mort de 52,08 % "
                         "hors échantillon.")
-    a = scenario_a_resume(signaux)
     morceaux.append(
         "Scénario A, INVALIDE (entrée à l'ouverture de c1, connue après "
         "coup) : " + " ; ".join(
-            f"{t} min {_pct(g / n if n else None)}" for t, (g, n) in a.items())
+            f"{t} min {_pct(g / n if n else None)}"
+            for t, (g, n) in sorted(agregats.a.items()))
         + ". C'est l'illusion de l'anticipation, pas une stratégie.")
     notees = sorted({l["caracteristique"] for l in lignes_pertes
                      if l.get("notee") == "oui"})
@@ -1305,9 +1546,7 @@ def _csv(lignes: Sequence[Mapping], colonnes: Sequence[str]) -> bytes:
     w = csv.writer(sortie, delimiter=";")
     w.writerow(colonnes)
     for l in lignes:
-        w.writerow(["" if l.get(c) is None else
-                    f"{l[c]:.6f}" if isinstance(l.get(c), float) else l[c]
-                    for c in colonnes])
+        w.writerow([_cellule_csv(l.get(c)) for c in colonnes])
     return sortie.getvalue().encode("utf-8")
 
 
@@ -1324,42 +1563,8 @@ COLONNES_PERTES = ("echeance_min", "periode", "caracteristique", "nature",
                    "moyenne_perdants", "ecart", "ic_bas", "ic_haut", "notee")
 
 
-def _ligne_signal(s: Signal) -> dict[str, Any]:
-    ligne: dict[str, Any] = {
-        "paire": s.paire, "type": "haussier" if s.type_ > 0 else "baissier",
-        "direction": "CALL" if s.sens > 0 else "PUT",
-        "c1_utc": _utc(s.c1_ts, "%Y-%m-%d %H:%M"), "c1_ts": s.c1_ts,
-        "periode": s.periode, "niveau": s.niveau,
-        "variantes": ",".join(n for k, n in enumerate(NOMS_VARIANTES)
-                              if s.membres >> k & 1),
-        "retenu_dans": ",".join(n for k, n in enumerate(NOMS_VARIANTES)
-                                if s.retenus >> k & 1),
-        "corps_c2_rel": s.corps_c2_rel, "c1_ce": s.c1_ce, "c2_ce": s.c2_ce,
-        "c2_sur_c1": s.c2_sur_c1, "mouvement": s.mouvement,
-        "compression": s.compression, "zone": s.zone,
-        "retouches": s.retouches, "distance_zone": s.distance_zone,
-        "payout": s.payout, "jouable": int(s.jouable),
-        "statut_m1": s.statut_m1, "entree_m1": s.entree_m1,
-        "entree_m1_ouverture": int(s.entree_m1_ouverture),
-        "statut_ticks": s.statut_ticks, "attente_sec": s.attente_sec,
-        "prix_touche": s.prix_touche,
-        "favorable_d_abord": (None if s.favorable_d_abord is None
-                              else int(s.favorable_d_abord)),
-        "defavorable_d_abord": (None if s.defavorable_d_abord is None
-                                else int(s.defavorable_d_abord))}
-    for t in ECHEANCES:
-        ligne[f"m1_{t}"] = s.issues_m1.get(t)
-        ligne[f"a_{t}"] = s.issues_a.get(t)
-        for d in DELAIS:
-            ligne[f"ticks_{d}s_{t}"] = s.issues_ticks.get((d, t))
-            ligne[f"statut_{d}s_{t}"] = s.statuts_sortie.get((d, t))
-    for h in HORIZONS_TRAJECTOIRE_SEC:
-        ligne[f"rendement_{h // 60}_min"] = s.trajectoire.get(h)
-    return ligne
-
-
-def fichiers(signaux, lignes_cases, lignes_details, lignes_pertes, resume,
-             compte) -> list[tuple[bytes, str, str]]:
+def fichiers(agregats: Agregats, lignes_cases, lignes_details, lignes_pertes,
+             resume, compte) -> list[tuple[bytes, str, str]]:
     donnees = defaultdict(dict)
     for (table, paire_, jour), v in resume.items():
         if v:
@@ -1378,11 +1583,6 @@ def fichiers(signaux, lignes_cases, lignes_details, lignes_pertes, resume,
     lignes_statuts += [{"source": k[0], "periode": "", "statut": k[1],
                         "nombre": n}
                        for k, n in sorted(compte.items()) if len(k) == 2]
-    signaux_csv = [_ligne_signal(s) for s in signaux]
-    colonnes_signaux = list(signaux_csv[0]) if signaux_csv else ["paire"]
-    gz = io.BytesIO()
-    with gzip.GzipFile(fileobj=gz, mode="wb", mtime=0) as f:
-        f.write(_csv(signaux_csv, colonnes_signaux))
     return [
         (_csv(lignes_cases, COLONNES_CASES), "engulfing_cases.csv",
          "Variante × mode × échéance × période, verdicts"),
@@ -1396,6 +1596,6 @@ def fichiers(signaux, lignes_cases, lignes_details, lignes_pertes, resume,
                                "bougies_completes", "minutes_ticks", "ticks",
                                "releves_payout")),
          "engulfing_donnees.csv", "Données réellement présentes"),
-        (gz.getvalue(), "engulfing_signaux.csv.gz",
+        (agregats.signaux_gz(), "engulfing_signaux.csv.gz",
          "Chaque signal retenu, ses statuts et ses issues"),
     ]
