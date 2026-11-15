@@ -1,0 +1,19 @@
+{
+  "objet": "Confirmation de la seule découverte de /terrain (gel 60e6ddaf, rapport du 15/11) : famille F5, EURJPY_otc à 22 h UTC, pari à la hausse, échéance 15 minutes.",
+  "regle": "à la clôture de chaque bougie M1 d'EURJPY_otc dont la fin tombe dans l'heure 22 UTC (22:00:00 à 22:59:59), pari CALL ; sortie à la clôture de la bougie qui commence 15 minutes plus tard ; contiguïté, sauts aberrants (> 1 % en une minute), jouabilité (payout du flux ≥ 84 à la décision) et égalité = perte exactement comme dans /terrain",
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, EURJPY_otc seulement, relève (jour divergent lu sur l'active)",
+    "debut_utc": "2026-11-10T00:00:00Z",
+    "remarque": "ces bougies n'ont jamais été lues par /terrain ; aucun jour antérieur au 10/11 n'entre ici"
+  },
+  "unite": "le jour UTC de la décision : score du jour = part des décisions jouables gagnées ce jour-là ; un jour ne compte que s'il a au moins 15 décisions jouables",
+  "regard": "un seul : sur les 20 premiers jours qui comptent, dans l'ordre chronologique ; avant, la commande dit seulement combien de jours sont acquis, sans aucun taux",
+  "succes": "moyenne des 20 scores journaliers > 52,0833 % ET p unilatérale ≤ 0,05, p = part des moyennes rééchantillonnées (bootstrap des 20 jours, 10 000 tirages, graine 7) inférieures ou égales à 52,0833 %",
+  "echec": "sinon, la piste est abandonnée ; elle ne se reformule pas sur les mêmes jours",
+  "interdits": [
+    "aucune écriture en base, sortie en CSV seulement",
+    "la course, la collecte, la stratégie et les échéances ne changent pas",
+    "aucun argent réel sur cette piste avant une confirmation, et pas même après sans un essai en démo",
+    "aucun paramètre ne se rechoisit après le gel"
+  ]
+}
