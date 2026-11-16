@@ -399,8 +399,9 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
     from maxprofit.store import pool
     vus = []
 
-    def faux(lue, active, course=None, *, nom_lecture, avec_ticks):
-        vus.append((nom_lecture, avec_ticks))
+    def faux(lue, active, course=None, *, nom_lecture, avec_ticks,
+             essai=False, version=None):
+        vus.append((nom_lecture, avec_ticks, essai))
         return "🕯 Engulfing", []
 
     monkeypatch.setattr(en, "etude", faux)
@@ -408,12 +409,13 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
     open_read_write(chemin).close()
     texte, _ = service._engulfing(chemin, None, "")
     assert "Aucune relève" in texte
-    for argument, ticks in (("", True), ("sans_ticks", False)):
+    for argument in ("", "sans_ticks", "essai"):
         texte, _ = service._engulfing(
             chemin, None, argument, environ={pool.ENV_RELEVE: str(chemin)},
             ouvrir_url=lambda url: open_read_only(url))
         assert texte == "🕯 Engulfing"
-    assert vus == [("relève", True), ("relève", False)]
+    assert vus == [("relève", True, False), ("relève", False, False),
+                   ("relève", True, True)]
 
     from tests.test_telegram import (CHAT, INTRUS, FauxClient, _annuaire,
                                      _bot, _message)
@@ -435,7 +437,10 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
 
     bot._engulfing = engulfing
     bot._engulfing_avancement = lambda: "paire EURUSD_otc ; 3/20 paires"
+    bot.premier_avancement_sec = 0.05
     bot.intervalle_avancement_sec = 0.05
+    monkeypatch.setattr("maxprofit.hosting.version.commit",
+                        lambda: "abc1234")
 
     async def deroule():
         await bot._traiter(_message("/engulfing", chat=INTRUS)["message"])
@@ -444,21 +449,155 @@ def test_le_service_et_la_commande(monkeypatch, tmp_path):
         await asyncio.sleep(0.01)
         await bot._traiter(_message("/engulfing")["message"])
         await bot._engulfing_en_cours
+        assert bot._engulfing_veille is not None, "veille référencée"
+        await bot._engulfing_veille
+        assert bot._en_fond == {}, "rien ne reste inscrit après le rapport"
 
     asyncio.run(deroule())
     assert documents == ["engulfing_cases.csv"]
     textes = [t for _, t in client.envoyes]
+    assert any(t.startswith("🕯 Étude Engulfing lancée (version abc1234")
+               for t in textes)
     assert any(t.startswith("🕯 L'étude Engulfing est déjà en cours : paire")
                for t in textes)
     assert any(t.startswith("⏳ 🕯 Étude Engulfing : paire") for t in textes)
 
 
+def test_l_arret_du_service_dit_l_etude_interrompue(tmp_path):
+    from tests.test_telegram import CHAT, FauxClient, _annuaire, _bot
+    client = FauxClient()
+    bot = _bot(client, annuaire=_annuaire(tmp_path))
+    vus = []
+
+    async def longue(argument):
+        vus.append(argument)
+        await asyncio.sleep(30)
+        return "jamais", []
+
+    bot._engulfing = longue
+    bot._engulfing_avancement = lambda: None
+
+    async def deroule():
+        from tests.test_telegram import _message
+        await bot._traiter(_message("/engulfing essai")["message"])
+        await asyncio.sleep(0.01)
+        assert vus == ["essai"]
+        await bot.prevenir_interruptions()
+        bot._engulfing_en_cours.cancel()
+        await asyncio.gather(bot._engulfing_en_cours, bot._engulfing_veille,
+                             return_exceptions=True)
+        assert bot._en_fond == {}
+        avant = len(client.envoyes)
+        await bot.prevenir_interruptions()
+        assert len(client.envoyes) == avant, "plus rien en cours, rien à dire"
+
+    asyncio.run(deroule())
+    textes = [t for chat, t in client.envoyes if chat == CHAT]
+    assert any(t.startswith("🕯 Essai technique lancé") for t in textes)
+    assert any(t.startswith("⚠️ 🕯 Essai Engulfing : interrompu(e)")
+               and "Collecte démarrée" in t for t in textes)
+
+
+def test_un_rapport_refuse_une_fois_est_renvoye_et_les_fichiers_partent(
+        tmp_path):
+    from tests.test_telegram import CHAT, FauxClient, _annuaire, _bot
+
+    class Capricieux(FauxClient):
+        refus = 1
+
+        async def envoyer(self, chat_id, texte, clavier=None):
+            if texte == "rapport" and self.refus:
+                self.refus -= 1
+                raise RuntimeError("réseau coupé")
+            await super().envoyer(chat_id, texte, clavier)
+
+    client = Capricieux()
+    documents = []
+
+    async def envoyer_document(chat_id, contenu, nom, legende=""):
+        documents.append(nom)
+
+    client.envoyer_document = envoyer_document
+    bot = _bot(client, annuaire=_annuaire(tmp_path))
+
+    async def appel(argument):
+        return "rapport", [(b"x", "engulfing_cases.csv", "")]
+
+    async def sans_attente(_):
+        return None
+
+    import maxprofit.hosting.telegram as tg
+    vrai_sleep = tg.asyncio.sleep
+    tg.asyncio.sleep = sans_attente
+    try:
+        asyncio.run(bot._envoyer_en_fond(CHAT, appel, "", "🕯 Étude"))
+    finally:
+        tg.asyncio.sleep = vrai_sleep
+    assert ("%s" % CHAT, "rapport") in client.envoyes
+    assert documents == ["engulfing_cases.csv"]
+    assert bot._en_fond == {}
+
+
+def test_l_essai_technique_ne_montre_aucun_taux(passe):
+    active, releve, empreintes, *_ = passe
+    a, r = open_read_only(active), open_read_only(releve)
+    espion = Espion(r)
+    try:
+        texte, fichiers = en.etude(espion, a, maintenant=FIN_DONNEES + 3600,
+                                   respirer=lambda: None, essai=True,
+                                   version="abc1234")
+    finally:
+        a.close()
+        r.close()
+    assert fichiers == [], "l'essai ne rend aucun fichier"
+    assert "%" not in texte, "aucun taux, même arrondi"
+    assert texte.startswith("🕯 <b>Essai technique /engulfing</b>")
+    assert "Version déployée : abc1234" in texte
+    assert "Paire essayée : EURUSD_otc" in texte
+    assert "Statistiques, rapport et fichiers : passés" in texte
+    assert "Projection prudente de /engulfing complet (2 paires × " in texte
+    assert "refusées 0" in texte and "Mémoire" in texte
+    assert espion.bornes and max(espion.bornes) <= FIN_DONNEES
+    assert min(espion.bornes) >= FIN_DONNEES - en.JOURS_ESSAI * 86400 - 86400
+    assert [hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (active, releve)] == empreintes
+    assert en.avancement() is None
+
+
+def test_la_memoire_se_lit_ou_se_tait(tmp_path):
+    from maxprofit.core import memoire
+    statut = tmp_path / "status"
+    statut.write_text("Name:\tpython\nVmHWM:\t  409600 kB\n"
+                      "VmRSS:\t  307200 kB\n")
+    assert memoire.processus(str(statut)) == (300.0, 400.0)
+    courant, limite = tmp_path / "current", tmp_path / "max"
+    courant.write_text(str(330 * 1024 * 1024))
+    limite.write_text("max\n")
+    assert memoire.conteneur(((str(courant), str(limite)),)) == (330.0, None)
+    limite.write_text(str(512 * 1024 * 1024))
+    assert memoire.conteneur(((str(courant), str(limite)),)) == (330.0, 512.0)
+    limite.write_text(str(1 << 62))
+    assert memoire.conteneur(((str(courant), str(limite)),)) == (330.0, None)
+    absent = str(tmp_path / "absent")
+    assert memoire.conteneur(((absent, absent),)) == (None, None)
+    assert memoire.processus(absent) == (None, None)
+    limite.write_text(str(512 * 1024 * 1024))
+    assert memoire.resume(str(statut), ((str(courant), str(limite)),)) == (
+        "mémoire 300 Mo (pic 400 Mo) ; conteneur 330 / 512 Mo")
+    assert memoire.resume(absent, ((absent, absent),)) == "mémoire inconnue"
+
+
 def test_l_avancement_suit_la_passe(passe):
     assert en.avancement() is None, "rien en cours après la passe"
-    en._ETAT.update(debut=0, etape="paire EURUSD_otc", faites=3, total=20,
-                    signaux=1200)
+    import time as horloge
+    maintenant = horloge.monotonic()
+    en._ETAT.update(debut=maintenant - 600, etape="paire EURUSD_otc",
+                    faites=4, total=20, signaux=1200,
+                    debut_paires=maintenant - 480, rss_max=310.0)
     try:
-        assert "3/20 paires" in en.avancement()
-        assert "1200 signaux" in en.avancement()
+        point = en.avancement()
+        assert "4/20 paires" in point and "1200 signaux" in point
+        assert "fin des paires dans ~32 min" in point
+        assert "mémoire" in point and "pic de l'étude 310 Mo" in point
     finally:
         en._ETAT.clear()

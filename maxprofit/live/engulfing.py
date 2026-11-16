@@ -68,6 +68,7 @@ from statistics import NormalDist
 from typing import Any, Callable, Mapping, Sequence
 
 from maxprofit.apprentissage import etude_micro as em
+from maxprofit.core import memoire
 from maxprofit.core.errors import BotError
 from maxprofit.core.payout import FLUX_POUR_LE_PLAFOND
 from maxprofit.live.etude3 import ConnexionTracee, etat_lecture_seule
@@ -210,6 +211,8 @@ N_EXPLO_MIN = 200
 N_VALID_MIN = 100
 N_DETAIL_MIN = 30
 RESPIRATION_SEC = 0.02
+#: `/engulfing essai` : une paire, les derniers jours complets, aucun taux.
+JOURS_ESSAI = 2
 
 HAUSSIER, BAISSIER = 1, -1
 DECLENCHE, NON_DECLENCHE = "déclenché", "non déclenché"
@@ -1292,14 +1295,32 @@ _ETAT: dict[str, Any] = {}
 
 
 def avancement() -> str | None:
-    """Où en est la passe en cours ; None s'il n'y en a pas."""
+    """Où en est la passe en cours ; None s'il n'y en a pas. La mémoire y
+    figure : si l'hébergeur tue le processus faute de mémoire, la dernière
+    valeur reçue le laisse voir venir."""
     etat = dict(_ETAT)
     if not etat:
         return None
     minutes = (time.monotonic() - etat["debut"]) / 60
-    return (f"{etat['etape']} ; {etat.get('faites', 0)}/"
-            f"{etat.get('total', 0)} paires ; {etat.get('signaux', 0)} "
-            f"signaux ; {minutes:.0f} min")
+    faites, total = etat.get("faites", 0), etat.get("total", 0)
+    texte = (f"{etat['etape']} ; {faites}/{total} paires ; "
+             f"{etat.get('signaux', 0)} signaux ; {minutes:.0f} min")
+    debut_paires = etat.get("debut_paires")
+    if debut_paires is not None and 0 < faites < total:
+        par_paire = (time.monotonic() - debut_paires) / 60 / faites
+        texte += f" ; fin des paires dans ~{par_paire * (total - faites):.0f} min"
+    texte += f" ; {memoire.resume()}"
+    if etat.get("rss_max"):
+        texte += f" ; pic de l'étude {etat['rss_max']:.0f} Mo"
+    return texte
+
+
+def _mesurer() -> None:
+    """Le plus haut résident vu pendant la passe (lu à chaque respiration :
+    quelques milliers de lectures de /proc, rien à côté du calcul)."""
+    rss = memoire.residente()
+    if rss is not None and rss > _ETAT.get("rss_max", 0):
+        _ETAT["rss_max"] = rss
 
 
 # --------------------------------------------------------------------------- #
@@ -1323,33 +1344,88 @@ def _lire_bougies(conn, nom: str, jour: int, compte: Counter) -> list[Bougie]:
     return sortie
 
 
+def _lire_paire(nom: str, debut: int, fin: int, base, lue, compte: Counter,
+                avec_ticks: bool, respirer: Callable[[], None]
+                ) -> tuple[list[Signal], "Ticks | None", int]:
+    """Bougies, payouts et ticks d'UNE paire sur [debut, fin), lus jour par
+    jour (un jour divergent sur l'active), puis ses signaux gardés avec
+    leurs issues. → (gardés, ticks, nombre de bougies)."""
+    bougies: list[Bougie] = []
+    changements: list[tuple[int, float]] = []
+    ligne = lue.execute(PAYOUT_AVANT, (nom, debut)).fetchone()
+    if ligne and ligne[1] is not None:
+        changements.append((int(ligne[0]), float(ligne[1])))
+    for jour in range(debut // 86400, fin // 86400):
+        bougies += _lire_bougies(base("candles", nom, jour), nom, jour,
+                                 compte)
+        for ts, pct in base("payouts", nom, jour).execute(
+                PAYOUTS_DU_JOUR, (nom, jour * 86400,
+                                  (jour + 1) * 86400)).fetchall():
+            if pct is not None:
+                changements.append((int(ts), float(pct)))
+        respirer()
+    instants = [c[0] for c in changements]
+
+    def payout_a(t: float) -> float | None:
+        k = bisect_right(instants, t) - 1
+        return changements[k][1] if k >= 0 else None
+
+    ticks = None
+    if avec_ticks:
+        def charger(jour: int):
+            if jour * 86400 >= fin:
+                return {}
+            return {int(r[0]): (int(r[1]), int(r[2]), bytes(r[3]))
+                    for r in base("tick_paths", nom, jour).execute(
+                        SQL_CHEMINS, (nom, jour * 86400,
+                                      min(fin, (jour + 1) * 86400)))
+                    .fetchall()}
+        ticks = Ticks(charger)
+    n_bougies = len(bougies)
+    gardes = paire(nom, bougies, fin, ticks, payout_a, compte, respirer)
+    return gardes, ticks, n_bougies
+
+
 def etude(lue_brute, active_brute, course=None, *,
           nom_lecture: str = "relève", maintenant: float | None = None,
           avec_ticks: bool = True,
-          respirer: Callable[[], None] | None = None
+          respirer: Callable[[], None] | None = None,
+          essai: bool = False, version: str | None = None
           ) -> tuple[str, list[tuple[bytes, str, str]]]:
     """(rapport, fichiers). Les deux bases sont déjà en lecture seule ;
-    `active_brute` peut être None (copie non vérifiée)."""
+    `active_brute` peut être None (copie non vérifiée). `essai` : le
+    contrôle technique d'une minute (une paire, `JOURS_ESSAI` jours), qui ne
+    montre aucun taux et ne compte pour rien."""
     em.exiger_le_gel(PARAMETRES, EMPREINTE)
-    respirer = respirer or (lambda: time.sleep(RESPIRATION_SEC))
+    pause = respirer or (lambda: time.sleep(RESPIRATION_SEC))
+
+    def respirer() -> None:
+        _mesurer()
+        pause()
+
     maintenant = time.time() if maintenant is None else maintenant
     t0 = time.monotonic()
     fin = int(maintenant) // 86400 * 86400
-    if fin <= FIN_EXPLORATION:
+    if fin <= FIN_EXPLORATION and not essai:
         return ("🕯 L'exploration court jusqu'au 02/11 : rien à valider "
                 "encore."), []
     _ETAT.clear()
     _ETAT.update(debut=t0, etape="résumés des bases", faites=0, total=0,
-                 signaux=0)
+                 signaux=0, rss_depart=memoire.residente())
     try:
+        if essai:
+            return _essai(lue_brute, active_brute, nom_lecture, fin,
+                          avec_ticks, respirer, t0, version), []
         return _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks,
-                      respirer, t0)
+                      respirer, t0, version)
     finally:
         _ETAT.clear()
 
 
-def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
-           t0):
+def _bases(lue_brute, active_brute, nom_lecture, debut, fin):
+    """(lue, active, lecture, résumé lu, divergents, base) : les connexions
+    tracées, leur état de lecture seule, et le routage d'un jour divergent
+    vers l'active."""
     lue = ConnexionTracee(lue_brute)
     active = (ConnexionTracee(active_brute)
               if active_brute is not None and active_brute is not lue_brute
@@ -1357,61 +1433,40 @@ def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
     lecture = {nom_lecture: etat_lecture_seule(lue)}
     if active is not None:
         lecture["active"] = etat_lecture_seule(active)
-    resume_lue = resumes(lue, DEBUT, fin)
+    resume_lue = resumes(lue, debut, fin)
     divergents: set = set()
     if active is not None:
-        resume_active = resumes(active, DEBUT, fin)
+        resume_active = resumes(active, debut, fin)
         divergents = {c for c in set(resume_lue) | set(resume_active)
                       if resume_lue.get(c) != resume_active.get(c)}
-    paires = sorted({p for (table, p, _) in resume_lue if table == "candles"})
-    _ETAT.update(total=len(paires))
 
     def base(table: str, nom: str, jour: int):
         return active if (table, nom, jour) in divergents else lue
 
+    return lue, active, lecture, resume_lue, divergents, base
+
+
+def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
+           t0, version=None):
+    lue, active, lecture, resume_lue, divergents, base = _bases(
+        lue_brute, active_brute, nom_lecture, DEBUT, fin)
+    paires = sorted({p for (table, p, _) in resume_lue if table == "candles"})
+    _ETAT.update(total=len(paires))
+
     compte: Counter = Counter()
     agregats = Agregats()
     decodees = 0
+    _ETAT.update(debut_paires=time.monotonic())
     for rang, nom in enumerate(paires):
         _ETAT.update(etape=f"paire {nom}", faites=rang)
-        bougies: list[Bougie] = []
-        changements: list[tuple[int, float]] = []
-        ligne = lue.execute(PAYOUT_AVANT, (nom, DEBUT)).fetchone()
-        if ligne and ligne[1] is not None:
-            changements.append((int(ligne[0]), float(ligne[1])))
-        for jour in range(DEBUT // 86400, fin // 86400):
-            bougies += _lire_bougies(base("candles", nom, jour), nom, jour,
-                                     compte)
-            for ts, pct in base("payouts", nom, jour).execute(
-                    PAYOUTS_DU_JOUR, (nom, jour * 86400,
-                                      (jour + 1) * 86400)).fetchall():
-                if pct is not None:
-                    changements.append((int(ts), float(pct)))
-            respirer()
-        instants = [c[0] for c in changements]
-
-        def payout_a(t: float, instants=instants, changements=changements):
-            k = bisect_right(instants, t) - 1
-            return changements[k][1] if k >= 0 else None
-
-        ticks = None
-        if avec_ticks:
-            def charger(jour: int, nom=nom):
-                if jour * 86400 >= fin:
-                    return {}
-                return {int(r[0]): (int(r[1]), int(r[2]), bytes(r[3]))
-                        for r in base("tick_paths", nom, jour).execute(
-                            SQL_CHEMINS, (nom, jour * 86400,
-                                          min(fin, (jour + 1) * 86400)))
-                        .fetchall()}
-            ticks = Ticks(charger)
-        gardes = paire(nom, bougies, fin, ticks, payout_a, compte, respirer)
+        gardes, ticks, _ = _lire_paire(nom, DEBUT, fin, base, lue, compte,
+                                       avec_ticks, respirer)
         agregats.ajouter(gardes)
         _ETAT.update(signaux=agregats.n_signaux)
         if ticks is not None:
             compte[("données", "chemins illisibles")] += ticks.illisibles
             decodees += ticks.decodees
-        del bougies, gardes, ticks
+        del gardes, ticks
         respirer()
     _ETAT.update(etape="statistiques", faites=len(paires))
     tirages = agregats.tirages()
@@ -1430,9 +1485,131 @@ def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
         "requetes": sum(lue.requetes.values()) + (
             sum(active.requetes.values()) if active is not None else 0),
         "refusees": lue.refusees + (active.refusees if active else 0),
-        "temps": time.monotonic() - t0})
+        "temps": time.monotonic() - t0, "version": version,
+        "rss_depart": _ETAT.get("rss_depart"),
+        "rss_max": _ETAT.get("rss_max")})
     return rapport, fichiers(agregats, lignes_cases, lignes_details,
                              lignes_pertes, resume_lue, compte)
+
+
+def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
+           t0, version=None) -> str:
+    """Le contrôle technique d'une minute : la paire la plus fournie en
+    ticks, sur les `JOURS_ESSAI` derniers jours complets, par le même code
+    que l'étude, statistiques, rapport et fichiers compris. Rien de ce qui
+    est calculé n'est montré, sauf des comptes, des durées et la mémoire :
+    l'essai ne compte pour rien et ne lève le voile sur aucun taux."""
+    debut = max(DEBUT, fin - JOURS_ESSAI * 86400)
+    lue, active, lecture, resume_lue, divergents, base = _bases(
+        lue_brute, active_brute, nom_lecture, debut, fin)
+    t_resumes = time.monotonic() - t0
+    min_ticks: Counter = Counter()
+    min_bougies: Counter = Counter()
+    for (table, p, _), v in resume_lue.items():
+        if v and v[0]:
+            if table == "tick_paths":
+                min_ticks[p] += v[0]
+            elif table == "candles":
+                min_bougies[p] += v[0]
+    entete = ("🕯 <b>Essai technique /engulfing</b> : il ne compte pas, et "
+              "aucun taux n'y est montré."
+              + (f"\nVersion déployée : {html.escape(version)}."
+                 if version else ""))
+    if not min_bougies:
+        return (entete + f"\nAucune bougie entre le {_utc(debut)} et le "
+                f"{_utc(fin - 86400)} : rien à essayer.")
+    nom = max(sorted(min_bougies),
+              key=lambda p: (min_ticks[p], min_bougies[p]))
+    _ETAT.update(etape=f"essai, paire {nom}", total=1,
+                 debut_paires=time.monotonic())
+    compte: Counter = Counter()
+    t1 = time.monotonic()
+    gardes, ticks, n_bougies = _lire_paire(nom, debut, fin, base, lue,
+                                           compte, avec_ticks, respirer)
+    agregats = Agregats()
+    agregats.ajouter(gardes)
+    t_paire = time.monotonic() - t1
+    _ETAT.update(etape="essai, statistiques", faites=1,
+                 signaux=agregats.n_signaux)
+    # Toute la suite, résultats jetés : une erreur qui n'apparaîtrait
+    # qu'au bout de 40 minutes apparaît ici en une.
+    try:
+        tirages = agregats.tirages()
+        lignes_cases = agregats.cases(tirages, respirer)
+        lignes_details = agregats.details(["V00_tous"])
+        lignes_pertes = agregats.lignes_pertes(tirages)
+        texte(agregats, lignes_cases, lignes_pertes, {
+            "nom": nom_lecture, "lecture": lecture, "fin": fin,
+            "paires": [nom], "resume": resume_lue, "compte": compte,
+            "divergents": len(divergents), "avec_ticks": avec_ticks,
+            "decodees": ticks.decodees if ticks else 0, "requetes": 0,
+            "refusees": 0, "temps": 0.0})
+        tailles = sum(len(c) for c, _, _ in fichiers(
+            agregats, lignes_cases, lignes_details, lignes_pertes,
+            resume_lue, compte))
+        suite = (f"Statistiques, rapport et fichiers : passés "
+                 f"({tailles // 1024} Kio de fichiers, jetés).")
+    except Exception as erreur:                          # noqa: BLE001
+        log.exception("Essai Engulfing : la suite a échoué")
+        suite = ("⚠ Statistiques ou rapport en échec : "
+                 + html.escape(f"{type(erreur).__name__}: {erreur}")[:300])
+    t_total = time.monotonic() - t0
+    jours_essai = max(1, (fin - debut) // 86400)
+    jours = max(1, (fin - DEBUT) // 86400)
+    n_paires = len(min_bougies)
+    projection = (t_paire * n_paires * jours / jours_essai
+                  + t_resumes * jours / jours_essai) / 60
+    rss_depart, rss_max = _ETAT.get("rss_depart"), _ETAT.get("rss_max")
+    _, pic_processus = memoire.processus()
+    utilisee, plafond = memoire.conteneur()
+    contexte = []
+    if pic_processus is not None:
+        contexte.append(f"pic depuis le démarrage du service "
+                        f"{pic_processus:.0f} Mo")
+    if utilisee is not None:
+        contexte.append(f"conteneur {utilisee:.0f}"
+                        + (f" / {plafond:.0f} Mo" if plafond else " Mo"))
+    if rss_depart is not None and rss_max is not None:
+        hausse = max(0.0, rss_max - rss_depart) * jours / jours_essai
+        memoire_txt = (f"Mémoire du processus : {rss_depart:.0f} Mo au "
+                       f"départ, pic {rss_max:.0f} Mo pendant l'essai")
+        pic_txt = (f" ; mémoire au plus de l'ordre de {rss_depart:.0f} + "
+                   f"{hausse:.0f} Mo (extrapolation linéaire, prudente : "
+                   f"les paires passent une à une)")
+    else:
+        memoire_txt = "Mémoire du processus : inconnue"
+        pic_txt = ""
+    memoire_txt += (" (" + " ; ".join(contexte) + ")." if contexte else ".")
+    illisibles = ticks.illisibles if ticks else 0
+    decodees = ticks.decodees if ticks else 0
+    motifs = sum(n for cle, n in compte.items()
+                 if len(cle) == 3 and cle[0] == "motifs")
+    requetes = sum(lue.requetes.values()) + (
+        sum(active.requetes.values()) if active is not None else 0)
+    refusees = lue.refusees + (active.refusees if active else 0)
+    return "\n".join([
+        entete,
+        "Bases : " + ", ".join(f"{html.escape(n)} : {html.escape(v)}"
+                               for n, v in lecture.items())
+        + ". Rien n'est écrit en base, aucun ordre.",
+        f"Paire essayée : {html.escape(nom)} (la plus fournie en ticks), du "
+        f"{_utc(debut)} au {_utc(fin - 86400)} ({jours_essai} jours).",
+        f"Lu : {_entier(n_bougies)} bougies, {_entier(min_ticks[nom])} "
+        f"minutes de ticks dont {_entier(decodees)} décodées "
+        f"({illisibles} illisibles) ; motifs : {_entier(motifs)} ; signaux "
+        f"gardés : {_entier(agregats.n_signaux)}"
+        + ("" if avec_ticks else " ; ⚠ sans les ticks") + ".",
+        suite,
+        f"Durées : résumés des bases {t_resumes:.0f} s, paire {t_paire:.0f} "
+        f"s, total {t_total:.0f} s ; requêtes {requetes}, refusées "
+        f"{refusees}.",
+        memoire_txt,
+        f"Projection prudente de /engulfing complet ({n_paires} "
+        f"paire{'s' if n_paires > 1 else ''} × {jours} jours) : environ "
+        f"{max(1, round(projection))} min" + pic_txt + ".",
+        "➡ Si l'essai est passé, lancez /engulfing ; un point d'avancement "
+        "arrive après 2 minutes, puis toutes les 10 minutes.",
+    ])
 
 
 # --------------------------------------------------------------------------- #
@@ -1537,7 +1714,14 @@ def texte(agregats: Agregats, lignes_cases, lignes_pertes,
                     "change dans la course ; une variante validée se gèle "
                     "puis se confirme sur des jours futurs.")
     duree = f"{meta['temps'] / 60:.1f}".replace(".", ",")
-    morceaux.append(f"Requêtes : {meta['requetes']}. Durée : {duree} min.")
+    pied = f"Requêtes : {meta['requetes']}. Durée : {duree} min."
+    if meta.get("rss_max") is not None:
+        pied += (f" Mémoire : pic {meta['rss_max']:.0f} Mo pendant l'étude"
+                 + (f" (départ {meta['rss_depart']:.0f} Mo)"
+                    if meta.get("rss_depart") is not None else "") + ".")
+    if meta.get("version"):
+        pied += f" Version : {html.escape(meta['version'])}."
+    morceaux.append(pied)
     return "\n".join(morceaux)
 
 
