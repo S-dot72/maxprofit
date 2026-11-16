@@ -42,6 +42,7 @@ import aiohttp
 
 from maxprofit.collect.collector import BOUGIES_ECRITES, build_config
 from maxprofit.collect.sources import PocketOptionSource, SimulatedSource
+from maxprofit.core import memoire
 from maxprofit.core.config import charger_env_local
 from maxprofit.core.errors import BotError
 from maxprofit.hosting.health import EtatCollecte, start_http_server
@@ -645,6 +646,17 @@ async def _servir(args) -> int:
         except Exception:
             log.exception("Le collecteur s'est arrêté sur une exception")
         finally:
+            # Une étude longue meurt avec le processus (déploiement, mise en
+            # veille, redémarrage) : le dire à qui l'a lancée, tant que
+            # Telegram répond encore. Sans cela, son rapport n'arrive jamais
+            # et rien ne distingue l'arrêt d'un calcul qui dure.
+            if bot is not None:
+                try:
+                    await asyncio.wait_for(bot.prevenir_interruptions(),
+                                           timeout=10)
+                except Exception:                        # noqa: BLE001
+                    log.warning("Avis d'interruption non envoyé.",
+                                exc_info=True)
             # La course d'abord : son thread est `daemon` et ne retarderait
             # rien, mais lui demander de s'arrêter lui laisse le temps de
             # sauver son état après le pas en cours.
@@ -793,6 +805,7 @@ async def _resume(superviseur: Superviseur, etat: EtatCollecte,
         messages = _observation_des_messages(course)
         if messages:
             lignes.append(messages)
+    lignes.append(f"Mémoire : {memoire.resume()}")
     lignes.append(f"<code>{version_deployee.resume()}</code>")
     return "\n".join(lignes)
 
@@ -1008,16 +1021,19 @@ def _terrain(chemin, course, argument: str = "", environ=None,
 
 def _engulfing(chemin, course, argument: str = "", environ=None,
                ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
-    """`/engulfing [sans_ticks] [active]` : l'étude historique de
+    """`/engulfing [essai] [sans_ticks] [active]` : l'étude historique de
     l'Engulfing OTC (protocole 443c3410), recherche isolée en lecture seule
-    sur la relève. Elle n'importe ni la course ni l'exécution des ordres."""
+    sur la relève. Elle n'importe ni la course ni l'exécution des ordres.
+    `essai` : le contrôle technique d'une minute, sans aucun taux."""
     from maxprofit.live import engulfing as en
     mots = argument.lower().split()
     return _sur_la_releve(
-        chemin, "active" in mots, "🕯", "engulfing", "Étude Engulfing",
+        chemin, "active" in mots, "🕯", "engulfing",
+        "Essai Engulfing" if "essai" in mots else "Étude Engulfing",
         lambda lue, active, nom: en.etude(
             lue, active, course, nom_lecture=nom,
-            avec_ticks="sans_ticks" not in mots),
+            avec_ticks="sans_ticks" not in mots, essai="essai" in mots,
+            version=version_deployee.commit()),
         environ, ouvrir_url)
 
 

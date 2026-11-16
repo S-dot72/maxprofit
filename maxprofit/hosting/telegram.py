@@ -62,6 +62,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
+from maxprofit.hosting import version as version_deployee
 from maxprofit.hosting.operateurs import Role, TropDAdmins
 
 import aiohttp
@@ -310,7 +311,7 @@ COMMANDES = [
     ("incluses", "Épreuve gelée de la piste des bougies incluses (admin)"),
     ("graphiques", "Revue de graphiques à l'aveugle, gagnants et perdants (admin)"),
     ("terrain", "Le prix OTC est-il prévisible ? Étude gelée, sans ZoneH1 (admin)"),
-    ("engulfing", "Étude Engulfing OTC, recherche isolée en lecture seule (admin)"),
+    ("engulfing", "Étude Engulfing OTC en lecture seule ; « /engulfing essai » : contrôle d'une minute (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -489,8 +490,16 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._engulfing_en_cours: asyncio.Task | None = None
         #: `() -> texte | None` : où en est l'étude Engulfing en cours.
         self._engulfing_avancement: Callable[[], str | None] | None = None
-        #: Un point d'avancement des études longues, toutes les 15 minutes.
-        self.intervalle_avancement_sec: float = 900
+        #: La veille qui envoie ses points d'avancement. Gardée ici : une
+        #: tâche asyncio sans référence peut être ramassée en cours de route.
+        self._engulfing_veille: asyncio.Task | None = None
+        #: Le premier point d'avancement d'une étude longue arrive vite (elle
+        #: tourne, et sur quelle version) ; les suivants, toutes les 10 min.
+        self.premier_avancement_sec: float = 120
+        self.intervalle_avancement_sec: float = 600
+        #: Les commandes longues en cours : jeton -> (conversation, libellé),
+        #: pour dire à l'arrêt du service lesquelles il interrompt.
+        self._en_fond: dict[int, tuple[str, str]] = {}
         #: `() -> (rapport, fiches CSV)` : le transfert mesuré, en mémoire.
         self._transfert: Callable[[], Awaitable[tuple[
             str, list[tuple[bytes, str, str]]]]] | None = None
@@ -909,20 +918,34 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                     chat, "🕯 L'étude Engulfing est déjà en cours"
                     + (f" : {point}." if point else "."), CLAVIER)
             else:
-                await self.client.envoyer(
-                    chat, "🕯 Étude Engulfing lancée (recherche isolée, "
-                    "lecture seule sur la relève, aucun ordre ; bougies et "
-                    "ticks de plus d'un mois, compter 20 à 60 minutes). Un "
-                    "point d'avancement arrivera toutes les 15 minutes, puis "
-                    "le rapport et les fichiers.", CLAVIER)
+                argument = texte[len("/engulfing"):].strip()
+                essai = "essai" in argument.lower().split()
+                libelle = ("🕯 Essai Engulfing" if essai
+                           else "🕯 Étude Engulfing")
+                reference = version_deployee.commit() or "inconnue"
+                if essai:
+                    annonce = (
+                        f"🕯 Essai technique lancé (version {reference}) : "
+                        "une paire, deux jours, en lecture seule ; aucun "
+                        "taux montré. Réponse en une à quelques minutes, "
+                        "avec la durée, la mémoire et la durée prévue de "
+                        "l'étude complète.")
+                else:
+                    annonce = (
+                        f"🕯 Étude Engulfing lancée (version {reference} ; "
+                        "recherche isolée, lecture seule sur la relève, "
+                        "aucun ordre ; compter 10 à 40 minutes). Premier "
+                        "point d'avancement dans 2 minutes, puis toutes les "
+                        "10 minutes, avec la mémoire ; ensuite le rapport "
+                        "et les fichiers. Si le service s'arrête entre-"
+                        "temps, un message le dira.")
+                await self.client.envoyer(chat, annonce, CLAVIER)
                 self._engulfing_en_cours = asyncio.create_task(
-                    self._envoyer_en_fond(
-                        chat, self._engulfing,
-                        texte[len("/engulfing"):].strip(),
-                        "🕯 Étude Engulfing"))
-                asyncio.create_task(self._veiller(
+                    self._envoyer_en_fond(chat, self._engulfing, argument,
+                                          libelle))
+                self._engulfing_veille = asyncio.create_task(self._veiller(
                     chat, self._engulfing_en_cours,
-                    self._engulfing_avancement, "🕯 Étude Engulfing"))
+                    self._engulfing_avancement, libelle))
         elif texte.startswith("/terrain"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
@@ -1043,42 +1066,87 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
 
     async def _veiller(self, chat: str, tache: asyncio.Task, avancement,
                        libelle: str) -> None:
-        """Tant qu'une étude longue tourne, un point d'avancement toutes les
+        """Tant qu'une étude longue tourne, un premier point d'avancement
+        après `premier_avancement_sec`, puis un toutes les
         `intervalle_avancement_sec` : un silence de deux heures ne dit pas
-        si elle calcule encore ou si le processus est tombé."""
+        si elle calcule encore ou si le processus est tombé. Un point qui
+        ne part pas (réseau) n'arrête pas la veille."""
+        attente = self.premier_avancement_sec
         while not tache.done():
             try:
-                await asyncio.wait_for(asyncio.shield(tache),
-                                       timeout=self.intervalle_avancement_sec)
+                await asyncio.wait_for(asyncio.shield(tache), timeout=attente)
+                return
             except asyncio.TimeoutError:
+                pass
+            except Exception:                            # noqa: BLE001
+                return              # l'échec est dit par _envoyer_en_fond
+            attente = self.intervalle_avancement_sec
+            try:
                 point = avancement() if avancement else None
                 if point and not tache.done():
                     await self.client.envoyer(
                         chat, f"⏳ {libelle} : {point}.", CLAVIER)
-            except Exception:                            # noqa: BLE001
-                return
+            except Exception as erreur:                  # noqa: BLE001
+                log.warning("Point d'avancement non envoyé : %s", erreur)
 
     async def _envoyer_en_fond(self, chat: str, appel, argument: str,
                                libelle: str) -> None:
         """Une commande longue, lancée à part : son rapport et ses fichiers
-        arrivent quand elle a fini, les autres commandes restent servies."""
+        arrivent quand elle a fini, les autres commandes restent servies.
+        Un rapport qui ne part pas au premier essai est renvoyé une fois ;
+        les fichiers partent quoi qu'il arrive au rapport."""
+        jeton = id(asyncio.current_task())
+        self._en_fond[jeton] = (chat, libelle)
         try:
-            resume, fiches = await appel(argument)
-        except Exception as erreur:                      # noqa: BLE001
-            log.exception("%s interrompu(e)", libelle)
-            await self.client.envoyer(
-                chat, f"{libelle} : interruption — "
-                + _sans_balises(str(erreur))[:300], CLAVIER)
-            return
-        await self.client.envoyer(chat, resume, CLAVIER)
-        for contenu, nom, legende in fiches:
             try:
-                await self.client.envoyer_document(chat, contenu, nom, legende)
+                resume, fiches = await appel(argument)
             except Exception as erreur:                  # noqa: BLE001
-                log.error("Fichier %s non envoyé : %s", nom, erreur)
+                log.exception("%s interrompu(e)", libelle)
                 await self.client.envoyer(
-                    chat, f"Fichier {nom} non envoyé : "
-                    f"{_sans_balises(str(erreur))[:200]}", CLAVIER)
+                    chat, f"{libelle} : interruption — "
+                    + _sans_balises(str(erreur))[:300], CLAVIER)
+                return
+            self._en_fond.pop(jeton, None)
+            for tentative in (1, 2):
+                try:
+                    await self.client.envoyer(chat, resume, CLAVIER)
+                    break
+                except Exception as erreur:              # noqa: BLE001
+                    log.error("Rapport « %s » non envoyé (essai %d) : %s",
+                              libelle, tentative, erreur)
+                    if tentative == 1:
+                        await asyncio.sleep(5)
+            for contenu, nom, legende in fiches:
+                try:
+                    await self.client.envoyer_document(chat, contenu, nom,
+                                                       legende)
+                except Exception as erreur:              # noqa: BLE001
+                    log.error("Fichier %s non envoyé : %s", nom, erreur)
+                    try:
+                        await self.client.envoyer(
+                            chat, f"Fichier {nom} non envoyé : "
+                            f"{_sans_balises(str(erreur))[:200]}", CLAVIER)
+                    except Exception:                    # noqa: BLE001
+                        log.error("Avis d'échec non envoyé pour %s", nom)
+        finally:
+            self._en_fond.pop(jeton, None)
+
+    async def prevenir_interruptions(self) -> None:
+        """À l'arrêt du service : chaque commande longue encore en cours est
+        dite interrompue à qui l'a lancée. Son calcul meurt avec le
+        processus ; sans ce message, on attendrait un rapport qui ne viendra
+        jamais."""
+        for chat, libelle in list(self._en_fond.values()):
+            try:
+                await self.client.envoyer(
+                    chat, f"⚠️ {libelle} : interrompu(e), le service "
+                    "s'arrête (déploiement d'une nouvelle version, mise en "
+                    "veille ou redémarrage). Rien n'est perdu en base. "
+                    "Relancez la commande après le message « 🟢 Collecte "
+                    "démarrée ».", CLAVIER)
+            except Exception as erreur:                  # noqa: BLE001
+                log.warning("Avis d'interruption non envoyé à %s : %s",
+                            chat, erreur)
 
     async def _commande_start(self, chat: str, texte: str, nom: str,
                               message_id: int | None) -> None:

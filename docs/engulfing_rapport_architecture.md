@@ -113,9 +113,16 @@ seule (la règle des couches, `tests/test_layering.py`, interdit à
 collecte, du dimensionnement, de la course ni de l'hébergement, et aucune
 requête d'écriture.
 
-- **`/engulfing`** : la passe complète, bougies et ticks. Compter 20 à 60
-  minutes sur le serveur gratuit ; un point d'avancement arrive toutes les
-  15 minutes, et une seconde `/engulfing` pendant la passe dit où elle en
+- **`/engulfing essai`** : le contrôle technique, à lancer d'abord. Il
+  prend une paire (la plus fournie en ticks) sur les deux derniers jours
+  complets et passe par le même code, statistiques, rapport et fichiers
+  compris. Il ne rend que des comptes, des durées, la mémoire, la version
+  déployée et une projection de la passe complète. Aucun taux n'est montré,
+  et l'essai ne compte pour rien.
+- **`/engulfing`** : la passe complète, bougies et ticks. Compter 10 à 40
+  minutes sur le serveur gratuit. Le premier point d'avancement arrive
+  après 2 minutes, les suivants toutes les 10 minutes, avec la mémoire et
+  une fin estimée. Une seconde `/engulfing` pendant la passe dit où elle en
   est. Le premier lancement complet fait foi.
 - **`/engulfing sans_ticks`** : l'approximation M1 seule, plus rapide, si
   les ticks ne passent pas. Elle ne remplace pas l'exécution aux ticks.
@@ -178,3 +185,39 @@ empreinte) :
 Sur le même banc d'essai : 3,1 s au lieu de 10,7 s, et un pic de mémoire
 qui ne dépend plus du nombre de signaux, avec des résultats identiques
 (mêmes motifs, mêmes épisodes, mêmes taux).
+
+## 10. Toujours rien après la version allégée (16/11) : rendre l'arrêt visible
+
+La version allégée n'a toujours rien rendu, et le bot n'a rien dit. Deux
+mesures avant de corriger :
+- **Le calcul tient.** Sur un banc à l'échelle réelle (une paire entière
+  en ticks, 41 jours, ~120 ticks par minute), la passe prend 3,7 s ici et
+  monte la mémoire de 60 Mo, puis la rend avant la paire suivante. Les
+  20 paires, dont la plupart n'ont des ticks que la moitié du temps,
+  représentent environ une minute de calcul ici, soit 10 à 25 minutes sur
+  une fraction de processeur, réseau compris.
+- **Ce qui tue la passe ne laisse pas de trace.** Un déploiement (chaque
+  fusion sur `main` en déclenche un), une mise en veille ou un manque de
+  mémoire arrêtent le processus. Le calcul meurt avec lui, et la ligne qui
+  aurait envoyé le rapport ne s'exécute jamais. Une fusion pendant la passe
+  du 15/11 suffit à expliquer le silence.
+
+Ce qui change (le protocole figé, l'empreinte et les résultats restent
+identiques, fichier par fichier, sur le banc) :
+- **à l'arrêt du service**, chaque commande longue encore en cours est dite
+  « interrompue » à qui l'a lancée, avec la consigne de la relancer après
+  « 🟢 Collecte démarrée ». Seul un arrêt brutal, faute de mémoire, peut
+  encore passer sans message ;
+- **les points d'avancement montrent la mémoire** du processus, son pic
+  pendant l'étude et, si le conteneur le dit, son occupation sur 512 Mo.
+  Une mémoire qui monte vers 512 Mo avant le silence désigne le manque de
+  mémoire. `/etat` montre aussi la mémoire ;
+- **le premier point arrive après 2 minutes**, avec la version déployée
+  dans le message de lancement ;
+- la veille qui envoie les points est gardée en référence, et un point qui
+  ne part pas ne l'arrête plus ;
+- un rapport refusé par le réseau est renvoyé une fois, et les fichiers
+  partent quoi qu'il arrive au rapport ;
+- **`/engulfing essai`** vérifie la chaîne entière en une à quelques
+  minutes et prévoit la durée et la mémoire de la passe complète.
+
