@@ -221,3 +221,36 @@ identiques, fichier par fichier, sur le banc) :
 - **`/engulfing essai`** vérifie la chaîne entière en une à quelques
   minutes et prévoit la durée et la mémoire de la passe complète.
 
+
+## 11. Résultats du 16/11 : l'Engulfing ne bat pas le point mort sur l'OTC
+
+Rapport `/engulfing`, version bc01843. Il couvre 20 paires, du 06/10 au
+15/11 : 905 040 minutes de bougies et 905 517 minutes de ticks. La passe a
+pris 25,3 minutes sur le serveur, avec un pic de mémoire de 239 Mo. Les
+correctifs de la section 10 ont tenu.
+
+- **Volume.** 150 840 motifs (90 514 en exploration, 60 326 en
+  validation) et 40 083 épisodes retenus sans filtre (V00).
+- **V00 aux ticks** (entrée 2 s après l'atteinte, décisions jouables).
+  Selon l'échéance, il gagne entre 49,1 % et 50,5 % en validation, sur
+  environ 5 760 décisions chacune. La borne haute de l'intervalle de
+  confiance à 95 % reste sous 52,08 % à toutes les échéances : 51,7 % au
+  mieux, à 1 minute.
+- **Même conclusion avec le jour pour unité.** Sur les 13 jours de
+  validation, l'intervalle bootstrap des moyennes journalières vaut
+  [49,0 % ; 51,9 %] à 1 minute et [48,6 % ; 50,4 %] à 15 minutes.
+- **Variantes** (13 variantes × 5 échéances). Deux cases sont retenues en
+  exploration, retouches 0-1 et 2-3 à 15 minutes. Aucune n'est validée.
+- **Étude des pertes.** Aucune caractéristique connue à la décision ne
+  sépare gagnants et perdants dans les deux périodes.
+- **Contrôle hors protocole, par paire.** Sur 200 cases paire × sens ×
+  échéance, 12 sont au-dessus du point mort dans les deux périodes. Le
+  hasard seul en donnerait environ 16,6. Aucune paire ne se distingue.
+- **L'approximation M1 flatte.** À 1 minute, elle donne 52,9 % contre
+  50,5 % aux ticks, sur les mêmes signaux : un signal sur cinq change
+  d'issue entre la bougie et l'exécution réelle. Une lecture de graphiques
+  M1 surestime donc les entrées au retour du niveau.
+- **Espérance au taux observé** : entre −3 et −6 cents par dollar misé.
+
+**Verdict.** L'Engulfing, avec ou sans filtre, ne bat pas le point mort sur
+l'OTC, à aucune échéance. Il n'y a rien à geler ni à confirmer.
