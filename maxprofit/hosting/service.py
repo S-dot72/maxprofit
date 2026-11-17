@@ -1043,11 +1043,21 @@ def _engulfing(chemin, course, argument: str = "", environ=None,
 
 def _classiques(chemin, course, argument: str = "", environ=None,
                 ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
-    """`/classiques [essai] [active]` : six stratégies classiques des options
-    binaires sur l'OTC (protocole 31e85658), recherche isolée en lecture
-    seule sur la relève. `essai` : le contrôle technique, sans aucun taux."""
+    """`/classiques [essai|confirmation] [active]` : six stratégies
+    classiques des options binaires sur l'OTC (protocole 1bb555d2), brutes
+    et prudentes, recherche isolée en lecture seule sur la relève. `essai` :
+    le contrôle technique, sans aucun taux ; `confirmation` : la piste F2
+    prudente inverse à 1 min (gel 6c9e22d7), compte sans taux avant ses
+    regards."""
     from maxprofit.live import classiques as cl
     mots = argument.lower().split()
+    if "confirmation" in mots:
+        return _sur_la_releve(
+            chemin, "active" in mots, "🧪", "classiques",
+            "Confirmation de la piste /classiques",
+            lambda lue, active, nom: cl.confirmation(
+                lue, active, course, nom_lecture=nom),
+            environ, ouvrir_url)
     return _sur_la_releve(
         chemin, "active" in mots, "🧪", "classiques",
         "Essai /classiques" if "essai" in mots else "Stratégies classiques",

@@ -575,3 +575,139 @@ def test_l_avancement_suit_la_passe(passe):
         assert "pic de l'étude 250 Mo" in point
     finally:
         cl._ETAT.clear()
+
+
+# --------------------------------------------------------------------------- #
+# La confirmation de la piste F2 prudente inverse à 1 min (gel 6c9e22d7)
+# --------------------------------------------------------------------------- #
+
+def test_le_gel_de_la_confirmation_tient():
+    doc = json.loads((RACINE / "docs"
+                      / "preinscription_classiques_confirmation.json")
+                     .read_text(encoding="utf-8"))
+    assert doc == cl.CONFIRMATION
+    assert em.empreinte(cl.CONFIRMATION) == cl.EMPREINTE_CONFIRMATION
+    assert cl.DEBUT_CONFIRMATION == cl.en._instant("2026-11-17T00:00:00Z")
+    assert (cl.REGARD_FUTILITE, cl.REGARD_FINAL) == (1000, 2900)
+
+
+def _sig(famille="F2_bollinger_rsi", variantes=("prudent",), payout=92.0,
+         decision=None, issue=-1):
+    s = cl.Signal(cl.FAMILLES.index(famille), "EURUSD_otc",
+                  decision or cl.DEBUT_CONFIRMATION + 600, cl.PUT)
+    for v in variantes:
+        s.variantes |= 1 << cl.VARIANTES.index(v)
+    s.payout = payout
+    if issue is not None:
+        s.issues[1] = issue
+    return s
+
+
+def test_les_decisions_de_la_piste_en_sens_inverse():
+    gardes = cl.decisions_piste([
+        _sig(issue=-1),                                    # inverse gagne
+        _sig(issue=1),                                     # inverse perd
+        _sig(issue=0),                                     # égalité : perd
+        _sig(issue=None),                                  # pas d'issue
+        _sig(payout=80.0),                                 # non jouable
+        _sig(variantes=("brut",)),                         # pas prudente
+        _sig(famille="F1_rsi_sortie"),                     # autre famille
+        _sig(decision=cl.DEBUT_CONFIRMATION - 60),         # avant le 17/11
+    ])
+    assert [g for _, _, g in gardes] == [1, 0, 0]
+
+
+def _decisions(n: int, taux: float, paires=("EURUSD_otc", "GBPUSD_otc",
+                                            "USDJPY_otc")):
+    """n décisions, 30 par jour à partir du 17/11, gagnantes au taux voulu
+    (réparti régulièrement)."""
+    sortie, gagnees = [], 0
+    for k in range(n):
+        jour, rang = divmod(k, 30)
+        t = cl.DEBUT_CONFIRMATION + jour * 86400 + 60 * (rang + 1) * 7
+        g = 1 if (k + 1) * taux >= gagnees + 1 else 0
+        gagnees += g
+        sortie.append((t, paires[k % len(paires)], g))
+    return sortie
+
+
+def test_le_regard_avant_pendant_et_apres():
+    fin = cl.DEBUT_CONFIRMATION + 120 * 86400
+    texte, fichiers = cl.regard(_decisions(500, 0.6), fin)
+    assert fichiers == [] and "%" not in texte and "Aucun taux" in texte
+    texte, fichiers = cl.regard(_decisions(1200, 0.45), fin)
+    assert texte.startswith("<b>Abandonnée</b> au regard de futilité")
+    assert [n for _, n, _ in fichiers] == ["classiques_confirmation.csv"]
+    texte, fichiers = cl.regard(_decisions(1500, 0.55), fin)
+    assert fichiers == [] and "%" not in texte and "continue" in texte
+    texte, fichiers = cl.regard(_decisions(2950, 0.58), fin)
+    assert "<b>Confirmée</b>" in texte and "p = 0.000" in texte
+    lignes = fichiers[0][0].decode("utf-8").splitlines()
+    assert len(lignes) == 1 + cl.REGARD_FINAL
+    texte, _ = cl.regard(_decisions(2950, 0.52), fin)
+    assert "<b>Abandonnée</b> : la piste ne passe pas" in texte
+
+
+def _base_confirmation(chemin: Path) -> None:
+    from maxprofit.store.chemin_ticks import encoder
+    from maxprofit.store.market import MarketWriter
+    conn = open_read_write(chemin)
+    ecrivain = MarketWriter(conn)
+    alea = random.Random(21)
+    prix = 1.1
+    for m in range(cl.DEBUT_CONFIRMATION - 86400,
+                   cl.DEBUT_CONFIRMATION + 2 * 86400, 60):
+        ticks = []
+        for s in range(0, 60, 5):
+            prix = round(prix * math.exp(alea.gauss(0, 6e-5)), 5)
+            ticks.append(Tick(PAIRE, (m + s) * 1000, prix))
+        px = [t.price for t in ticks]
+        ecrivain.upsert_candles([Candle(PAIRE, 60, m, px[0], max(px),
+                                        min(px), px[-1], len(px), True)])
+        ecrivain.insert_tick_paths([encoder(ticks)])
+    conn.execute("INSERT INTO payouts (ts_sec, pair, payout_pct, is_open)"
+                 " VALUES (?,?,?,1)", (cl.DEBUT - 60, PAIRE, 92))
+    conn.commit()
+    conn.close()
+
+
+def test_la_confirmation_ne_montre_que_le_compte(tmp_path):
+    texte, fichiers = cl.confirmation(
+        None, None, maintenant=cl.DEBUT_CONFIRMATION + 3600)
+    assert "Aucun jour complet" in texte and fichiers == []
+    base = tmp_path / "releve.db"
+    _base_confirmation(base)
+    empreinte = hashlib.sha256(base.read_bytes()).hexdigest()
+    r = open_read_only(base)
+    espion = Espion(r)
+    try:
+        texte, fichiers = cl.confirmation(
+            espion, None,
+            maintenant=cl.DEBUT_CONFIRMATION + 2 * 86400 + 3600,
+            respirer=lambda: None)
+    finally:
+        r.close()
+    assert hashlib.sha256(base.read_bytes()).hexdigest() == empreinte
+    assert fichiers == [] and "%" not in texte
+    assert "décisions acquises sur 2 900" in texte
+    assert "Paires lues : 1" in texte and "requêtes refusées : 0" in texte
+    assert min(espion.bornes) >= cl.DEBUT_CONFIRMATION - 86400
+    assert max(espion.bornes) <= cl.DEBUT_CONFIRMATION + 2 * 86400
+
+
+def test_le_service_route_la_confirmation(monkeypatch, tmp_path):
+    from maxprofit.hosting import service
+    from maxprofit.store import pool
+    vus = []
+
+    def faux(lue, active, course=None, *, nom_lecture):
+        vus.append(nom_lecture)
+        return "🧪 Confirmation", []
+
+    monkeypatch.setattr(cl, "confirmation", faux)
+    chemin = tmp_path / "active.db"
+    open_read_write(chemin).close()
+    texte, _ = service._classiques(
+        chemin, None, "confirmation", environ={pool.ENV_RELEVE: str(chemin)},
+        ouvrir_url=lambda url: open_read_only(url))
+    assert texte == "🧪 Confirmation" and vus == ["relève"]
