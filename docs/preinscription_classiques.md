@@ -5,10 +5,21 @@ Demandé le 17/11 :
 > « Je veux ce qui fonctionne sur otc […] tu vas tester une nouvelle
 > stratégie sur les paires otc »
 
+puis, avant tout lancement :
+
+> « Les 6 stratégies que tu as choisies sont trop vagues […] tu as des
+> données de ce qu'on a déjà testé qui montrait ce qu'il fallait pas faire,
+> combine-les à ces stratégies »
+
 Paramètres figés : `docs/preinscription_classiques.json`, empreinte
-`31e8565808605ceda03db67bd7f6cba2dec96c7dee62392b2d4d997b3fd85889`
+`1bb555d2bb13415943330489dd7d1d3c0d351af0aa15fd23f6c15db9f0c122f9`
 (`etude_micro.empreinte`). La commande refuse de tourner si les paramètres
 embarqués ne donnent plus cette empreinte.
+
+Cette version remplace la première (`31e85658…`, commit eb32d4d). Le
+remplacement a eu lieu avant tout lancement de `/classiques` et avant tout
+résultat. Les six règles brutes n'ont pas changé ; seule la variante
+prudente s'est ajoutée.
 
 ## Pourquoi ces six-là
 
@@ -32,6 +43,31 @@ Bollinger (`/simples`), les six conditions de retour à la moyenne, la série
 rouge, la prise de liquidité, les bougies incluses, ZoneH1, les familles de
 `/terrain` et l'Engulfing.
 
+## Brut et prudent
+
+Chaque famille est jugée deux fois : **brute**, puis **prudente**. La
+version prudente applique toutes ensemble les quatre leçons de nos études
+passées qui disaient quoi ne pas faire :
+
+| Leçon | Règle | D'où elle vient | Ce qu'elle a donné ensuite |
+|---|---|---|---|
+| L1 tendance H1 | jamais contre la tendance de l'heure close (définition de ZoneH1, recul de 2 heures, heures complètes) | règle de l'utilisateur du 27/09 | lot 2 : 54,5 % avec la tendance, 37,5 % contre (8 cas) ; `/bougies` : 52,8 % avec, 56,1 % contre |
+| L2 mèche contre | pas de mèche d'au moins la moitié de l'étendue du côté opposé au trade | K4 au lot 1 (33 %), marteau à l'ancre de `/bougies` (40,5 % puis 38,1 %) | lot 2 : 50 % |
+| L3 incluses | moins de 6 bougies incluses sur les 50 dernières | H_IB : 51,1 % puis 45,0 % avec 6 ou plus | quarantaine : l'effet s'est inversé |
+| L4 paires USD | seulement les 7 paires qui contiennent USD | étape 3 : les autres paires à 46,9 % en validation | piste non gelée par l'audit du 02/11 |
+
+**Aucune de ces leçons ne s'est clairement répétée sur de nouvelles
+données** : la dernière colonne le montre. Leur combinaison est donc une
+hypothèse, jugée comme les autres. Par construction, L2 écarte toutes les
+pin bars : F4 prudente est vide.
+
+Leçons écartées :
+- les créneaux horaires et les paires isolées : les filtres de l'étape 3 qui
+  gagnaient en exploration se sont effondrés en validation ;
+- l'heure 22 d'EURJPY : sa confirmation doit rester aveugle ;
+- les caractéristiques de l'étude des pertes Engulfing : aucune ne s'est
+  répétée.
+
 ## Ce qui compte
 
 - **Exécution aux ticks.** Décision à la clôture de la bougie qui déclenche,
@@ -40,10 +76,12 @@ rouge, la prise de liquidité, les bougies incluses, ZoneH1, les familles de
   minute entre les deux doit avoir ses ticks.
 - **Seules les décisions jouables comptent** : payout du flux ≥ 84, soit
   92 % appliqués et un point mort de 52,08 %. Une égalité est une perte.
-- **Épisodes** : dans une famille, deux trades sur la même paire ne se
-  chevauchent jamais (5 minutes au moins entre deux décisions retenues).
-- **Le sens** : chaque case (famille × échéance) choisit en exploration
-  entre le sens conventionnel et l'inverse, et le garde en validation.
+- **Épisodes** : dans une famille et une variante, deux trades sur la même
+  paire ne se chevauchent jamais (5 minutes au moins entre deux décisions
+  retenues).
+- **Le sens** : chaque case (famille × variante × échéance) choisit en
+  exploration entre le sens conventionnel et l'inverse, et le garde en
+  validation.
 
 ## Les trois temps
 
@@ -57,6 +95,15 @@ rouge, la prise de liquidité, les bougies incluses, ZoneH1, les familles de
    en démo.
 
 ## Limites connues, écrites avant le résultat
+
+- La variante prudente garde peu de signaux : 7 paires sur 20, dans le sens
+  de la tendance, hors longues mèches et hors marchés comprimés. Certaines
+  de ses cases n'auront pas les 300 décisions de l'exploration et ne seront
+  pas jugées. Un filtre ne change pas le taux de gain d'un signal qui ne
+  prédit rien ; il réduit seulement le nombre de trades.
+- Deux variantes doublent le nombre de cases (48), donc les chances qu'une
+  case passe l'exploration par hasard ; Benjamini-Hochberg et la
+  confirmation sur des jours futurs sont là pour cela.
 
 - Les jours de validation ont déjà servi de validation à d'autres études
   (`/terrain`, l'Engulfing). Ils restent hors échantillon pour CES règles,
@@ -97,9 +144,10 @@ lecture seule.
   répond pas.
 
 Elle rend un rapport et cinq fichiers :
-- `classiques_cases.csv` : une ligne par famille × échéance × période,
-  avec le sens choisi, le taux, l'IC et le verdict ;
+- `classiques_cases.csv` : une ligne par famille × variante × échéance ×
+  période, avec le sens choisi, le taux, l'IC et le verdict ;
 - `classiques_details.csv` : les cases retenues, par paire et par sens ;
 - `classiques_statuts.csv` : déclenchements, épisodes, statuts des issues ;
 - `classiques_donnees.csv` : les données lues, par paire et par jour ;
-- `classiques_signaux.csv.gz` : chaque signal retenu et ses issues.
+- `classiques_signaux.csv.gz` : chaque signal retenu, ses variantes et ses
+  issues.

@@ -79,6 +79,7 @@ def test_le_gel_tient():
                            "F3_stochastique_croisement", "F4_pin_bar",
                            "F5_chiffre_rond", "F6_cassure_canal")
     assert cl.ECHEANCES == (1, 2, 3, 5)
+    assert cl.VARIANTES == ("brut", "prudent") and cl.H1_RECUL == 2
 
 
 def test_les_indicateurs_egalent_ceux_du_paquet():
@@ -214,6 +215,86 @@ def test_un_episode_dure_cinq_minutes():
     assert [i for i, _ in gardes] == [0, 5, 10, 15, 20, 25]
 
 
+def _heures(n_heures: int, graine: int = 5, minutes_en_plus: int = 30):
+    """Des heures complètes (60 bougies chacune) à partir d'une heure
+    ronde, puis quelques minutes de l'heure en cours."""
+    alea = random.Random(graine)
+    debut = (T0 // 3600 + 1) * 3600
+    prix, sortie = 1.1000, []
+    for i in range(60 * n_heures + minutes_en_plus):
+        o = prix
+        c = round(o * math.exp(alea.gauss(0, 4e-4)), 5)
+        sortie.append(en.Bougie(debut + 60 * i, o, max(o, c) + 0.00005,
+                                min(o, c) - 0.00005, c))
+        prix = c
+    return sortie
+
+
+def test_l1_la_tendance_h1_est_celle_de_zoneh1():
+    from maxprofit.strategies.zone_h1 import ZoneH1
+    bougies = _heures(5)
+    lecons = cl.Lecons(cl.Serie(bougies), "EURUSD_otc")
+    zone = ZoneH1()
+    vus = set()
+    for i in range(60 * 3, len(bougies)):
+        attendu = zone._tendance_h1_haussiere(tuple(bougies[:i + 1]))
+        obtenu = lecons.tendance(i)
+        assert obtenu == (1 if attendu else -1), i
+        vus.add(obtenu)
+    assert vus == {1, -1}, "les deux tendances doivent apparaître"
+    assert all(lecons.tendance(i) == 0 for i in range(0, 60 * 3)), \
+        "moins de trois heures closes complètes : pas de tendance"
+    trouee = bougies[:100] + bougies[101:]          # une minute manque
+    lecons = cl.Lecons(cl.Serie(trouee), "EURUSD_otc")
+    i = next(k for k, b in enumerate(trouee) if b.ts_sec >= bougies[0].ts_sec
+             + 3 * 3600)
+    assert lecons.tendance(i) == 0, "une heure incomplète : pas de tendance"
+
+
+def test_l2_la_longue_meche_contre_le_trade():
+    bougies = _plat(3)
+    bougies.append(B(3, 1.1010, 1.1012, 1.0990, 1.1008))   # mèche basse 18/22
+    bougies.append(B(4, 1.1000, 1.1022, 1.0998, 1.1004))   # mèche haute 18/24
+    bougies.append(B(5, 1.1000, 1.1006, 1.0998, 1.1005))   # corps plein
+    lecons = cl.Lecons(cl.Serie(bougies), "EURUSD_otc")
+    assert lecons.meche_contre(3, cl.CALL) and not lecons.meche_contre(3, cl.PUT)
+    assert lecons.meche_contre(4, cl.PUT) and not lecons.meche_contre(4, cl.CALL)
+    assert not lecons.meche_contre(5, cl.CALL)
+    assert not lecons.meche_contre(5, cl.PUT)
+
+
+def test_l3_les_bougies_incluses_sur_cinquante():
+    bougies = []
+    for i in range(60):
+        if i % 2:                               # incluse dans la précédente
+            bougies.append(B(i, 1.1002, 1.1004, 1.1001, 1.1003))
+        else:
+            bougies.append(B(i, 1.1000, 1.1006, 1.0998, 1.1004))
+    lecons = cl.Lecons(cl.Serie(bougies), "EURUSD_otc")
+    assert lecons.incluses(48) is None, "49 bougies : fenêtre incomplète"
+    assert lecons.incluses(49) == 25 and lecons.incluses(50) == 25
+    assert lecons.incluses(59) == 25
+    trouee = bougies[:30] + bougies[31:]
+    lecons = cl.Lecons(cl.Serie(trouee), "EURUSD_otc")
+    assert lecons.incluses(58) is None, "la fenêtre traverse un trou"
+
+
+def test_l4_paires_usd_et_pin_bars_jamais_prudentes():
+    bougies = _heures(6, graine=9)
+    s = cl.Serie(bougies)
+    hors_usd = cl.Lecons(s, "EURJPY_otc")
+    usd = cl.Lecons(s, "EURUSD_otc")
+    bruts = cl.declencheurs(s)
+    tous = [x for liste in bruts.values() for x in liste]
+    assert tous and not any(hors_usd.prudent(i, sens) for i, sens in tous)
+    assert not any(usd.prudent(i, sens) for i, sens in bruts["F4_pin_bar"])
+    for i, sens in tous:                 # les quatre leçons, toutes ensemble
+        n = usd.incluses(i)
+        attendu = (usd.tendance(i) == sens and not usd.meche_contre(i, sens)
+                   and n is not None and n < cl.INCLUSES_MAX)
+        assert usd.prudent(i, sens) == attendu, (i, sens)
+
+
 def _flux_ticks(debut: int, prix, pas: int = 5, minutes: int = 12):
     """Des ticks toutes les `pas` secondes depuis `debut`, au prix
     `prix(t)`."""
@@ -336,7 +417,10 @@ def test_passe_en_lecture_seule_sans_rien_lire_apres_la_fin(passe):
 def test_passe_complete_cases_signaux_et_statuts(passe):
     *_, rapport, fichiers = passe
     cases = _lignes(fichiers, "classiques_cases.csv")
-    assert len(cases) == 6 * 4 * 2
+    assert len(cases) == 6 * 2 * 4 * 2
+    assert {c["variante"] for c in cases} == {"brut", "prudent"}
+    assert all(int(c["n"]) == 0 for c in cases
+               if c["famille"] == "F4_pin_bar" and c["variante"] == "prudent")
     assert {c["sens_choisi"] for c in cases} <= {"conventionnel", "inverse"}
     for c in cases:
         n = int(c["n"])
@@ -356,11 +440,15 @@ def test_passe_complete_cases_signaux_et_statuts(passe):
     for famille in cl.FAMILLES:
         assert cl.LIBELLES[famille] in rapport
     assert "passeraient l'exploration par hasard" in rapport
-    par_famille = {}
+    assert all(set(s["variantes"].split(",")) <= {"brut", "prudent"}
+               and s["variantes"] for s in signaux)
+    assert any("prudent" in s["variantes"] for s in signaux)
+    par_variante = {}
     for s in signaux:
-        par_famille.setdefault((s["famille"], s["paire"]), []).append(
-            int(s["decision_ts"]))
-    for decisions in par_famille.values():
+        for v in s["variantes"].split(","):
+            par_variante.setdefault((s["famille"], v, s["paire"]), []).append(
+                int(s["decision_ts"]))
+    for decisions in par_variante.values():
         assert all(b - a >= cl.EPISODE_SEC for a, b in zip(decisions,
                                                            decisions[1:]))
 

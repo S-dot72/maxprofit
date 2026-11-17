@@ -2,8 +2,10 @@
 Six stratégies CLASSIQUES des options binaires sur les paires OTC (demande
 du 17/11) : une étude ISOLÉE, en LECTURE SEULE.
 
-Protocole figé : `docs/preinscription_classiques.json`, empreinte 31e85658…
-La passe refuse de tourner si `PARAMETRES` ne donnent plus cette empreinte.
+Protocole figé : `docs/preinscription_classiques.json`, empreinte 1bb555d2…
+(il a remplacé 31e85658 avant tout lancement, pour ajouter la variante
+prudente). La passe refuse de tourner si `PARAMETRES` ne donnent plus cette
+empreinte.
 Elle n'importe ni la course, ni l'exécution des ordres, ni la collecte ; le
 décodage des ticks, le bootstrap et la lecture des bases sont ceux, déjà
 éprouvés, de l'étude Engulfing (`live.engulfing`).
@@ -22,14 +24,24 @@ Cutler, écart-type de population, stochastique lent) : les tests le
 vérifient valeur par valeur. Leur fenêtre doit être faite de minutes
 consécutives.
 
+--- Brut et prudent ---------------------------------------------------------------
+
+Chaque famille est jugée deux fois : brute, puis PRUDENTE, c'est-à-dire avec
+les quatre leçons de nos études passées, toutes ensemble :
+- L1 jamais contre la tendance H1 (définition de ZoneH1, heures complètes) ;
+- L2 pas de longue mèche du côté opposé au trade (combinaison K4) ;
+- L3 moins de 6 bougies incluses sur 50 (groupe défavorable de H_IB) ;
+- L4 seulement les paires qui contiennent USD.
+Par construction, L2 écarte toutes les pin bars : F4 prudente est vide.
+
 --- L'exécution, aux ticks --------------------------------------------------------
 
 Décision à la clôture de la bougie qui déclenche ; entrée au dernier tick
 connu 2 s plus tard ; sortie à l'échéance (1, 2, 3, 5 min). Les deux ticks
 datent de moins de 10 s, et chaque minute entre les deux a ses ticks. Une
 égalité est une perte. Seules les décisions jouables (flux ≥ 84) comptent.
-Dans une famille, deux décisions retenues sur une paire sont séparées d'au
-moins 5 minutes : les trades ne se chevauchent pas.
+Dans une famille et une variante, deux décisions retenues sur une paire sont
+séparées d'au moins 5 minutes : les trades ne se chevauchent pas.
 
 Sorties en CSV seulement, aucune écriture en base. Rien n'est ventilé par
 heure : la confirmation EURJPY 22 h reste aveugle.
@@ -53,13 +65,15 @@ from maxprofit.apprentissage import etude_micro as em
 from maxprofit.core import memoire
 from maxprofit.live import engulfing as en
 from maxprofit.live.selection3 import PAYOUT_AVANT, PAYOUTS_DU_JOUR
+from maxprofit.strategies.zone_h1 import PARAMETRES_PRE_INSCRITS
 
 log = logging.getLogger(__name__)
 
 PARAMETRES: dict[str, Any] = json.loads(r"""
 {
-  "objet": "Six stratégies classiques des options binaires, aux réglages standards des plateformes, jamais testées sur nos données OTC : l'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
+  "objet": "Six stratégies classiques des options binaires, aux réglages standards des plateformes, jamais testées sur nos données OTC, chacune brute et en version prudente (les leçons de nos études passées, combinées) : l'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
   "demande": "17/11 : « tu vas tester une nouvelle stratégie sur les paires otc »",
+  "remplace": "version 31e8565808605ceda03db67bd7f6cba2dec96c7dee62392b2d4d997b3fd85889 du 17/11, étendue avant tout lancement de /classiques et avant tout résultat, à la demande du 17/11 : « combine les [leçons de ce qu'on a déjà testé] à ces stratégies » ; les six règles brutes sont inchangées",
   "donnees": {
     "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
     "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), mêmes règles de copie",
@@ -78,24 +92,40 @@ PARAMETRES: dict[str, Any] = json.loads(r"""
     "F5_chiffre_rond": "pas de 0,005 si la clôture précédente est sous 20, de 0,5 sinon ; la bougie touche un seul multiple du pas (bas ≤ niveau ≤ haut), qu'aucune des 60 bougies précédentes n'a touché ; venue d'en dessous (clôture précédente < niveau) et clôture sous le niveau → PUT ; venue d'au-dessus et clôture au-dessus → CALL",
     "F6_cassure_canal": "clôture au-dessus du plus haut des 20 bougies précédentes → CALL ; sous leur plus bas → PUT"
   },
-  "sens": "chaque famille a son sens conventionnel ci-dessus ; en exploration, chaque case (famille × échéance) choisit entre ce sens et l'inverse, et garde ce choix en validation",
+  "variantes": {
+    "brut": "la règle de la famille seule",
+    "prudent": "la règle de la famille ET les quatre leçons ci-dessous, toutes ensemble"
+  },
+  "lecons": {
+    "L1_tendance_h1": "jamais contre la tendance H1 (règle de l'utilisateur du 27/09, définition de ZoneH1 : clôture de la dernière heure close comparée à celle de 2 heures avant ; l'heure de la bougie de décision est en cours et exclue) ; les heures H−1, H−2 et H−3 doivent être complètes (60 bougies), sinon pas de tendance ; CALL seulement en tendance haussière (clôture strictement plus haute), PUT seulement en tendance baissière",
+    "L2_meche_contre": "pas de longue mèche du côté opposé au trade sur la bougie de décision (combinaison K4 des graphiques et marteau à l'ancre de /bougies, qui gagnaient moins) : CALL exclu si la mèche basse fait au moins la moitié de l'étendue, PUT exclu si c'est la mèche haute ; par construction, aucune pin bar (F4) ne passe",
+    "L3_incluses": "moins de 6 bougies incluses parmi les 50 bougies M1 complètes et contiguës qui finissent à la bougie de décision (groupe défavorable de H_IB exclu, définition de docs/preinscription_incluses.json) ; fenêtre incomplète : exclu",
+    "L4_paires_usd": "seulement les 7 paires qui contiennent USD (piste USD de l'étape 3 : les autres paires perdaient en validation)"
+  },
+  "lecons_ecartees": "créneaux horaires et paires isolées (les filtres de l'étape 3 qui gagnaient en exploration se sont effondrés), heure 22 d'EURJPY (sa confirmation reste aveugle), caractéristiques de l'étude des pertes Engulfing (aucune ne s'est répétée)",
+  "sens": "chaque famille a son sens conventionnel ci-dessus ; en exploration, chaque case (famille × variante × échéance) choisit entre ce sens et l'inverse, et garde ce choix en validation ; les leçons L1 et L2 s'appliquent au sens conventionnel",
   "execution": {
     "decision": "à la clôture de la bougie qui déclenche (fin de sa minute)",
     "entree": "dernier tick connu à la décision + 2 s, daté de moins de 10 s",
     "sortie": "dernier tick connu à l'entrée + échéance, daté de moins de 10 s",
     "continuite": "toutes les minutes, de l'entrée à la sortie, doivent avoir leur chemin de ticks",
-    "echeances_min": [1, 2, 3, 5],
+    "echeances_min": [
+      1,
+      2,
+      3,
+      5
+    ],
     "gain": "mouvement strict dans le sens du trade ; une égalité est une perte",
     "jouable": "dernier payout du flux relevé au plus tard à la décision ≥ 84, soit 92 % appliqués et un point mort de 52,0833 %"
   },
-  "episodes": "dans chaque famille, un signal n'est retenu que si sa décision tombe au moins 5 minutes après la décision du signal retenu précédent sur la même paire : les trades d'une famille ne se chevauchent jamais",
+  "episodes": "dans chaque famille et chaque variante, un signal n'est retenu que si sa décision tombe au moins 5 minutes après la décision du signal retenu précédent sur la même paire : les trades d'une variante ne se chevauchent jamais",
   "selection": {
-    "exploration": "jours du 06/10 au 02/11 : une case est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
+    "exploration": "jours du 06/10 au 02/11 : une case (famille × variante × échéance) est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
     "validation": "jours du 03/11 à la veille du lancement : chaque case retenue est rejugée dans son sens, contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur les cases rejugées",
     "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
     "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avec le jour pour unité, avant tout essai en démo"
   },
-  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; détail par paire et par sens pour les cases retenues",
+  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; brut et prudent côte à côte ; détail par paire et par sens pour les cases retenues",
   "interdits": [
     "lecture seule : aucune écriture en base, sortie en CSV seulement",
     "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
@@ -104,7 +134,7 @@ PARAMETRES: dict[str, Any] = json.loads(r"""
   ]
 }
 """)
-EMPREINTE = "31e8565808605ceda03db67bd7f6cba2dec96c7dee62392b2d4d997b3fd85889"
+EMPREINTE = "1bb555d2bb13415943330489dd7d1d3c0d351af0aa15fd23f6c15db9f0c122f9"
 
 DEBUT = en._instant(PARAMETRES["donnees"]["debut_utc"])
 FIN_EXPLORATION = en._instant(PARAMETRES["donnees"]["fin_exploration_utc"])
@@ -130,6 +160,11 @@ STOCH_HAUT, STOCH_BAS = 80.0, 20.0
 PIN_FENETRE = 20
 ROND_SEUIL, ROND_PAS_BAS, ROND_PAS_HAUT, ROND_MEMOIRE = 20.0, 0.005, 0.5, 60
 CANAL = 20
+VARIANTES: tuple[str, ...] = tuple(PARAMETRES["variantes"])
+#: L1 : la clôture de la dernière heure close face à celle de `H1_RECUL`
+#: heures avant, comme ZoneH1.
+H1_RECUL = PARAMETRES_PRE_INSCRITS.recul_h1
+INCLUSES_FENETRE, INCLUSES_MAX = 50, 6
 
 FAMILLES: tuple[str, ...] = tuple(PARAMETRES["familles"])
 LIBELLES = {
@@ -146,7 +181,6 @@ ISSUE = "issue"
 MANQUE_ENTREE = "ticks manquants à l'entrée"
 MANQUE = "ticks manquants"
 GELE = "flux gelé à la sortie"
-ABSENTE = 9            # issue absente, dans les tableaux compacts
 
 
 # --------------------------------------------------------------------------- #
@@ -367,13 +401,80 @@ def declencheurs(s: Serie) -> dict[str, list[tuple]]:
     }
 
 
+
+
+# --------------------------------------------------------------------------- #
+# Les quatre leçons (variante prudente)
+# --------------------------------------------------------------------------- #
+
+class Lecons:
+    """Les leçons de nos études passées, précalculées pour UNE paire.
+    Aucune ne lit au-delà de la bougie de décision."""
+
+    def __init__(self, s: Serie, paire: str) -> None:
+        self._s = s
+        self.usd = "USD" in paire.upper()
+        compte: Counter = Counter()
+        self._cloture: dict[int, float] = {}
+        for ts, c in zip(s.ts, s.c):
+            h = ts // 3600 * 3600
+            compte[h] += 1
+            self._cloture[h] = c                # bougies dans l'ordre
+        self._completes = {h for h, n in compte.items() if n == 60}
+        incluse = [0] * len(s)
+        for k in range(1, len(s)):
+            if (s.ts[k - 1] == s.ts[k] - 60 and s.h[k] <= s.h[k - 1]
+                    and s.l[k] >= s.l[k - 1]):
+                incluse[k] = 1
+        self._prefixe = [0]
+        for x in incluse:
+            self._prefixe.append(self._prefixe[-1] + x)
+
+    def tendance(self, i: int) -> int:
+        """L1 : +1 haussière, −1 baissière, 0 sans tendance. L'heure de la
+        bougie de décision est en cours, donc exclue (comme ZoneH1)."""
+        h = self._s.ts[i] // 3600 * 3600
+        heures = [h - 3600 * k for k in range(1, H1_RECUL + 2)]
+        if any(x not in self._completes for x in heures):
+            return 0
+        a, b = self._cloture[heures[0]], self._cloture[heures[-1]]
+        return 1 if a > b else (-1 if a < b else 0)
+
+    def meche_contre(self, i: int, sens: int) -> bool:
+        """L2 : une mèche du côté opposé au trade d'au moins la moitié de
+        l'étendue de la bougie de décision."""
+        s = self._s
+        e = s.h[i] - s.l[i]
+        if e <= 0:
+            return False
+        if sens > 0:
+            return 2 * (min(s.o[i], s.c[i]) - s.l[i]) >= e
+        return 2 * (s.h[i] - max(s.o[i], s.c[i])) >= e
+
+    def incluses(self, i: int) -> int | None:
+        """L3 : bougies incluses parmi les 50 qui finissent en i (la première
+        comparée à sa voisine si elle est contiguë) ; None si la fenêtre
+        n'est pas faite de minutes consécutives."""
+        if not self._s.continue_(i, INCLUSES_FENETRE):
+            return None
+        return self._prefixe[i + 1] - self._prefixe[i + 1 - INCLUSES_FENETRE]
+
+    def prudent(self, i: int, sens: int) -> bool:
+        if not self.usd or self.tendance(i) != sens:
+            return False
+        if self.meche_contre(i, sens):
+            return False
+        n = self.incluses(i)
+        return n is not None and n < INCLUSES_MAX
+
+
 # --------------------------------------------------------------------------- #
 # Les signaux retenus et leurs issues
 # --------------------------------------------------------------------------- #
 
 class Signal:
-    __slots__ = ("famille", "paire", "decision", "direction", "payout",
-                 "issues", "statuts")
+    __slots__ = ("famille", "paire", "decision", "direction", "variantes",
+                 "payout", "issues", "statuts")
 
     def __init__(self, famille: int, paire: str, decision: int,
                  direction: int) -> None:
@@ -381,6 +482,7 @@ class Signal:
         self.paire = paire
         self.decision = decision           # fin de la bougie, en secondes
         self.direction = direction
+        self.variantes = 0                 # bit v : retenu dans VARIANTES[v]
         self.payout: float | None = None
         self.issues: dict[int, int] = {}
         self.statuts: dict[int, str] = {}
@@ -393,9 +495,12 @@ class Signal:
     def jouable(self) -> bool:
         return self.payout is not None and self.payout >= FLUX_MIN
 
+    def noms_variantes(self) -> list[str]:
+        return [v for k, v in enumerate(VARIANTES) if self.variantes >> k & 1]
+
 
 def episodes(bruts: Sequence[tuple], s: Serie) -> list[tuple]:
-    """Les déclenchements retenus d'une famille : 5 minutes au moins entre
+    """Les déclenchements retenus d'une liste : 5 minutes au moins entre
     deux décisions retenues."""
     gardes, derniere = [], None
     for i, sens in bruts:
@@ -428,31 +533,46 @@ def issues_ticks(sig: Signal, ticks: en.Ticks) -> None:
         sig.statuts[t] = ISSUE
 
 
+def _periode_de(decision: int) -> str:
+    return EXPLORATION if decision < FIN_EXPLORATION else VALIDATION
+
+
 def paire(nom: str, bougies: Sequence[en.Bougie], fin: int,
           ticks: en.Ticks | None, payout_a: Callable[[float], float | None],
           compte: Counter, respirer: Callable[[], None]) -> list[Signal]:
-    """Les signaux retenus d'une paire, toutes familles, dans l'ordre des
-    décisions, avec leurs issues aux ticks."""
+    """Les signaux retenus d'une paire, toutes familles et variantes, dans
+    l'ordre des décisions, avec leurs issues aux ticks. Un signal retenu
+    dans les deux variantes n'est évalué qu'une fois."""
     s = Serie(bougies)
     bruts = declencheurs(s)
+    lecons = Lecons(s, nom)
     respirer()
-    retenus: list[Signal] = []
+    par_cle: dict[tuple[int, int], Signal] = {}
     limite_ms = fin * 1000
+    duree_ms = DELAI_MS + 60_000 * max(ECHEANCES)
     for k, famille in enumerate(FAMILLES):
-        for i, sens in bruts[famille]:
-            per = (EXPLORATION if s.ts[i] + 60 < FIN_EXPLORATION
-                   else VALIDATION)
-            compte[("déclenchements", famille, per)] += 1
-        for i, sens in episodes(bruts[famille], s):
-            sig = Signal(k, nom, s.ts[i] + 60, sens)
-            if sig.decision * 1000 + DELAI_MS + 60_000 * max(ECHEANCES) \
-                    > limite_ms:
-                compte[("épisodes", famille, "fin des données")] += 1
-                continue
-            compte[("épisodes", famille, sig.periode)] += 1
-            retenus.append(sig)
-    del bruts
-    retenus.sort(key=lambda x: (x.decision, x.famille))
+        listes = {"brut": bruts[famille],
+                  "prudent": [(i, sens) for i, sens in bruts[famille]
+                              if lecons.prudent(i, sens)]}
+        for v, variante in enumerate(VARIANTES):
+            for i, _ in listes[variante]:
+                compte[("déclenchements", famille, variante,
+                        _periode_de(s.ts[i] + 60))] += 1
+            for i, sens in episodes(listes[variante], s):
+                decision = s.ts[i] + 60
+                if decision * 1000 + duree_ms > limite_ms:
+                    compte[("épisodes", famille, variante,
+                            "fin des données")] += 1
+                    continue
+                compte[("épisodes", famille, variante,
+                        _periode_de(decision))] += 1
+                sig = par_cle.get((k, i))
+                if sig is None:
+                    sig = par_cle[(k, i)] = Signal(k, nom, decision, sens)
+                sig.variantes |= 1 << v
+    del bruts, lecons
+    retenus = sorted(par_cle.values(), key=lambda x: (x.decision, x.famille))
+    del par_cle
     for rang, sig in enumerate(retenus):
         sig.payout = payout_a(sig.decision)
         if ticks is not None:
@@ -469,8 +589,8 @@ def paire(nom: str, bougies: Sequence[en.Bougie], fin: int,
 # --------------------------------------------------------------------------- #
 
 COLONNES_SIGNAUX: tuple[str, ...] = (
-    ("famille", "paire", "decision_utc", "decision_ts", "periode",
-     "direction", "payout", "jouable")
+    ("famille", "variantes", "paire", "decision_utc", "decision_ts",
+     "periode", "direction", "payout", "jouable")
     + tuple(f"issue_{t}" for t in ECHEANCES)
     + tuple(f"statut_{t}" for t in ECHEANCES))
 
@@ -481,8 +601,8 @@ def _inverse(glt: Sequence[int]) -> list[int]:
 
 
 class Agregats:
-    """Les comptes par case (famille × échéance × période) et par bloc
-    paire × jour, dans le sens conventionnel ; le fichier des signaux,
+    """Les comptes par case (famille × variante × échéance × période) et par
+    bloc paire × jour, dans le sens conventionnel ; le fichier des signaux,
     compressé au fil de l'eau."""
 
     def __init__(self) -> None:
@@ -509,28 +629,33 @@ class Agregats:
             self.n_signaux += 1
             famille = FAMILLES[sig.famille]
             per = sig.periode
-            jour = sig.decision // 86400
-            cle_bloc = (sig.paire, jour)
-            bloc = self.blocs.setdefault(cle_bloc, len(self.blocs))
-            if not sig.jouable:
-                self.statuts[("jouabilité", famille, per, "non jouable")] += 1
-            for t in ECHEANCES:
-                self.statuts[("ticks", famille, per,
-                              sig.statuts.get(t, "sans ticks"), t)] += 1
-                issue = sig.issues.get(t)
-                if issue is None or not sig.jouable:
+            bloc = self.blocs.setdefault((sig.paire, sig.decision // 86400),
+                                         len(self.blocs))
+            variantes = sig.noms_variantes()
+            for v, variante in enumerate(VARIANTES):
+                if not sig.variantes >> v & 1:
                     continue
-                rang = 0 if issue > 0 else (1 if issue < 0 else 2)
-                self.cellules[(sig.famille, t, per)][bloc][rang] += 1
-                self.blocs_par_periode[per].add(bloc)
-                self.detail[(sig.famille, t, per, "paire", sig.paire)][
-                    rang] += 1
-                self.detail[(sig.famille, t, per, "direction",
-                             "CALL" if sig.direction > 0 else "PUT")][
-                    rang] += 1
+                if not sig.jouable:
+                    self.statuts[("jouabilité", famille, variante, per,
+                                  "non jouable", "")] += 1
+                for t in ECHEANCES:
+                    self.statuts[("ticks", famille, variante, per,
+                                  sig.statuts.get(t, "sans ticks"), t)] += 1
+                    issue = sig.issues.get(t)
+                    if issue is None or not sig.jouable:
+                        continue
+                    rang = 0 if issue > 0 else (1 if issue < 0 else 2)
+                    self.cellules[(sig.famille, v, t, per)][bloc][rang] += 1
+                    self.blocs_par_periode[per].add(bloc)
+                    self.detail[(sig.famille, v, t, per, "paire",
+                                 sig.paire)][rang] += 1
+                    self.detail[(sig.famille, v, t, per, "direction",
+                                 "CALL" if sig.direction > 0 else "PUT")][
+                        rang] += 1
             lignes.append(
-                [famille, sig.paire, en._utc(sig.decision, "%Y-%m-%d %H:%M"),
-                 sig.decision, per, "CALL" if sig.direction > 0 else "PUT",
+                [famille, ",".join(variantes), sig.paire,
+                 en._utc(sig.decision, "%Y-%m-%d %H:%M"), sig.decision, per,
+                 "CALL" if sig.direction > 0 else "PUT",
                  "" if sig.payout is None else f"{sig.payout:.0f}",
                  int(sig.jouable)]
                 + [sig.issues.get(t, "") for t in ECHEANCES]
@@ -541,9 +666,9 @@ class Agregats:
         return {per: en.Tirages(sorted(blocs))
                 for per, blocs in self.blocs_par_periode.items()}
 
-    def total(self, k: int, t: int, per: str) -> list[int]:
+    def total(self, k: int, v: int, t: int, per: str) -> list[int]:
         somme = [0, 0, 0]
-        for glt in self.cellules.get((k, t, per), {}).values():
+        for glt in self.cellules.get((k, v, t, per), {}).values():
             for j in range(3):
                 somme[j] += glt[j]
         return somme
@@ -552,56 +677,57 @@ class Agregats:
               respirer: Callable[[], None]) -> list[dict[str, Any]]:
         lignes = []
         for k, famille in enumerate(FAMILLES):
-            for t in ECHEANCES:
-                g, l, e = self.total(k, t, EXPLORATION)
-                n = g + l + e
-                sens = (INVERSE if n and l > g else CONVENTIONNEL)
-                for per in (EXPLORATION, VALIDATION):
-                    glt = self.total(k, t, per)
-                    gc, lc, ec = glt
-                    nn = gc + lc + ec
-                    choisi = glt if sens == CONVENTIONNEL else _inverse(glt)
-                    taux = choisi[0] / nn if nn else None
-                    par_bloc = self.cellules.get((k, t, per), {})
-                    gb = {b: float(v[0] if sens == CONVENTIONNEL else v[1])
-                          for b, v in par_bloc.items()}
-                    nb = {b: float(sum(v)) for b, v in par_bloc.items()}
-                    bas = haut = p = None
-                    if nn and taux is not None:
-                        bas, haut, p = tirages[per].ratio(gb, nb, taux)
-                    lignes.append({
-                        "famille": famille, "echeance_min": t,
-                        "periode": per, "n": nn, "gains_conv": gc,
-                        "pertes_conv": lc, "egalites": ec,
-                        "taux_conventionnel": gc / nn if nn else None,
-                        "taux_inverse": lc / nn if nn else None,
-                        "sens_choisi": sens, "taux": taux,
-                        "ic_bas": bas, "ic_haut": haut,
-                        "p": p if per == VALIDATION else None,
-                        "verdict": ""})
-                respirer()
+            for v, variante in enumerate(VARIANTES):
+                for t in ECHEANCES:
+                    g, l, e = self.total(k, v, t, EXPLORATION)
+                    sens = INVERSE if (g + l + e) and l > g else CONVENTIONNEL
+                    for per in (EXPLORATION, VALIDATION):
+                        glt = self.total(k, v, t, per)
+                        gc, lc, ec = glt
+                        nn = gc + lc + ec
+                        choisi = (glt if sens == CONVENTIONNEL
+                                  else _inverse(glt))
+                        taux = choisi[0] / nn if nn else None
+                        par_bloc = self.cellules.get((k, v, t, per), {})
+                        gb = {b: float(x[0] if sens == CONVENTIONNEL
+                                       else x[1])
+                              for b, x in par_bloc.items()}
+                        nb = {b: float(sum(x)) for b, x in par_bloc.items()}
+                        bas = haut = p = None
+                        if nn and taux is not None:
+                            bas, haut, p = tirages[per].ratio(gb, nb, taux)
+                        lignes.append({
+                            "famille": famille, "variante": variante,
+                            "echeance_min": t, "periode": per, "n": nn,
+                            "gains_conv": gc, "pertes_conv": lc,
+                            "egalites": ec,
+                            "taux_conventionnel": gc / nn if nn else None,
+                            "taux_inverse": lc / nn if nn else None,
+                            "sens_choisi": sens, "taux": taux,
+                            "ic_bas": bas, "ic_haut": haut,
+                            "p": p if per == VALIDATION else None,
+                            "verdict": ""})
+                    respirer()
         _verdicts(lignes)
         return lignes
 
-    def details(self, retenues: Sequence[tuple[str, int, str]]
+    def details(self, retenues: Sequence[tuple[str, str, int, str]]
                 ) -> list[dict[str, Any]]:
         lignes = []
-        choix = {(f, t): sens for f, t, sens in retenues}
-        for (k, t, per, dim, valeur), glt in sorted(
-                self.detail.items(), key=lambda kv: (kv[0][0], kv[0][1],
-                                                     kv[0][2], kv[0][3],
-                                                     kv[0][4])):
-            famille = FAMILLES[k]
-            sens = choix.get((famille, t))
+        choix = {(f, v, t): sens for f, v, t, sens in retenues}
+        for (k, v, t, per, dim, valeur), glt in sorted(self.detail.items()):
+            famille, variante = FAMILLES[k], VARIANTES[v]
+            sens = choix.get((famille, variante, t))
             if sens is None:
                 continue
             g, l, e = glt if sens == CONVENTIONNEL else _inverse(glt)
             n = g + l + e
             bas, haut = en.wilson(g, n)
-            lignes.append({"famille": famille, "echeance_min": t,
-                           "sens_choisi": sens, "periode": per,
-                           "dimension": dim, "valeur": valeur, "n": n,
-                           "gains": g, "taux": g / n if n else None,
+            lignes.append({"famille": famille, "variante": variante,
+                           "echeance_min": t, "sens_choisi": sens,
+                           "periode": per, "dimension": dim,
+                           "valeur": valeur, "n": n, "gains": g,
+                           "taux": g / n if n else None,
                            "ic_bas": bas, "ic_haut": haut})
         return lignes
 
@@ -624,13 +750,13 @@ def attendues_au_hasard(lignes: Sequence[Mapping[str, Any]]) -> float:
 
 
 def _verdicts(lignes: list[dict[str, Any]]) -> None:
-    par_cle = {(l["famille"], l["echeance_min"], l["periode"]): l
-               for l in lignes}
+    par_cle = {(l["famille"], l["variante"], l["echeance_min"],
+                l["periode"]): l for l in lignes}
     jugees = {}
-    for (f, t, per), l in par_cle.items():
+    for (f, v, t, per), l in par_cle.items():
         if per != EXPLORATION:
             continue
-        val = par_cle[(f, t, VALIDATION)]
+        val = par_cle[(f, v, t, VALIDATION)]
         if l["n"] < N_EXPLO_MIN:
             l["verdict"] = "trop peu en exploration"
         elif (l["taux"] or 0) < POINT_MORT:
@@ -640,11 +766,11 @@ def _verdicts(lignes: list[dict[str, Any]]) -> None:
             val["verdict"] = "trop peu en validation"
         else:
             l["verdict"] = "retenue en exploration"
-            jugees[f"{f}|{t}"] = val["p"]
+            jugees[f"{f}|{v}|{t}"] = val["p"]
     decouvertes = em.benjamini_hochberg(jugees) if jugees else {}
     for cle, p in jugees.items():
-        f, t = cle.split("|")
-        val = par_cle[(f, int(t), VALIDATION)]
+        f, v, t = cle.split("|")
+        val = par_cle[(f, v, int(t), VALIDATION)]
         val["verdict"] = ("validée (BH 10 %)" if decouvertes[cle]
                           and val["taux"] > POINT_MORT else "non reproduite")
 
@@ -784,7 +910,8 @@ def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
     _ETAT.update(etape="statistiques", faites=len(paires))
     tirages = agregats.tirages()
     lignes_cases = agregats.cases(tirages, respirer)
-    retenues = [(l["famille"], l["echeance_min"], l["sens_choisi"])
+    retenues = [(l["famille"], l["variante"], l["echeance_min"],
+                 l["sens_choisi"])
                 for l in lignes_cases if l["periode"] == EXPLORATION
                 and l["verdict"].startswith("retenue")]
     lignes_details = agregats.details(retenues)
@@ -802,6 +929,12 @@ def _etude(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
     rapport = texte(agregats, lignes_cases, meta)
     return rapport, fichiers(agregats, lignes_cases, lignes_details,
                              resume_lue, compte)
+
+
+def _declenchements(compte: Counter, famille: str, variante: str) -> int:
+    return sum(n for cle, n in compte.items()
+               if len(cle) == 4 and cle[0] == "déclenchements"
+               and cle[1] == famille and cle[2] == variante)
 
 
 def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
@@ -829,8 +962,11 @@ def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
     if not min_bougies:
         return (entete + f"\nAucune bougie entre le {en._utc(debut)} et le "
                 f"{en._utc(fin - 86400)} : rien à essayer.")
+    # La paire USD la plus fournie en ticks, pour que la variante prudente
+    # soit exercée aussi ; à défaut, la plus fournie tout court.
     nom = max(sorted(min_bougies),
-              key=lambda p: (min_ticks[p], min_bougies[p]))
+              key=lambda p: ("USD" in p.upper(), min_ticks[p],
+                             min_bougies[p]))
     _ETAT.update(etape=f"essai, paire {nom}", total=1,
                  debut_paires=time.monotonic())
     compte: Counter = Counter()
@@ -846,7 +982,8 @@ def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
         tirages = agregats.tirages()
         lignes_cases = agregats.cases(tirages, respirer)
         lignes_details = agregats.details(
-            [(f, t, CONVENTIONNEL) for f in FAMILLES for t in ECHEANCES])
+            [(f, v, t, CONVENTIONNEL) for f in FAMILLES for v in VARIANTES
+             for t in ECHEANCES])
         texte(agregats, lignes_cases, {
             "nom": nom_lecture, "lecture": lecture, "fin": fin,
             "paires": [nom], "resume": resume_lue, "compte": compte,
@@ -879,9 +1016,8 @@ def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
         memoire_txt = f"Mémoire : {memoire.resume()}."
         pic_txt = ""
     par_famille = " ; ".join(
-        f"{LIBELLES[f].split(' ')[0]} "
-        f"{sum(n for cle, n in compte.items() if len(cle) == 3 and cle[0] == 'déclenchements' and cle[1] == f)}"
-        for f in FAMILLES)
+        f"{LIBELLES[f].split(' ')[0]} {_declenchements(compte, f, 'brut')}"
+        f"/{_declenchements(compte, f, 'prudent')}" for f in FAMILLES)
     requetes = sum(lue.requetes.values()) + (
         sum(active.requetes.values()) if active is not None else 0)
     refusees = lue.refusees + (active.refusees if active else 0)
@@ -890,13 +1026,14 @@ def _essai(lue_brute, active_brute, nom_lecture, fin, avec_ticks, respirer,
         "Bases : " + ", ".join(f"{html.escape(n)} : {html.escape(v)}"
                                for n, v in lecture.items())
         + ". Rien n'est écrit en base, aucun ordre.",
-        f"Paire essayée : {html.escape(nom)} (la plus fournie en ticks), du "
-        f"{en._utc(debut)} au {en._utc(fin - 86400)} ({jours_essai} jours).",
+        f"Paire essayée : {html.escape(nom)} (la paire USD la plus fournie "
+        f"en ticks), du {en._utc(debut)} au {en._utc(fin - 86400)} "
+        f"({jours_essai} jours).",
         f"Lu : {en._entier(n_bougies)} bougies, "
         f"{en._entier(min_ticks[nom])} minutes de ticks dont "
         f"{en._entier(ticks.decodees if ticks else 0)} décodées "
         f"({ticks.illisibles if ticks else 0} illisibles).",
-        f"Déclenchements bruts : {par_famille} ; signaux retenus : "
+        f"Déclenchements bruts/prudents : {par_famille} ; signaux retenus : "
         f"{en._entier(agregats.n_signaux)}"
         + ("" if avec_ticks else " ; ⚠ sans les ticks") + ".",
         suite,
@@ -924,8 +1061,9 @@ def texte(agregats: Agregats, lignes_cases, meta: Mapping) -> str:
                     if t == "candles" and v and v[0])
     minutes_t = sum(v[0] for (t, _, _), v in resume.items()
                     if t == "tick_paths" and v and v[0])
-    par_cle = {(l["famille"], l["echeance_min"], l["periode"]): l
-               for l in lignes_cases}
+    par_cle = {(l["famille"], l["variante"], l["echeance_min"],
+                l["periode"]): l for l in lignes_cases}
+    paires = meta["paires"]
     morceaux = [
         "🧪 <b>Six stratégies classiques sur l'OTC</b> (recherche isolée, "
         "lecture seule)",
@@ -934,8 +1072,8 @@ def texte(agregats: Agregats, lignes_cases, meta: Mapping) -> str:
         + f" ; requêtes refusées : {meta['refusees']}. Rien n'a été écrit "
         "en base, aucun ordre.",
         f"Gel vérifié : empreinte {EMPREINTE[:8]}…",
-        f"<b>Données</b> : {len(meta['paires'])} "
-        f"paire{'s' if len(meta['paires']) > 1 else ''}, du "
+        f"<b>Données</b> : {len(paires)} "
+        f"paire{'s' if len(paires) > 1 else ''}, du "
         f"{en._utc(DEBUT)} au {en._utc(fin - 86400)} ; exploration jusqu'au "
         f"{en._utc(FIN_EXPLORATION - 86400)}, validation ensuite. Minutes de "
         f"bougies : {en._entier(minutes_b)} ; minutes de ticks : "
@@ -944,23 +1082,28 @@ def texte(agregats: Agregats, lignes_cases, meta: Mapping) -> str:
         f"{meta['divergents']}."
         + ("" if meta["avec_ticks"] else
            " ⚠ Lancée SANS les ticks : aucune issue n'est jugée."),
-        "<b>Par famille</b> (sens choisi en exploration, décisions jouables, "
-        "exécution aux ticks ; exploration → validation) :"]
+        "<b>Par famille</b>, brute puis prudente (tendance H1, pas de longue "
+        "mèche contre, moins de 6 incluses, paires USD) ; sens choisi en "
+        "exploration, décisions jouables, exécution aux ticks ; exploration "
+        "→ validation :"]
     for famille in FAMILLES:
-        episodes_ = sum(compte[("épisodes", famille, p)]
-                        for p in (EXPLORATION, VALIDATION))
-        cases = []
-        for t in ECHEANCES:
-            x = par_cle.get((famille, t, EXPLORATION), {})
-            v = par_cle.get((famille, t, VALIDATION), {})
-            marque = ("✅" if v.get("verdict", "").startswith("validée")
-                      else "★" if x.get("verdict", "").startswith("retenue")
-                      else "")
-            inv = " inv." if x.get("sens_choisi") == INVERSE else ""
-            cases.append(f"{t} min{inv} {en._pct(x.get('taux'))} → "
-                         f"{en._pct(v.get('taux'))}{marque}")
-        morceaux.append(f"• {LIBELLES[famille]} ({en._entier(episodes_)} "
-                        f"signaux) : " + " ; ".join(cases) + ".")
+        for variante in VARIANTES:
+            episodes_ = sum(compte[("épisodes", famille, variante, p)]
+                            for p in (EXPLORATION, VALIDATION))
+            cases = []
+            for t in ECHEANCES:
+                x = par_cle.get((famille, variante, t, EXPLORATION), {})
+                v = par_cle.get((famille, variante, t, VALIDATION), {})
+                marque = ("✅" if v.get("verdict", "").startswith("validée")
+                          else "★" if x.get("verdict", "").startswith(
+                              "retenue") else "")
+                inv = " inv." if x.get("sens_choisi") == INVERSE else ""
+                cases.append(f"{t} min{inv} {en._pct(x.get('taux'))} → "
+                             f"{en._pct(v.get('taux'))}{marque}")
+            entete = (f"• {LIBELLES[famille]}" if variante == VARIANTES[0]
+                      else "   prudente")
+            morceaux.append(f"{entete} ({en._entier(episodes_)} signaux) : "
+                            + " ; ".join(cases) + ".")
     retenues = [l for l in lignes_cases if l["periode"] == EXPLORATION
                 and l["verdict"].startswith("retenue")]
     validees = [l for l in lignes_cases
@@ -969,24 +1112,24 @@ def texte(agregats: Agregats, lignes_cases, meta: Mapping) -> str:
                    if l["verdict"] == "non reproduite"]
     hasard = f"{attendues_au_hasard(lignes_cases):.1f}".replace(".", ",")
     morceaux.append(
-        f"<b>Cases</b> (6 familles × 4 échéances) : {len(retenues)} retenues "
-        f"en exploration (★), {len(validees)} validées (✅), "
-        f"{len(reproduites)} non reproduites. Si tout était à 50 %, environ "
-        f"{hasard} cases passeraient l'exploration par hasard, chacune "
-        "choisissant son meilleur sens.")
+        f"<b>Cases</b> (6 familles × 2 variantes × 4 échéances) : "
+        f"{len(retenues)} retenues en exploration (★), {len(validees)} "
+        f"validées (✅), {len(reproduites)} non reproduites. Si tout était "
+        f"à 50 %, environ {hasard} cases passeraient l'exploration par "
+        "hasard, chacune choisissant son meilleur sens.")
     for l in validees:
         morceaux.append(
-            f"• ✅ {LIBELLES[l['famille']]} à {l['echeance_min']} min, sens "
-            f"{l['sens_choisi']} : {en._pct(l['taux'])} sur {l['n']} en "
-            f"validation [{en._pct(l.get('ic_bas'))} ; "
-            f"{en._pct(l.get('ic_haut'))}].")
+            f"• ✅ {LIBELLES[l['famille']]} ({l['variante']}) à "
+            f"{l['echeance_min']} min, sens {l['sens_choisi']} : "
+            f"{en._pct(l['taux'])} sur {l['n']} en validation "
+            f"[{en._pct(l.get('ic_bas'))} ; {en._pct(l.get('ic_haut'))}].")
     if validees:
         morceaux.append("Une case validée n'est pas une stratégie : elle se "
                         "gèle, puis se confirme sur des jours futurs, sans "
                         "argent réel.")
     else:
-        morceaux.append("Aucune de ces six stratégies ne bat le point mort de "
-                        "52,08 % hors échantillon.")
+        morceaux.append("Aucune de ces stratégies, brute ou prudente, ne bat "
+                        "le point mort de 52,08 % hors échantillon.")
     duree = f"{meta['temps'] / 60:.1f}".replace(".", ",")
     pied = f"Requêtes : {meta['requetes']}. Durée : {duree} min."
     if meta.get("rss_max") is not None:
@@ -999,36 +1142,34 @@ def texte(agregats: Agregats, lignes_cases, meta: Mapping) -> str:
     return "\n".join(morceaux)
 
 
-COLONNES_CASES = ("famille", "echeance_min", "periode", "n", "gains_conv",
-                  "pertes_conv", "egalites", "taux_conventionnel",
-                  "taux_inverse", "sens_choisi", "taux", "ic_bas", "ic_haut",
-                  "p", "verdict")
-COLONNES_DETAILS = ("famille", "echeance_min", "sens_choisi", "periode",
-                    "dimension", "valeur", "n", "gains", "taux", "ic_bas",
-                    "ic_haut")
+COLONNES_CASES = ("famille", "variante", "echeance_min", "periode", "n",
+                  "gains_conv", "pertes_conv", "egalites",
+                  "taux_conventionnel", "taux_inverse", "sens_choisi", "taux",
+                  "ic_bas", "ic_haut", "p", "verdict")
+COLONNES_DETAILS = ("famille", "variante", "echeance_min", "sens_choisi",
+                    "periode", "dimension", "valeur", "n", "gains", "taux",
+                    "ic_bas", "ic_haut")
+COLONNES_STATUTS = ("source", "famille", "variante", "periode", "statut",
+                    "echeance_min", "nombre")
+
+
+def _ligne_statut(cle: tuple, n: int) -> dict[str, Any]:
+    """Les clés de comptage, de longueur 2, 4 ou 6, en une ligne de
+    `classiques_statuts.csv`."""
+    if len(cle) == 2:                 # ("données", « bougie illisible »…)
+        valeurs = (cle[0], "", "", "", cle[1], "")
+    elif len(cle) == 4:               # (source, famille, variante, période)
+        valeurs = (cle[0], cle[1], cle[2], cle[3], "", "")
+    else:
+        valeurs = cle
+    return dict(zip(COLONNES_STATUTS, (*valeurs, n)))
 
 
 def fichiers(agregats: Agregats, lignes_cases, lignes_details, resume,
              compte: Counter) -> list[tuple[bytes, str, str]]:
-    statuts = []
-    for cle, n in sorted(compte.items(), key=lambda kv: tuple(
-            str(x) for x in kv[0])):
-        if len(cle) == 2:              # ("données", « bougie illisible »…)
-            statuts.append({"source": cle[0], "famille": "", "periode": "",
-                            "statut": cle[1], "echeance_min": "",
-                            "nombre": n})
-        elif len(cle) == 3:
-            statuts.append({"source": cle[0], "famille": cle[1],
-                            "periode": cle[2], "statut": "",
-                            "echeance_min": "", "nombre": n})
-    for cle, n in sorted(agregats.statuts.items(), key=lambda kv: tuple(
-            str(x) for x in kv[0])):
-        source, famille, per, statut = cle[:4]
-        statuts.append({"source": source, "famille": famille,
-                        "periode": per, "statut": statut,
-                        "echeance_min": cle[4] if len(cle) > 4 else "",
-                        "nombre": n})
-    donnees = []
+    statuts = [_ligne_statut(cle, n) for cle, n in sorted(
+        list(compte.items()) + list(agregats.statuts.items()),
+        key=lambda kv: tuple(str(x) for x in kv[0]))]
     jours: dict[tuple[str, int], dict[str, Any]] = {}
     for (table, p, j), v in resume.items():
         d = jours.setdefault((p, j), {"paire": p, "jour": en._utc(
@@ -1042,17 +1183,15 @@ def fichiers(agregats: Agregats, lignes_cases, lignes_details, resume,
     donnees = [jours[k] for k in sorted(jours)]
     return [
         (en._csv(lignes_cases, COLONNES_CASES), "classiques_cases.csv",
-         "Une ligne par famille × échéance × période : sens choisi, taux, "
-         "IC, verdict"),
+         "Une ligne par famille × variante × échéance × période : sens "
+         "choisi, taux, IC, verdict"),
         (en._csv(lignes_details, COLONNES_DETAILS), "classiques_details.csv",
          "Les cases retenues, par paire et par sens"),
-        (en._csv(statuts, ("source", "famille", "periode", "statut",
-                           "echeance_min", "nombre")),
-         "classiques_statuts.csv",
+        (en._csv(statuts, COLONNES_STATUTS), "classiques_statuts.csv",
          "Déclenchements, épisodes, statuts des issues aux ticks"),
         (en._csv(donnees, ("paire", "jour", "minutes_bougies",
                            "minutes_ticks", "releves_payout")),
          "classiques_donnees.csv", "Les données lues, par paire et par jour"),
         (agregats.signaux_gz(), "classiques_signaux.csv.gz",
-         "Chaque signal retenu, ses issues aux ticks et ses statuts"),
+         "Chaque signal retenu, ses variantes, ses issues aux ticks"),
     ]
