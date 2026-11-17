@@ -56,6 +56,7 @@ import io
 import json
 import logging
 import math
+import random
 import time
 from bisect import bisect_right
 from collections import Counter, defaultdict
@@ -1195,3 +1196,172 @@ def fichiers(agregats: Agregats, lignes_cases, lignes_details, resume,
         (agregats.signaux_gz(), "classiques_signaux.csv.gz",
          "Chaque signal retenu, ses variantes, ses issues aux ticks"),
     ]
+
+
+# --------------------------------------------------------------------------- #
+# La confirmation de la seule case dont le taux a tenu (gel 6c9e22d7)
+# --------------------------------------------------------------------------- #
+
+CONFIRMATION: dict[str, Any] = json.loads(r"""
+{
+  "objet": "Confirmation de la seule case de /classiques (gel 1bb555d2, rapport du 17/11) dont le taux a tenu : F2 Bollinger + RSI, variante prudente, sens inverse, échéance 1 minute. Elle n'a PAS été validée (validation 54,35 % sur 425 décisions, p = 0,17 contre le point mort) : c'est une piste faible, éprouvée sur des jours que /classiques n'a jamais lus.",
+  "regle": "exactement celle de /classiques (gel 1bb555d2) : déclencheur F2 (clôture au-dessus de la bande de Bollinger(20, 2) haute avec RSI(14) ≥ 70, sens conventionnel PUT ; sous la bande basse avec RSI ≤ 30, sens conventionnel CALL) ; leçons L1 à L4 appliquées au sens conventionnel ; épisodes de 5 minutes dans la variante prudente ; trade dans le sens INVERSE du sens conventionnel ; entrée au dernier tick connu 2 s après la clôture, sortie 1 minute plus tard, ticks datés de moins de 10 s et minutes continues ; égalité = perte ; jouable si le payout du flux est ≥ 84 à la décision",
+  "donnees": {
+    "debut_utc": "2026-11-17T00:00:00Z",
+    "remarque": "/classiques a lu jusqu'au 16/11 inclus ; aucune décision antérieure au 17/11 n'entre ici. Les bougies de la veille ne servent qu'à chauffer les indicateurs, et les épisodes sont enchaînés sur toute la lecture avant d'écarter les décisions d'avant le 17/11",
+    "paires": "les 7 paires qui contiennent USD (la leçon L4 écarte les autres)",
+    "lecture": "relève, un jour divergent lu sur l'active ; seuls des jours complets"
+  },
+  "unite": "la décision jouable avec une issue à 1 minute, dans l'ordre chronologique ; incertitude par bootstrap des blocs paire × jour",
+  "regards": {
+    "futilite": "à 1 000 décisions : si le taux des 1 000 premières est sous 50 %, la piste est abandonnée ; sinon la commande dit seulement que l'épreuve continue, sans montrer le taux",
+    "final": "à 2 900 décisions (environ 3 mois au rythme de la validation, 30 par jour) : confirmée si le taux des 2 900 premières dépasse 52,0833 % ET p ≤ 0,05, p = part des taux rééchantillonnés (blocs paire × jour, 10 000 tirages, graine 7) inférieurs ou égaux à 52,0833 % ; sinon abandonnée"
+  },
+  "avant_le_regard": "la commande dit combien de décisions sont acquises, aucun taux",
+  "puissance": "2 900 décisions donnent environ 80 % de chances de confirmer un vrai taux de 54,4 % ; un vrai taux de 53 % ou moins passerait le plus souvent inaperçu",
+  "interdits": [
+    "aucune écriture en base, sortie en CSV seulement",
+    "la course, la collecte, la stratégie et les échéances ne changent pas",
+    "aucun argent réel sur cette piste avant une confirmation, et pas même après sans un essai en démo",
+    "aucun paramètre ne se rechoisit après le gel ; ni l'échéance de 2 minutes ni une autre famille ne remplacent cette case"
+  ]
+}
+""")
+EMPREINTE_CONFIRMATION = (
+    "6c9e22d7d06280dc1ad74143394eb9bce4d9aa73ef75da33c4e4607a8f82057b")
+DEBUT_CONFIRMATION = en._instant(CONFIRMATION["donnees"]["debut_utc"])
+FAMILLE_PISTE, VARIANTE_PISTE, ECHEANCE_PISTE = (
+    "F2_bollinger_rsi", "prudent", 1)
+REGARD_FUTILITE, REGARD_FINAL = 1_000, 2_900
+TIRAGES_CONFIRMATION = 10_000
+
+
+def decisions_piste(signaux: Sequence[Signal]) -> list[tuple[int, str, int]]:
+    """(décision, paire, gain) des décisions jouables de la piste à partir
+    du 17/11, avec une issue à 1 minute, jouées dans le sens INVERSE : le
+    trade gagne quand le sens conventionnel perd strictement ; une égalité
+    perd dans les deux sens."""
+    k = FAMILLES.index(FAMILLE_PISTE)
+    v = VARIANTES.index(VARIANTE_PISTE)
+    sortie = []
+    for sig in signaux:
+        if (sig.famille != k or not sig.variantes >> v & 1
+                or not sig.jouable or sig.decision < DEBUT_CONFIRMATION):
+            continue
+        issue = sig.issues.get(ECHEANCE_PISTE)
+        if issue is not None:
+            sortie.append((sig.decision, sig.paire, 1 if issue < 0 else 0))
+    return sortie
+
+
+def _echeance(n: int, cible: int, fin: int) -> str:
+    """La date à laquelle `cible` décisions seront acquises, au rythme
+    observé depuis le 17/11."""
+    jours = max(1, (fin - DEBUT_CONFIRMATION) // 86400)
+    rythme = n / jours
+    if rythme <= 0:
+        return "date inconnue (aucune décision encore)"
+    return "vers le " + en._utc(fin + int((cible - n) / rythme) * 86400,
+                                "%d/%m/%Y")
+
+
+def regard(decisions: Sequence[tuple[int, str, int]], fin: int
+           ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """Le verdict selon le gel, à partir des décisions triées par date.
+    Avant le regard final, aucun taux n'est montré, sauf pour dire un
+    abandon."""
+    n = len(decisions)
+    jours = max(1, (fin - DEBUT_CONFIRMATION) // 86400)
+    acquis = (f"{en._entier(n)} décisions acquises sur "
+              f"{en._entier(REGARD_FINAL)}, du {en._utc(DEBUT_CONFIRMATION)} "
+              f"au {en._utc(fin - 86400)} (environ {n / jours:.0f} par jour)")
+    if n < REGARD_FUTILITE:
+        return (f"{acquis}. Premier regard (futilité) à "
+                f"{en._entier(REGARD_FUTILITE)} décisions, "
+                f"{_echeance(n, REGARD_FUTILITE, fin)}. Aucun taux n'est "
+                "montré avant."), []
+    premieres = decisions[:REGARD_FUTILITE]
+    taux_f = sum(g for _, _, g in premieres) / REGARD_FUTILITE
+    if taux_f < 0.5:
+        return ("<b>Abandonnée</b> au regard de futilité : les "
+                f"{en._entier(REGARD_FUTILITE)} premières décisions gagnent "
+                f"{en._pct(taux_f)}, sous 50 %. La piste ne se reformule pas "
+                "sur les mêmes jours."), [_csv_decisions(premieres)]
+    if n < REGARD_FINAL:
+        return (f"{acquis}. Regard de futilité passé : l'épreuve continue "
+                "(le taux n'est pas montré). Regard final à "
+                f"{en._entier(REGARD_FINAL)} décisions, "
+                f"{_echeance(n, REGARD_FINAL, fin)}."), []
+    retenues = decisions[:REGARD_FINAL]
+    taux = sum(g for _, _, g in retenues) / REGARD_FINAL
+    blocs: dict[tuple[str, int], list[int]] = defaultdict(lambda: [0, 0])
+    for decision, paire_, g in retenues:
+        b = blocs[(paire_, decision // 86400)]
+        b[0] += g
+        b[1] += 1
+    valeurs = list(blocs.values())
+    alea = random.Random(em.GRAINE)
+    sous = 0
+    for _ in range(TIRAGES_CONFIRMATION):
+        tirage = alea.choices(valeurs, k=len(valeurs))
+        if sum(x[0] for x in tirage) / sum(x[1] for x in tirage) \
+                <= POINT_MORT:
+            sous += 1
+    p = sous / TIRAGES_CONFIRMATION
+    confirmee = taux > POINT_MORT and p <= 0.05
+    texte = (f"Regard final, sur les {en._entier(REGARD_FINAL)} premières "
+             f"décisions (du {en._utc(retenues[0][0])} au "
+             f"{en._utc(retenues[-1][0])}) : {en._pct(taux)} ; p = "
+             f"{p:.3f} (bootstrap des blocs paire × jour, "
+             f"{en._entier(TIRAGES_CONFIRMATION)} tirages).\n"
+             + ("<b>Confirmée</b> : la piste passe le point mort de 52,08 %. "
+                "Elle reste à essayer en démo avant toute autre décision."
+                if confirmee else
+                "<b>Abandonnée</b> : la piste ne passe pas l'épreuve. Elle ne "
+                "se reformule pas sur les mêmes jours."))
+    return texte, [_csv_decisions(retenues)]
+
+
+def _csv_decisions(decisions) -> tuple[bytes, str, str]:
+    lignes = [{"decision_utc": en._utc(d, "%Y-%m-%d %H:%M"), "paire": p_,
+               "gain": g} for d, p_, g in decisions]
+    return (en._csv(lignes, ("decision_utc", "paire", "gain")),
+            "classiques_confirmation.csv",
+            "Les décisions de la confirmation, dans l'ordre")
+
+
+def confirmation(lue_brute, active_brute, course=None, *,
+                 nom_lecture: str = "relève", maintenant: float | None = None,
+                 respirer: Callable[[], None] | None = None
+                 ) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/classiques confirmation` : la piste F2 prudente inverse à 1 min,
+    sur les jours que /classiques n'a jamais lus. Lecture seule."""
+    em.exiger_le_gel(CONFIRMATION, EMPREINTE_CONFIRMATION)
+    em.exiger_le_gel(PARAMETRES, EMPREINTE)
+    pause = respirer or (lambda: time.sleep(RESPIRATION_SEC))
+    maintenant = time.time() if maintenant is None else maintenant
+    fin = int(maintenant) // 86400 * 86400
+    entete = ("🧪 <b>Confirmation de la piste /classiques</b> : F2 "
+              "Bollinger + RSI, prudente, sens inverse, 1 min (lecture "
+              f"seule, gel {EMPREINTE_CONFIRMATION[:8]}…). Piste faible : "
+              "elle n'a pas été validée le 17/11.")
+    if fin <= DEBUT_CONFIRMATION:
+        return entete + "\nAucun jour complet depuis le 17/11.", []
+    debut_lecture = DEBUT_CONFIRMATION - 86400      # chauffe des indicateurs
+    lue, active, lecture, resume_lue, divergents, base = en._bases(
+        lue_brute, active_brute, nom_lecture, debut_lecture, fin)
+    paires = sorted({p for (table, p, _) in resume_lue
+                     if table == "candles" and "USD" in p.upper()})
+    compte: Counter = Counter()
+    decisions: list[tuple[int, str, int]] = []
+    for nom in paires:
+        signaux, _, _ = _lire_paire(nom, debut_lecture, fin, base, lue,
+                                    compte, True, pause)
+        decisions += decisions_piste(signaux)
+        del signaux
+    decisions.sort()
+    texte, fichiers_ = regard(decisions, fin)
+    refusees = lue.refusees + (active.refusees if active else 0)
+    return (entete + "\n" + texte + f"\nPaires lues : {len(paires)} ; "
+            f"requêtes refusées : {refusees}. Rien n'est écrit en base, "
+            "aucun ordre ; rien ne change dans la course."), fichiers_

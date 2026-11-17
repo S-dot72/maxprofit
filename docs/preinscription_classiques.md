@@ -151,3 +151,55 @@ Elle rend un rapport et cinq fichiers :
 - `classiques_donnees.csv` : les données lues, par paire et par jour ;
 - `classiques_signaux.csv.gz` : chaque signal retenu, ses variantes et ses
   issues.
+
+## Résultats du 17/11
+
+Rapport `/classiques`, version da0f106 : 20 paires, du 06/10 au 16/11,
+933 507 minutes de bougies et 933 984 minutes de ticks. La passe a pris
+21,5 minutes sur le serveur, avec un pic de mémoire de 251 Mo.
+
+- **Aucune case validée** sur les 48 (6 familles × 2 variantes × 4
+  échéances). Deux cases ont été retenues en exploration, alors que le
+  hasard seul en donnerait environ 3,3 ; les deux sont « non reproduites ».
+- **Les versions brutes restent à 50 %.** En validation, dans le sens choisi
+  et toutes échéances confondues, elles gagnent 49,8 %. Pour F1 à F6, aucune
+  case ne dépasse 51,7 %.
+- **La version prudente ne fait pas mieux.** Elle gagne 50,1 % en
+  validation, et 49,5 % sans F2. Les quatre leçons combinées ne changent
+  rien au taux. La variante F4 prudente est vide, comme prévu.
+- **Une seule case a tenu son taux : F2 Bollinger + RSI, prudente, sens
+  inverse, 1 minute.** Elle gagne 54,2 % sur 605 décisions en exploration,
+  puis 54,35 % sur 425 en validation, mais sans être validée :
+  - p = 0,17 contre le point mort, et l'intervalle des jours va de 46,7 %
+    à 60,2 % ;
+  - 8 jours sur 14 seulement passent le point mort ;
+  - les paires et les sens changent d'une période à l'autre (CALL 55 %
+    puis 50 %, PUT 53 % puis 59 % ; USDCAD 57 % puis 42 %) ;
+  - elle joue la continuation de la cassure de bande, donc CONTRE la
+    tendance H1 que la leçon L1 imposait au sens conventionnel. Elle n'a
+    aucun mécanisme.
+  L'autre case retenue, F6 prudente à 5 minutes, est passée de 52,2 % à
+  48,7 % : c'est le retour à la moyenne habituel.
+
+**Verdict.** Aucune des six stratégies, brute ou prudente, ne bat le point
+mort sur l'OTC.
+
+## Confirmation de la case F2 prudente inverse à 1 min (gel 6c9e22d7)
+
+`docs/preinscription_classiques_confirmation.json`, empreinte
+`6c9e22d7d06280dc1ad74143394eb9bce4d9aa73ef75da33c4e4607a8f82057b`, figée
+le 17/11 avant le code.
+
+- La règle est exactement celle du rapport. Seules comptent les décisions
+  à partir du 17/11, que `/classiques` n'a jamais lues.
+- **Regard de futilité à 1 000 décisions** : sous 50 %, la piste est
+  abandonnée ; sinon, la commande dit seulement que l'épreuve continue.
+- **Regard final à 2 900 décisions**, soit environ 3 mois au rythme de 30
+  par jour : confirmée si le taux dépasse 52,08 % avec p ≤ 0,05 (bootstrap
+  des blocs paire × jour, 10 000 tirages) ; sinon abandonnée.
+- Ce nombre donne environ 80 % de chances de confirmer un vrai taux de
+  54,4 %. Un vrai taux de 53 % ou moins passerait le plus souvent inaperçu.
+- `/classiques confirmation` dit combien de décisions sont acquises, sans
+  aucun taux avant les regards.
+- Aucun argent réel sur cette piste avant une confirmation, et pas même
+  après sans un essai en démo.

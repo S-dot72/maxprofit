@@ -312,7 +312,7 @@ COMMANDES = [
     ("graphiques", "Revue de graphiques à l'aveugle, gagnants et perdants (admin)"),
     ("terrain", "Le prix OTC est-il prévisible ? Étude gelée, sans ZoneH1 (admin)"),
     ("engulfing", "Étude Engulfing OTC en lecture seule ; « /engulfing essai » : contrôle d'une minute (admin)"),
-    ("classiques", "Six stratégies classiques sur l'OTC, en lecture seule ; « /classiques essai » : contrôle (admin)"),
+    ("classiques", "Six stratégies classiques sur l'OTC, en lecture seule ; « essai », « confirmation » (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -968,11 +968,20 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                     "cours" + (f" : {point}." if point else "."), CLAVIER)
             else:
                 argument = texte[len("/classiques"):].strip()
-                essai = "essai" in argument.lower().split()
-                libelle = ("🧪 Essai /classiques" if essai
+                mots = argument.lower().split()
+                essai = "essai" in mots
+                verification = "confirmation" in mots
+                libelle = ("🧪 Confirmation /classiques" if verification
+                           else "🧪 Essai /classiques" if essai
                            else "🧪 Stratégies classiques")
                 reference = version_deployee.commit() or "inconnue"
-                if essai:
+                if verification:
+                    annonce = (
+                        f"🧪 Confirmation de la piste F2 prudente lancée "
+                        f"(version {reference} ; lecture seule, quelques "
+                        "minutes). Avant ses regards, elle ne dit que le "
+                        "nombre de décisions acquises.")
+                elif essai:
                     annonce = (
                         f"🧪 Essai technique lancé (version {reference}) : "
                         "une paire, deux jours, en lecture seule ; aucun "
