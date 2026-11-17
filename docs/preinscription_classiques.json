@@ -1,0 +1,46 @@
+{
+  "objet": "Six stratégies classiques des options binaires, aux réglages standards des plateformes, jamais testées sur nos données OTC : l'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
+  "demande": "17/11 : « tu vas tester une nouvelle stratégie sur les paires otc »",
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), mêmes règles de copie",
+    "payouts": "payouts (points de changement), mêmes règles de copie",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation": "début du jour UTC du lancement : seuls des jours complets sont lus"
+  },
+  "fenetres": "chaque indicateur ne lit que la bougie de décision et celles d'avant ; sa fenêtre doit être faite de minutes consécutives, sans trou, sinon il n'y a pas de signal",
+  "familles": {
+    "F1_rsi_sortie": "RSI(14) à moyennes simples (Cutler, comme maxprofit.indicators.oscillators.rsi) : il passe de ≥ 70 à < 70 → PUT ; de ≤ 30 à > 30 → CALL",
+    "F2_bollinger_rsi": "Bollinger(20, 2), écart-type de population (comme maxprofit.indicators.structure.bollinger_bandes), et RSI(14) : clôture au-dessus de la bande haute et RSI ≥ 70 → PUT ; clôture sous la bande basse et RSI ≤ 30 → CALL",
+    "F3_stochastique_croisement": "stochastique lent (14, 3, 3) (comme maxprofit.indicators.oscillators.stochastique_lente) : %K passe sous %D alors que %K et %D étaient tous deux au-dessus de 80 à la bougie précédente → PUT ; %K passe au-dessus de %D alors que tous deux étaient sous 20 → CALL",
+    "F4_pin_bar": "étendue e > 0, corps ≤ e/3 ; mèche haute ≥ 2e/3 et plus haut des 20 dernières bougies (la bougie comprise) → PUT ; mèche basse ≥ 2e/3 et plus bas des 20 dernières bougies → CALL",
+    "F5_chiffre_rond": "pas de 0,005 si la clôture précédente est sous 20, de 0,5 sinon ; la bougie touche un seul multiple du pas (bas ≤ niveau ≤ haut), qu'aucune des 60 bougies précédentes n'a touché ; venue d'en dessous (clôture précédente < niveau) et clôture sous le niveau → PUT ; venue d'au-dessus et clôture au-dessus → CALL",
+    "F6_cassure_canal": "clôture au-dessus du plus haut des 20 bougies précédentes → CALL ; sous leur plus bas → PUT"
+  },
+  "sens": "chaque famille a son sens conventionnel ci-dessus ; en exploration, chaque case (famille × échéance) choisit entre ce sens et l'inverse, et garde ce choix en validation",
+  "execution": {
+    "decision": "à la clôture de la bougie qui déclenche (fin de sa minute)",
+    "entree": "dernier tick connu à la décision + 2 s, daté de moins de 10 s",
+    "sortie": "dernier tick connu à l'entrée + échéance, daté de moins de 10 s",
+    "continuite": "toutes les minutes, de l'entrée à la sortie, doivent avoir leur chemin de ticks",
+    "echeances_min": [1, 2, 3, 5],
+    "gain": "mouvement strict dans le sens du trade ; une égalité est une perte",
+    "jouable": "dernier payout du flux relevé au plus tard à la décision ≥ 84, soit 92 % appliqués et un point mort de 52,0833 %"
+  },
+  "episodes": "dans chaque famille, un signal n'est retenu que si sa décision tombe au moins 5 minutes après la décision du signal retenu précédent sur la même paire : les trades d'une famille ne se chevauchent jamais",
+  "selection": {
+    "exploration": "jours du 06/10 au 02/11 : une case est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
+    "validation": "jours du 03/11 à la veille du lancement : chaque case retenue est rejugée dans son sens, contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur les cases rejugées",
+    "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
+    "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avec le jour pour unité, avant tout essai en démo"
+  },
+  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; détail par paire et par sens pour les cases retenues",
+  "interdits": [
+    "lecture seule : aucune écriture en base, sortie en CSV seulement",
+    "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
+    "aucun paramètre ne se rechoisit après le gel ; aucune nouvelle famille ne s'ajoute après avoir vu un résultat",
+    "aucun argent réel sur une case validée avant sa confirmation, et pas même après sans un essai en démo"
+  ]
+}
