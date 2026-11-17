@@ -76,3 +76,30 @@ rouge, la prise de liquidité, les bougies incluses, ZoneH1, les familles de
   futurs.
 - **Rien** : aucune case validée. Ces six stratégies ne battent pas le point
   mort sur l'OTC.
+
+## Lancer l'étude
+
+Code : `maxprofit/live/classiques.py`. Il reprend la lecture des bases, le
+décodage des ticks et le bootstrap de l'étude Engulfing. Tests :
+`tests/test_classiques.py`. Ils vérifient les indicateurs valeur par
+valeur contre `maxprofit.indicators`, chaque déclencheur, les fenêtres
+continues, les issues aux ticks, l'absence de lecture du futur et la
+lecture seule.
+
+- **`/classiques essai`** : à lancer d'abord. C'est le contrôle technique
+  sur une paire et deux jours, qui passe par toute la chaîne mais ne
+  montre aucun taux. Il donne la durée et la mémoire prévues pour la passe
+  complète.
+- **`/classiques`** : la passe complète, à lancer une seule fois. Elle
+  prend 10 à 40 minutes ; un point d'avancement arrive après 2 minutes,
+  puis toutes les 10 minutes. Le premier lancement complet fait foi.
+- **`/classiques active`** : tout sur la base active, si la relève ne
+  répond pas.
+
+Elle rend un rapport et cinq fichiers :
+- `classiques_cases.csv` : une ligne par famille × échéance × période,
+  avec le sens choisi, le taux, l'IC et le verdict ;
+- `classiques_details.csv` : les cases retenues, par paire et par sens ;
+- `classiques_statuts.csv` : déclenchements, épisodes, statuts des issues ;
+- `classiques_donnees.csv` : les données lues, par paire et par jour ;
+- `classiques_signaux.csv.gz` : chaque signal retenu et ses issues.
