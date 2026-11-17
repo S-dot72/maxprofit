@@ -1,0 +1,23 @@
+{
+  "objet": "Confirmation de la seule case de /classiques (gel 1bb555d2, rapport du 17/11) dont le taux a tenu : F2 Bollinger + RSI, variante prudente, sens inverse, échéance 1 minute. Elle n'a PAS été validée (validation 54,35 % sur 425 décisions, p = 0,17 contre le point mort) : c'est une piste faible, éprouvée sur des jours que /classiques n'a jamais lus.",
+  "regle": "exactement celle de /classiques (gel 1bb555d2) : déclencheur F2 (clôture au-dessus de la bande de Bollinger(20, 2) haute avec RSI(14) ≥ 70, sens conventionnel PUT ; sous la bande basse avec RSI ≤ 30, sens conventionnel CALL) ; leçons L1 à L4 appliquées au sens conventionnel ; épisodes de 5 minutes dans la variante prudente ; trade dans le sens INVERSE du sens conventionnel ; entrée au dernier tick connu 2 s après la clôture, sortie 1 minute plus tard, ticks datés de moins de 10 s et minutes continues ; égalité = perte ; jouable si le payout du flux est ≥ 84 à la décision",
+  "donnees": {
+    "debut_utc": "2026-11-17T00:00:00Z",
+    "remarque": "/classiques a lu jusqu'au 16/11 inclus ; aucune décision antérieure au 17/11 n'entre ici. Les bougies de la veille ne servent qu'à chauffer les indicateurs, et les épisodes sont enchaînés sur toute la lecture avant d'écarter les décisions d'avant le 17/11",
+    "paires": "les 7 paires qui contiennent USD (la leçon L4 écarte les autres)",
+    "lecture": "relève, un jour divergent lu sur l'active ; seuls des jours complets"
+  },
+  "unite": "la décision jouable avec une issue à 1 minute, dans l'ordre chronologique ; incertitude par bootstrap des blocs paire × jour",
+  "regards": {
+    "futilite": "à 1 000 décisions : si le taux des 1 000 premières est sous 50 %, la piste est abandonnée ; sinon la commande dit seulement que l'épreuve continue, sans montrer le taux",
+    "final": "à 2 900 décisions (environ 3 mois au rythme de la validation, 30 par jour) : confirmée si le taux des 2 900 premières dépasse 52,0833 % ET p ≤ 0,05, p = part des taux rééchantillonnés (blocs paire × jour, 10 000 tirages, graine 7) inférieurs ou égaux à 52,0833 % ; sinon abandonnée"
+  },
+  "avant_le_regard": "la commande dit combien de décisions sont acquises, aucun taux",
+  "puissance": "2 900 décisions donnent environ 80 % de chances de confirmer un vrai taux de 54,4 % ; un vrai taux de 53 % ou moins passerait le plus souvent inaperçu",
+  "interdits": [
+    "aucune écriture en base, sortie en CSV seulement",
+    "la course, la collecte, la stratégie et les échéances ne changent pas",
+    "aucun argent réel sur cette piste avant une confirmation, et pas même après sans un essai en démo",
+    "aucun paramètre ne se rechoisit après le gel ; ni l'échéance de 2 minutes ni une autre famille ne remplacent cette case"
+  ]
+}
