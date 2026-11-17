@@ -312,6 +312,7 @@ COMMANDES = [
     ("graphiques", "Revue de graphiques à l'aveugle, gagnants et perdants (admin)"),
     ("terrain", "Le prix OTC est-il prévisible ? Étude gelée, sans ZoneH1 (admin)"),
     ("engulfing", "Étude Engulfing OTC en lecture seule ; « /engulfing essai » : contrôle d'une minute (admin)"),
+    ("classiques", "Six stratégies classiques sur l'OTC, en lecture seule ; « /classiques essai » : contrôle (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -497,6 +498,13 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         #: tourne, et sur quelle version) ; les suivants, toutes les 10 min.
         self.premier_avancement_sec: float = 120
         self.intervalle_avancement_sec: float = 600
+        #: `argument -> (rapport, fichiers)` : les six stratégies classiques
+        #: sur l'OTC, recherche isolée en lecture seule, en tâche de fond.
+        self._classiques: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._classiques_en_cours: asyncio.Task | None = None
+        self._classiques_avancement: Callable[[], str | None] | None = None
+        self._classiques_veille: asyncio.Task | None = None
         #: Les commandes longues en cours : jeton -> (conversation, libellé),
         #: pour dire à l'arrêt du service lesquelles il interrompt.
         self._en_fond: dict[int, tuple[str, str]] = {}
@@ -946,6 +954,44 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 self._engulfing_veille = asyncio.create_task(self._veiller(
                     chat, self._engulfing_en_cours,
                     self._engulfing_avancement, libelle))
+        elif texte.startswith("/classiques"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._classiques is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._classiques_en_cours is not None
+                  and not self._classiques_en_cours.done()):
+                point = (self._classiques_avancement()
+                         if self._classiques_avancement else None)
+                await self.client.envoyer(
+                    chat, "🧪 L'étude des stratégies classiques est déjà en "
+                    "cours" + (f" : {point}." if point else "."), CLAVIER)
+            else:
+                argument = texte[len("/classiques"):].strip()
+                essai = "essai" in argument.lower().split()
+                libelle = ("🧪 Essai /classiques" if essai
+                           else "🧪 Stratégies classiques")
+                reference = version_deployee.commit() or "inconnue"
+                if essai:
+                    annonce = (
+                        f"🧪 Essai technique lancé (version {reference}) : "
+                        "une paire, deux jours, en lecture seule ; aucun "
+                        "taux montré. Réponse en une à quelques minutes.")
+                else:
+                    annonce = (
+                        f"🧪 Six stratégies classiques lancées sur l'OTC "
+                        f"(version {reference} ; recherche isolée, lecture "
+                        "seule sur la relève, aucun ordre ; compter 10 à 40 "
+                        "minutes). Premier point d'avancement dans 2 "
+                        "minutes, puis toutes les 10 minutes ; ensuite le "
+                        "rapport et les fichiers.")
+                await self.client.envoyer(chat, annonce, CLAVIER)
+                self._classiques_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(chat, self._classiques, argument,
+                                          libelle))
+                self._classiques_veille = asyncio.create_task(self._veiller(
+                    chat, self._classiques_en_cours,
+                    self._classiques_avancement, libelle))
         elif texte.startswith("/terrain"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)

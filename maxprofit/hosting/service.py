@@ -396,6 +396,10 @@ async def _servir(args) -> int:
                 _engulfing, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._engulfing_avancement = _engulfing_avancement
+            bot._classiques = lambda argument: asyncio.to_thread(
+                _classiques, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
+            bot._classiques_avancement = _classiques_avancement
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -1035,6 +1039,28 @@ def _engulfing(chemin, course, argument: str = "", environ=None,
             avec_ticks="sans_ticks" not in mots, essai="essai" in mots,
             version=version_deployee.commit()),
         environ, ouvrir_url)
+
+
+def _classiques(chemin, course, argument: str = "", environ=None,
+                ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/classiques [essai] [active]` : six stratégies classiques des options
+    binaires sur l'OTC (protocole 31e85658), recherche isolée en lecture
+    seule sur la relève. `essai` : le contrôle technique, sans aucun taux."""
+    from maxprofit.live import classiques as cl
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "🧪", "classiques",
+        "Essai /classiques" if "essai" in mots else "Stratégies classiques",
+        lambda lue, active, nom: cl.etude(
+            lue, active, course, nom_lecture=nom, essai="essai" in mots,
+            version=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _classiques_avancement() -> str | None:
+    """Où en est l'étude /classiques en cours (lu en mémoire)."""
+    from maxprofit.live import classiques as cl
+    return cl.avancement()
 
 
 def _engulfing_avancement() -> str | None:
