@@ -1,6 +1,7 @@
 {
-  "objet": "Six stratégies classiques des options binaires, aux réglages standards des plateformes, jamais testées sur nos données OTC : l'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
+  "objet": "Six stratégies classiques des options binaires, aux réglages standards des plateformes, jamais testées sur nos données OTC, chacune brute et en version prudente (les leçons de nos études passées, combinées) : l'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
   "demande": "17/11 : « tu vas tester une nouvelle stratégie sur les paires otc »",
+  "remplace": "version 31e8565808605ceda03db67bd7f6cba2dec96c7dee62392b2d4d997b3fd85889 du 17/11, étendue avant tout lancement de /classiques et avant tout résultat, à la demande du 17/11 : « combine les [leçons de ce qu'on a déjà testé] à ces stratégies » ; les six règles brutes sont inchangées",
   "donnees": {
     "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
     "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), mêmes règles de copie",
@@ -19,24 +20,40 @@
     "F5_chiffre_rond": "pas de 0,005 si la clôture précédente est sous 20, de 0,5 sinon ; la bougie touche un seul multiple du pas (bas ≤ niveau ≤ haut), qu'aucune des 60 bougies précédentes n'a touché ; venue d'en dessous (clôture précédente < niveau) et clôture sous le niveau → PUT ; venue d'au-dessus et clôture au-dessus → CALL",
     "F6_cassure_canal": "clôture au-dessus du plus haut des 20 bougies précédentes → CALL ; sous leur plus bas → PUT"
   },
-  "sens": "chaque famille a son sens conventionnel ci-dessus ; en exploration, chaque case (famille × échéance) choisit entre ce sens et l'inverse, et garde ce choix en validation",
+  "variantes": {
+    "brut": "la règle de la famille seule",
+    "prudent": "la règle de la famille ET les quatre leçons ci-dessous, toutes ensemble"
+  },
+  "lecons": {
+    "L1_tendance_h1": "jamais contre la tendance H1 (règle de l'utilisateur du 27/09, définition de ZoneH1 : clôture de la dernière heure close comparée à celle de 2 heures avant ; l'heure de la bougie de décision est en cours et exclue) ; les heures H−1, H−2 et H−3 doivent être complètes (60 bougies), sinon pas de tendance ; CALL seulement en tendance haussière (clôture strictement plus haute), PUT seulement en tendance baissière",
+    "L2_meche_contre": "pas de longue mèche du côté opposé au trade sur la bougie de décision (combinaison K4 des graphiques et marteau à l'ancre de /bougies, qui gagnaient moins) : CALL exclu si la mèche basse fait au moins la moitié de l'étendue, PUT exclu si c'est la mèche haute ; par construction, aucune pin bar (F4) ne passe",
+    "L3_incluses": "moins de 6 bougies incluses parmi les 50 bougies M1 complètes et contiguës qui finissent à la bougie de décision (groupe défavorable de H_IB exclu, définition de docs/preinscription_incluses.json) ; fenêtre incomplète : exclu",
+    "L4_paires_usd": "seulement les 7 paires qui contiennent USD (piste USD de l'étape 3 : les autres paires perdaient en validation)"
+  },
+  "lecons_ecartees": "créneaux horaires et paires isolées (les filtres de l'étape 3 qui gagnaient en exploration se sont effondrés), heure 22 d'EURJPY (sa confirmation reste aveugle), caractéristiques de l'étude des pertes Engulfing (aucune ne s'est répétée)",
+  "sens": "chaque famille a son sens conventionnel ci-dessus ; en exploration, chaque case (famille × variante × échéance) choisit entre ce sens et l'inverse, et garde ce choix en validation ; les leçons L1 et L2 s'appliquent au sens conventionnel",
   "execution": {
     "decision": "à la clôture de la bougie qui déclenche (fin de sa minute)",
     "entree": "dernier tick connu à la décision + 2 s, daté de moins de 10 s",
     "sortie": "dernier tick connu à l'entrée + échéance, daté de moins de 10 s",
     "continuite": "toutes les minutes, de l'entrée à la sortie, doivent avoir leur chemin de ticks",
-    "echeances_min": [1, 2, 3, 5],
+    "echeances_min": [
+      1,
+      2,
+      3,
+      5
+    ],
     "gain": "mouvement strict dans le sens du trade ; une égalité est une perte",
     "jouable": "dernier payout du flux relevé au plus tard à la décision ≥ 84, soit 92 % appliqués et un point mort de 52,0833 %"
   },
-  "episodes": "dans chaque famille, un signal n'est retenu que si sa décision tombe au moins 5 minutes après la décision du signal retenu précédent sur la même paire : les trades d'une famille ne se chevauchent jamais",
+  "episodes": "dans chaque famille et chaque variante, un signal n'est retenu que si sa décision tombe au moins 5 minutes après la décision du signal retenu précédent sur la même paire : les trades d'une variante ne se chevauchent jamais",
   "selection": {
-    "exploration": "jours du 06/10 au 02/11 : une case est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
+    "exploration": "jours du 06/10 au 02/11 : une case (famille × variante × échéance) est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
     "validation": "jours du 03/11 à la veille du lancement : chaque case retenue est rejugée dans son sens, contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur les cases rejugées",
     "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
     "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avec le jour pour unité, avant tout essai en démo"
   },
-  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; détail par paire et par sens pour les cases retenues",
+  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; brut et prudent côte à côte ; détail par paire et par sens pour les cases retenues",
   "interdits": [
     "lecture seule : aucune écriture en base, sortie en CSV seulement",
     "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
