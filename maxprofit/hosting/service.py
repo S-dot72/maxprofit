@@ -400,6 +400,10 @@ async def _servir(args) -> int:
                 _classiques, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._classiques_avancement = _classiques_avancement
+            bot._niveaux = lambda argument: asyncio.to_thread(
+                _niveaux, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
+            bot._niveaux_avancement = _niveaux_avancement
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -1071,6 +1075,30 @@ def _classiques_avancement() -> str | None:
     """Où en est l'étude /classiques en cours (lu en mémoire)."""
     from maxprofit.live import classiques as cl
     return cl.avancement()
+
+
+def _niveaux(chemin, course, argument: str = "", environ=None,
+             ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/niveaux [essai] [active]` : les deux règles des vidéos du trader
+    OTC (protocole afbcb91e) ; R1, l'entrée des vendeurs ou des acheteurs
+    sur leur niveau, sous douze définitions objectives des niveaux ; R2, la
+    continuation après un repli. Recherche isolée en lecture seule sur la
+    relève ; `essai` : le contrôle technique, sans aucun taux."""
+    from maxprofit.live import niveaux as nv
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "📏", "niveaux",
+        "Essai /niveaux" if "essai" in mots else "Niveaux et continuation",
+        lambda lue, active, nom: nv.etude(
+            lue, active, course, nom_lecture=nom, essai="essai" in mots,
+            version=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _niveaux_avancement() -> str | None:
+    """Où en est l'étude /niveaux en cours (lu en mémoire)."""
+    from maxprofit.live import niveaux as nv
+    return nv.avancement()
 
 
 def _engulfing_avancement() -> str | None:

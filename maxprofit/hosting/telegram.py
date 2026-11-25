@@ -313,6 +313,7 @@ COMMANDES = [
     ("terrain", "Le prix OTC est-il prévisible ? Étude gelée, sans ZoneH1 (admin)"),
     ("engulfing", "Étude Engulfing OTC en lecture seule ; « /engulfing essai » : contrôle d'une minute (admin)"),
     ("classiques", "Six stratégies classiques sur l'OTC, en lecture seule ; « essai », « confirmation » (admin)"),
+    ("niveaux", "Niveaux des vendeurs et des acheteurs, continuation après repli ; « essai » (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -505,6 +506,13 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._classiques_en_cours: asyncio.Task | None = None
         self._classiques_avancement: Callable[[], str | None] | None = None
         self._classiques_veille: asyncio.Task | None = None
+        #: `argument -> (rapport, fichiers)` : les deux règles des vidéos
+        #: (niveaux, continuation), recherche isolée, en tâche de fond.
+        self._niveaux: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._niveaux_en_cours: asyncio.Task | None = None
+        self._niveaux_avancement: Callable[[], str | None] | None = None
+        self._niveaux_veille: asyncio.Task | None = None
         #: Les commandes longues en cours : jeton -> (conversation, libellé),
         #: pour dire à l'arrêt du service lesquelles il interrompt.
         self._en_fond: dict[int, tuple[str, str]] = {}
@@ -1001,6 +1009,46 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 self._classiques_veille = asyncio.create_task(self._veiller(
                     chat, self._classiques_en_cours,
                     self._classiques_avancement, libelle))
+        elif texte.startswith("/niveaux"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._niveaux is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._niveaux_en_cours is not None
+                  and not self._niveaux_en_cours.done()):
+                point = (self._niveaux_avancement()
+                         if self._niveaux_avancement else None)
+                await self.client.envoyer(
+                    chat, "📏 L'étude des niveaux est déjà en cours"
+                    + (f" : {point}." if point else "."), CLAVIER)
+            else:
+                argument = texte[len("/niveaux"):].strip()
+                essai = "essai" in argument.lower().split()
+                libelle = "📏 Essai /niveaux" if essai else "📏 Niveaux"
+                reference = version_deployee.commit() or "inconnue"
+                if essai:
+                    annonce = (
+                        f"📏 Essai technique lancé (version {reference}) : "
+                        "une paire, deux jours, en lecture seule ; aucun "
+                        "taux montré. Réponse en une à quelques minutes, "
+                        "avec la durée et la mémoire prévues de l'étude "
+                        "complète.")
+                else:
+                    annonce = (
+                        f"📏 Niveaux des vendeurs et des acheteurs, et "
+                        f"continuation après repli : étude lancée (version "
+                        f"{reference} ; recherche isolée, lecture seule sur "
+                        "la relève, aucun ordre ; compter 10 à 40 minutes). "
+                        "Premier point d'avancement dans 2 minutes, puis "
+                        "toutes les 10 minutes ; ensuite le rapport et les "
+                        "fichiers.")
+                await self.client.envoyer(chat, annonce, CLAVIER)
+                self._niveaux_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(chat, self._niveaux, argument,
+                                          libelle))
+                self._niveaux_veille = asyncio.create_task(self._veiller(
+                    chat, self._niveaux_en_cours, self._niveaux_avancement,
+                    libelle))
         elif texte.startswith("/terrain"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)

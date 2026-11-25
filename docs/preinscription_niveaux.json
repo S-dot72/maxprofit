@@ -1,0 +1,54 @@
+{
+  "objet": "Les deux règles des vidéos du trader OTC (« El Maestro », lues le 25/11) que l'utilisateur a confirmées : R1, l'entrée des vendeurs ou des acheteurs au retour du prix sur leur niveau, avec douze définitions objectives des « bons niveaux » ; R2, la continuation après un repli. L'une d'elles bat-elle le point mort de 52,0833 % hors échantillon, exécutée aux ticks ?",
+  "demande": "25/11 : « Le 1 et 2 sont correct mais il faut déterminer les bon niveaux on a toujours eu ce problème »",
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), mêmes règles de copie",
+    "payouts": "payouts (points de changement), mêmes règles de copie",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation": "début du jour UTC du lancement : seuls des jours complets sont lus"
+  },
+  "R1_niveaux": {
+    "unites_min": [1, 5, 15],
+    "regroupement": "une bougie M5 ou M15 regroupe les bougies M1 de sa période (ouverture de la première, plus haut et plus bas de toutes, clôture de la dernière) ; elle n'existe que si toutes ses minutes sont présentes ; les bougies de chaque unité doivent se suivre sans trou pour les fenêtres ci-dessous",
+    "pivot": "sommet : bougie dont le plus haut dépasse strictement les plus hauts des w bougies de chaque côté ; creux : bougie dont le plus bas est strictement sous les plus bas des w bougies de chaque côté ; w ∈ {5, 10}",
+    "niveau": "vendeurs : ouverture de la première bougie rouge (clôture < ouverture) à partir du sommet, sommet compris, au plus tard à la bougie de confirmation ; acheteurs : ouverture de la première bougie verte à partir du creux ; sans telle bougie, pas de niveau",
+    "impulsion": "écart entre le niveau et l'extrême opposé atteint de la bougie du niveau à la bougie de confirmation (plus bas pour un niveau vendeur, plus haut pour un niveau acheteur), en multiples de l'étendue médiane des 50 bougies de la même unité qui précèdent le pivot ; seuils s ∈ {0, 3} : l'écart doit être au moins s fois l'étendue médiane",
+    "activation": "à la clôture de la bougie de confirmation, w bougies après le pivot ; la clôture de cette bougie doit être strictement du bon côté (sous un niveau vendeur, au-dessus d'un niveau acheteur), sinon le niveau est écarté",
+    "toucher": "premier tick qui atteint le niveau (prix ≥ niveau vendeur, prix ≤ niveau acheteur), horodaté après l'activation et au plus tard 24 h après ; la minute de ce tick est la première bougie M1 dont l'étendue atteint le niveau ; un niveau ne sert qu'une fois",
+    "sens": "niveau vendeur → PUT ; niveau acheteur → CALL",
+    "definitions": "3 unités × 2 fenêtres × 2 seuils d'impulsion = 12 définitions, chacune jugée seule"
+  },
+  "R2_continuation": {
+    "regle": "bougies M1 : au moins 3 bougies consécutives de même couleur (la série), puis 1 ou 2 bougies de la couleur contraire (le repli), puis une bougie qui clôture dans la couleur de la série (la reprise) ; décision à la clôture de la reprise, dans le sens de la série ; une bougie sans corps (clôture = ouverture) interrompt tout",
+    "fenetre": "toutes ces bougies sont des minutes consécutives"
+  },
+  "execution": {
+    "entree_R1": "dernier tick connu au toucher + 2 s",
+    "entree_R2": "dernier tick connu à la décision + 2 s",
+    "fraicheur": "les ticks d'entrée et de sortie datent de moins de 10 s",
+    "sortie": "dernier tick connu à l'entrée + échéance",
+    "continuite": "toutes les minutes, de l'entrée à la sortie, doivent avoir leur chemin de ticks",
+    "echeances_min": [1, 2, 3, 5],
+    "gain": "mouvement strict dans le sens du trade ; une égalité est une perte",
+    "jouable": "dernier payout du flux relevé au plus tard à l'entrée ≥ 84, soit 92 % appliqués et un point mort de 52,0833 %"
+  },
+  "episodes": "dans chaque définition, un trade n'est retenu que si son entrée tombe au moins 5 minutes après l'entrée du trade retenu précédent sur la même paire",
+  "sens_choisi": "chaque case (définition × échéance) choisit en exploration entre le sens de la règle et l'inverse, et garde ce choix en validation",
+  "selection": {
+    "exploration": "jours du 06/10 au 02/11 : une case est retenue si son meilleur sens atteint 52,0833 % avec au moins 300 décisions jouables",
+    "validation": "jours du 03/11 à la veille du lancement : chaque case retenue est rejugée dans son sens, contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur les cases rejugées",
+    "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
+    "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avant tout essai en démo"
+  },
+  "martingale": "pas une stratégie : le rejeu du 25/11 sur nos issues réelles montre qu'elle ruine 41 à 44 % des campagnes de 50 $ et qu'elle exige, comme la mise fixe, 52,0 % de trades gagnants ; les cases sont jugées à mise fixe",
+  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; détail par paire et par sens pour les cases retenues",
+  "interdits": [
+    "lecture seule : aucune écriture en base, sortie en CSV seulement",
+    "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
+    "aucun paramètre ne se rechoisit après le gel ; aucune nouvelle définition ne s'ajoute après avoir vu un résultat",
+    "aucun argent réel sur une case validée avant sa confirmation, et pas même après sans un essai en démo"
+  ]
+}
