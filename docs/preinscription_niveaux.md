@@ -179,3 +179,69 @@ La passe rend un rapport et cinq fichiers :
   statuts des issues ;
 - `niveaux_donnees.csv` : les données lues, par paire et par jour ;
 - `niveaux_signaux.csv.gz` : chaque trade retenu, ses issues et ses statuts.
+
+## Résultats du 26/11
+
+Rapport `/niveaux`, version 8131cc8 : 20 paires, du 06/10 au 25/11.
+L'exploration couvre le 06/10 au 02/11, la validation le 03/11 au 25/11
+(23 jours). La passe a pris 24,0 minutes sur le serveur, avec un pic de
+mémoire de 193 Mo. Elle a retenu 341 222 trades, dont 153 103 jouables.
+
+Empreintes des fichiers rendus (sha256, 16 premiers caractères, `.gz`
+décompressé) :
+
+| Fichier | Empreinte |
+|---|---|
+| `niveaux_cases.csv` | `a43ef55ff3454f38` |
+| `niveaux_details.csv` | `a027d140debeb097` |
+| `niveaux_statuts.csv` | `788b77acd0cc684f` |
+| `niveaux_donnees.csv` | `b18ff145ceb5325f` |
+| `niveaux_signaux.csv.gz` | `314619cddb7b66a8` |
+
+Les 104 lignes des cases se recalculent à l'identique depuis le fichier des
+trades. Aucun épisode ne fait moins de 5 minutes.
+
+- **Aucune case validée sur les 52.** Deux cases ont été retenues en
+  exploration, alors que le hasard seul en donnerait environ 3,9. Les deux
+  sont « non reproduites », et ce sont deux échéances de la même
+  définition, R1 M5 pivot 5 impulsion ≥ 3 :
+  - à 2 minutes, 52,5 % sur 758 décisions, puis 49,7 % sur 992 en
+    validation (p = 0,95) ; 6 jours de validation sur 23 passent le point
+    mort ;
+  - à 5 minutes, 53,7 % sur 756, puis 50,6 % sur 992 (p = 0,83) ; 11 jours
+    sur 23 ;
+  - les paires changent d'une période à l'autre : à 2 minutes, NZDUSD passe
+    de 68 % à 44 % et EURJPY de 47 % à 64 %.
+- **Les niveaux sont bien retouchés, puis le prix part au hasard.** Dans
+  les 24 h, 88 à 93 % des niveaux M1 sont retouchés, et 58 à 86 % des
+  niveaux M5 et M15. Après le toucher, toutes définitions R1 confondues (un
+  même toucher compte dans plusieurs définitions) :
+
+  | | Décisions | Sens de la règle | Sens inverse | Égalités |
+  |---|---|---|---|---|
+  | Exploration | 200 428 | 49,5 % | 49,8 % | 0,6 % |
+  | Validation | 230 515 | 49,6 % | 49,8 % | 0,6 % |
+
+  En validation, la meilleure case sur au moins 300 décisions plafonne à
+  51,95 % : M15 pivot 10, à 2 minutes, sens inverse, qui n'avait que 50,9 %
+  en exploration.
+- **La continuation après repli (R2) reste à 50 %** sur 100 490 trades :
+  dans le sens de la règle, 49,5 % en exploration et 49,4 % en validation ;
+  l'inverse fait 50,0 %.
+- **Les petits échantillons trompent.** R1 M15 pivot 5 impulsion ≥ 3 gagnait
+  56,5 à 57,2 % sur 138 décisions en exploration, trop peu pour être jugée,
+  puis 46,2 à 48,4 % sur 186 en validation. C'est l'effet des exemples
+  choisis que montrent les vidéos.
+- **55 % des trades retenus n'étaient pas jouables** : le payout du flux
+  était alors sous 84. Ils ne comptent pas dans les taux.
+
+**Verdict.** Ni les douze définitions des niveaux des vendeurs et des
+acheteurs, ni la continuation après repli, ne battent le point mort sur
+l'OTC. Aucune case n'est gelée : il n'y a rien à confirmer.
+
+**Note sur les données.** La relève n'avait plus aucune donnée après le
+23/11 vers 05 h 43 UTC. Comme le prévoit le protocole, les jours concernés
+ont été lus sur l'active : ce sont pour l'essentiel les 709 résumés
+divergents du rapport. Les trades de ces jours sont bien dans les fichiers.
+Seuls les comptes de minutes du rapport et `niveaux_donnees.csv`, tirés du
+résumé de la relève, les omettent.
