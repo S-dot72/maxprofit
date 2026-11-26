@@ -1,0 +1,58 @@
+{
+  "objet": "Cassure ou retournement : au moment où le prix touche une zone, un signe connu AVANT le toucher sépare-t-il les zones qui cassent de celles qui tiennent, assez pour battre le point mort de 52,0833 % hors échantillon ? Les zones sont celles de /niveaux (gel afbcb91e) ; en moyenne, elles se retournent une fois sur deux (49,6 % de retournements et 49,8 % de cassures en validation, rapport du 26/11).",
+  "demande": "26/11 : « On a des zones c'est bien ca ? Il suffit qu'on arrive à déterminer ce qui fait que le prix casse la zone ou fait un retournement », puis « Tu dois trouver la solution analyse tout »",
+  "donnees": {
+    "bougies": "candles, tf_sec = 60, complete = 1, lues sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "ticks": "tick_paths, mêmes règles de copie",
+    "payouts": "payouts (points de changement), mêmes règles de copie",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation": "début du jour UTC du lancement : seuls des jours complets sont lus"
+  },
+  "zones": "les niveaux R1 de /niveaux (gel afbcb91e) pour trois définitions : M1, M5 et M15, pivot à 5 bougies, sans seuil d'impulsion (R1_M1_w5_s0, R1_M5_w5_s0, R1_M15_w5_s0). Même formation, même activation, même premier toucher au tick dans les 24 h, mêmes épisodes de 5 minutes par définition et par paire : les touchers jugés sont exactement les trades de ces trois définitions dans /niveaux",
+  "issue": "le trade au toucher, comme dans /niveaux : entrée au dernier tick connu 2 s après le toucher, sortie à 1, 2, 3 ou 5 minutes, ticks datés de moins de 10 s, minutes continues. Retournement : à l'échéance, le prix est repassé du côté d'où il venait par rapport au prix d'entrée (gain du sens de la règle : PUT sur une zone de vendeurs, CALL sur une zone d'acheteurs). Cassure : il est de l'autre côté (gain du sens inverse). Une égalité est une perte pour les deux sens. Seuls les touchers jouables comptent : dernier payout du flux relevé au plus tard à l'entrée ≥ 84",
+  "echelle": "m = étendue médiane (plus haut − plus bas) des 50 bougies M1 closes qui précèdent la minute du toucher ; d = +1 pour une zone de vendeurs (le prix monte vers elle), −1 pour une zone d'acheteurs",
+  "fenetre": "un toucher n'est mesuré que si les 240 bougies M1 qui précèdent la minute du toucher se suivent sans trou, si au moins 720 bougies M1 existent dans les 24 h qui précèdent cette minute, et si m, les étendues médianes des 30 et des 240 dernières bougies et l'étendue de ces 24 h sont strictement positives ; sinon il est écarté et compté",
+  "signes": {
+    "vitesse": "d × (niveau − clôture de la bougie M1 qui commence 5 minutes avant la minute du toucher) / m : le chemin fait vers la zone dans les 5 dernières minutes",
+    "elan": "d × (niveau − clôture de la bougie M1 qui commence 60 minutes avant la minute du toucher) / m : le chemin fait vers la zone dans la dernière heure",
+    "approches": "ln(1 + nombre de bougies M1 closes, de l'activation à la minute du toucher exclue, dont l'extrême du côté de la zone est passé à strictement moins de 0,5 m du niveau sans l'atteindre)",
+    "age": "ln(1 + minutes entre l'activation et le début de la minute du toucher)",
+    "impulsion": "ln(1 + écart / m), écart = distance entre le niveau et l'extrême opposé atteint de la bougie du niveau à la bougie de confirmation, dans l'unité de la zone : le même écart que l'impulsion de /niveaux, rapporté ici à m",
+    "eloignement": "ln(1 + d × (niveau − extrême opposé) / m), extrême opposé = plus bas (zone de vendeurs) ou plus haut (zone d'acheteurs) des bougies M1 de la dernière minute de la confirmation à la minute du toucher exclue : jusqu'où le prix s'est éloigné avant de revenir",
+    "compression": "ln(étendue médiane des 30 dernières bougies M1 closes / étendue médiane des 240 dernières)",
+    "derniere_bougie": "d × (clôture − ouverture de la dernière bougie M1 close) / m : un corps qui pousse vers la zone est positif",
+    "confluence": "ln(1 + nombre d'autres zones du même camp, des trois définitions, actives au début de la minute du toucher et dont le prix est à strictement moins de 0,5 m du niveau). Active : activée au plus tard au début de cette minute, depuis moins de 24 h, non touchée dans une minute antérieure, et sans trou de minutes entre son activation et cette minute",
+    "position_jour": "place de la zone dans l'étendue des bougies M1 closes des 24 h précédentes : (niveau − plus bas) / (plus haut − plus bas) pour une zone de vendeurs, (plus haut − niveau) / (plus haut − plus bas) pour une zone d'acheteurs ; 1 = la zone est à l'extrême du jour dans son sens"
+  },
+  "signe_seul": {
+    "tiers": "pour chaque signe, b1 et b2 = quantiles 1/3 et 2/3 de sa valeur sur les touchers jouables et mesurés de l'exploration. Si b1 < b2 : bas = valeur < b1, milieu = b1 ≤ valeur < b2, haut = valeur ≥ b2. Si b1 = b2 = b (beaucoup de valeurs égales, par exemple zéro) : bas = valeur < b, milieu = valeur égale à b, haut = valeur > b. Les tiers peuvent donc être inégaux, et un tiers vide n'est pas jugé",
+    "cases": "10 signes × 3 tiers × 4 échéances = 120 cases",
+    "sens": "chaque case choisit en exploration entre retournement et cassure (cassure si elle gagne strictement plus souvent), et garde ce choix en validation",
+    "retenue": "si son sens choisi atteint 52,0833 % sur au moins 300 décisions jouables en exploration"
+  },
+  "scores": {
+    "variables": "les dix signes, bornés à leurs quantiles 1 % et 99 % de l'exploration, puis centrés et réduits avec la moyenne et l'écart-type de l'exploration (après bornage) ; plus l'unité (deux indicatrices : M5, M15) et le camp (une indicatrice : zone d'acheteurs)",
+    "score_simple": "les 13 variables",
+    "score_croise": "les 13 variables et les 45 produits deux à deux des dix signes préparés",
+    "modele": "par échéance et par score, une régression logistique (Newton, pénalité L2 λ = 1 sur les coefficients, interception non pénalisée : etude_micro.Logistique) ajustée sur les touchers jouables, mesurés et décisifs de l'exploration (égalités exclues de l'ajustement) ; elle donne la probabilité du retournement",
+    "decision": "sens prédit : retournement si la probabilité dépasse 0,5, cassure sinon ; confiance = |probabilité − 0,5|",
+    "selection": "seuls les touchers dont la confiance atteint le quantile 2/3 des confiances des touchers jouables et mesurés de l'exploration sont joués : le tiers le plus confiant, seuil fixé en exploration",
+    "cases": "2 scores × 4 échéances = 8 cases, jugées directement en validation"
+  },
+  "selection": {
+    "exploration": "jours du 06/10 au 02/11 : bornes des tiers, sens des cases, préparation des variables, ajustement des scores et seuils de confiance",
+    "validation": "jours du 03/11 à la veille du lancement : chaque case retenue (signe seul) et chaque case de score est jugée dans son sens contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur l'ensemble des cases jugées en validation",
+    "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
+    "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avant tout essai en démo"
+  },
+  "rapport": "aucune ventilation par heure (la confirmation EURJPY 22 h reste aveugle) ; pour chaque signe, les taux de retournement par tiers ; les coefficients des scores ; le détail par paire et par sens pour les cases retenues",
+  "interdits": [
+    "lecture seule : aucune écriture en base, sortie en CSV seulement",
+    "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
+    "aucun signe, aucune variable ni aucun réglage ne s'ajoute ou ne se rechoisit après le gel",
+    "aucun argent réel sur une case validée avant sa confirmation, et pas même après sans un essai en démo"
+  ],
+  "quantiles": "le quantile q d'une liste de n valeurs est la valeur de rang ⌊q × n⌋ (rangs comptés à partir de 0) de la liste triée, plafonné au rang n − 1 ; l'écart-type est celui de la population ; une variable d'écart-type nul vaut 0 une fois préparée"
+}
