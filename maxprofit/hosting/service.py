@@ -404,6 +404,10 @@ async def _servir(args) -> int:
                 _niveaux, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._niveaux_avancement = _niveaux_avancement
+            bot._cassure = lambda argument: asyncio.to_thread(
+                _cassure, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
+            bot._cassure_avancement = _cassure_avancement
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -1099,6 +1103,29 @@ def _niveaux_avancement() -> str | None:
     """Où en est l'étude /niveaux en cours (lu en mémoire)."""
     from maxprofit.live import niveaux as nv
     return nv.avancement()
+
+
+def _cassure(chemin, course, argument: str = "", environ=None,
+             ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/cassure [essai] [active]` : au toucher d'une zone de /niveaux, un
+    signe connu avant le toucher sépare-t-il les cassures des retournements ?
+    (protocole 14108d3b). Recherche isolée en lecture seule sur la relève ;
+    `essai` : le contrôle technique, sans aucun taux."""
+    from maxprofit.live import cassure as cs
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "🧱", "cassure",
+        "Essai /cassure" if "essai" in mots else "Cassure ou retournement",
+        lambda lue, active, nom: cs.etude(
+            lue, active, course, nom_lecture=nom, essai="essai" in mots,
+            version=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _cassure_avancement() -> str | None:
+    """Où en est l'étude /cassure en cours (lu en mémoire)."""
+    from maxprofit.live import cassure as cs
+    return cs.avancement()
 
 
 def _engulfing_avancement() -> str | None:

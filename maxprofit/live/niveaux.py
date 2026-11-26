@@ -233,14 +233,15 @@ def _fusion(groupe: Sequence[en.Bougie], pas: int) -> en.Bougie:
 # --------------------------------------------------------------------------- #
 
 class Niveau:
-    __slots__ = ("activation", "prix", "sens", "impulsion")
+    __slots__ = ("activation", "prix", "sens", "impulsion", "ecart")
 
     def __init__(self, activation: int, prix: float, sens: int,
-                 impulsion: float | None) -> None:
+                 impulsion: float | None, ecart: float | None = None) -> None:
         self.activation = activation    # secondes, clôture de la confirmation
         self.prix = prix
         self.sens = sens                # PUT : niveau vendeur ; CALL : acheteur
         self.impulsion = impulsion      # en étendues médianes ; None : inconnue
+        self.ecart = ecart              # le même écart, en prix (pour /cassure)
 
 
 def niveaux_de(su: SerieU, w: int) -> list[Niveau]:
@@ -270,7 +271,7 @@ def niveaux_de(su: SerieU, w: int) -> list[Niveau]:
                 ecart = prix - min(l[k:j + w + 1])
                 if c[j + w] < prix:
                     sortie.append(Niveau(activation, prix, PUT,
-                                         ecart / med if med else None))
+                                         ecart / med if med else None, ecart))
         if creux:
             k = next((k for k in range(j, j + w + 1) if c[k] > o[k]), None)
             if k is not None:
@@ -278,7 +279,7 @@ def niveaux_de(su: SerieU, w: int) -> list[Niveau]:
                 ecart = max(h[k:j + w + 1]) - prix
                 if c[j + w] > prix:
                     sortie.append(Niveau(activation, prix, CALL,
-                                         ecart / med if med else None))
+                                         ecart / med if med else None, ecart))
     return sortie
 
 
