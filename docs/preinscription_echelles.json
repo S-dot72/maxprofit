@@ -33,7 +33,7 @@
   },
   "regles": {
     "dernier_mouvement": "toutes les décisions : continuation = parier dans le sens de d, retournement = parier contre",
-    "grand_mouvement": "les décisions dont |d| atteint le décile supérieur de |d| à cette échelle (borne = quantile 9/10 de |d| sur les décisions jouables de l'exploration)",
+    "grand_mouvement": "les décisions dont le mouvement relatif |d| / prix(t − k) atteint le décile supérieur à cette échelle (borne = quantile 9/10 de |d| / prix(t − k) sur les décisions jouables de l'exploration) ; une variation relative, pour que les paires en yen, cent fois plus chères, ne remplissent pas le décile à elles seules",
     "deux_mouvements": "les décisions dont le mouvement précédent, prix(t − k) − prix(t − 2k), est non nul et de même signe que d (prix à t − 2k valable aux mêmes conditions)"
   },
   "cases": "3 règles × 11 échelles = 33 cases ; chaque case choisit en exploration entre continuation et retournement (retournement s'il gagne strictement plus souvent), et garde ce choix en validation",
@@ -51,5 +51,6 @@
     "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
     "aucune échelle, aucune règle ni aucun réglage ne s'ajoute ou ne se rechoisit après le gel",
     "aucun argent réel sur une case validée avant sa confirmation, et pas même après sans un essai en démo"
-  ]
+  ],
+  "remplacement": "cette version remplace le gel 54c2a6ff / b11bb9e3 (commit 637d98a), avant tout code et tout résultat : le grand mouvement y était mesuré en prix brut, ce qui aurait mêlé les échelles des paires"
 }
