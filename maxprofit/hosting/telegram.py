@@ -315,6 +315,7 @@ COMMANDES = [
     ("classiques", "Six stratégies classiques sur l'OTC, en lecture seule ; « essai », « confirmation » (admin)"),
     ("niveaux", "Niveaux des vendeurs et des acheteurs, continuation après repli ; « essai » (admin)"),
     ("cassure", "Cassure ou retournement au toucher d'une zone : dix signes et deux scores ; « essai » (admin)"),
+    ("verifier", "Rejouer des trades OTC (les vôtres, ceux d'un trader ou d'un canal) sur nos ticks réels (admin)"),
     ("transfert", "Transfert sortant de Neon par consommateur (admin)"),
     ("decision", "Décision de production : critères, volumes, dates"),
     ("aide", "Comment ça marche"),
@@ -521,6 +522,11 @@ réseau, et de ne jamais devenir l'endroit où une règle métier se glisse.
         self._cassure_en_cours: asyncio.Task | None = None
         self._cassure_avancement: Callable[[], str | None] | None = None
         self._cassure_veille: asyncio.Task | None = None
+        #: `texte -> (rapport, fichiers)` : des trades OTC rejoués sur nos
+        #: ticks réels, en lecture seule.
+        self._verifier: Callable[[str], Awaitable[tuple[
+            str, list[tuple[bytes, str, str]]]]] | None = None
+        self._verifier_en_cours: asyncio.Task | None = None
         #: Les commandes longues en cours : jeton -> (conversation, libellé),
         #: pour dire à l'arrêt du service lesquelles il interrompt.
         self._en_fond: dict[int, tuple[str, str]] = {}
@@ -1057,6 +1063,20 @@ empêcher les autres d'être prévenus : chaque envoi est isolé.
                 self._niveaux_veille = asyncio.create_task(self._veiller(
                     chat, self._niveaux_en_cours, self._niveaux_avancement,
                     libelle))
+        elif texte.startswith("/verifier"):
+            if not role.peut_installer_jeton:
+                await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)
+            elif self._verifier is None:
+                await self.client.envoyer(chat, "Indisponible.", CLAVIER)
+            elif (self._verifier_en_cours is not None
+                  and not self._verifier_en_cours.done()):
+                await self.client.envoyer(
+                    chat, "🔎 Une vérification est déjà en cours ; "
+                    "renvoyez la liste dans un instant.", CLAVIER)
+            else:
+                self._verifier_en_cours = asyncio.create_task(
+                    self._envoyer_en_fond(chat, self._verifier, texte,
+                                          "🔎 Vérification"))
         elif texte.startswith("/cassure"):
             if not role.peut_installer_jeton:
                 await self.client.envoyer(chat, RESERVE_ADMIN, CLAVIER)

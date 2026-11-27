@@ -408,6 +408,9 @@ async def _servir(args) -> int:
                 _cassure, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._cassure_avancement = _cassure_avancement
+            bot._verifier = lambda argument: asyncio.to_thread(
+                _verifier, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
             # Le transfert sortant de Neon, mesuré en mémoire (aucune requête).
             from maxprofit.hosting.transfert import rapport as transfert
             bot._transfert = lambda: asyncio.to_thread(
@@ -1126,6 +1129,18 @@ def _cassure_avancement() -> str | None:
     """Où en est l'étude /cassure en cours (lu en mémoire)."""
     from maxprofit.live import cassure as cs
     return cs.avancement()
+
+
+def _verifier(chemin, course, argument: str = "", environ=None,
+              ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/verifier` suivi de trades OTC, un par ligne : les rejoue sur nos
+    ticks réels, en LECTURE SEULE sur la base active (les heures récentes
+    n'y manquent pas, et il n'en faut que quelques minutes par trade)."""
+    from maxprofit.live import verification as vf
+    return _sur_la_releve(
+        chemin, True, "🔎", "verifier", "Vérification des trades",
+        lambda lue, active, nom: vf.verifier(lue, argument),
+        environ, ouvrir_url)
 
 
 def _engulfing_avancement() -> str | None:
