@@ -1,0 +1,56 @@
+{
+  "objet": "Les échelles de l'imprévisibilité OTC : de 5 secondes à 1 heure, le dernier mouvement du prix annonce-t-il le suivant (continuation ou retournement), en général, après un grand mouvement ou après deux mouvements de même sens, assez pour battre le point mort de 52,0833 % hors échantillon ? Les études précédentes ont jugé des motifs de 1 à 5 minutes ; celle-ci balaie toutes les échéances que l'OTC propose, y compris les très courtes, aux ticks.",
+  "demande": "27/11 : « Effectue des test et motifs approprié au marché otc et à son imprévisibilité »",
+  "donnees": {
+    "ticks": "tick_paths (un chemin par paire et par minute, horodatages à la ms), lus sur la relève ; un jour dont le résumé diffère de l'active est lu sur l'active",
+    "payouts": "payouts (points de changement), mêmes règles de copie",
+    "paires": "toutes les paires qui ont des bougies M1 dans la période",
+    "debut_utc": "2026-10-06T00:00:00Z",
+    "fin_exploration_utc": "2026-11-03T00:00:00Z",
+    "fin_validation": "début du jour UTC du lancement : seuls des jours complets sont lus"
+  },
+  "echelles_sec": [
+    5,
+    15,
+    30,
+    60,
+    120,
+    180,
+    300,
+    600,
+    900,
+    1800,
+    3600
+  ],
+  "prix": "le prix à l'instant t est le dernier tick connu à t ; il n'est valable que s'il date de moins de F(k) = min(10 s, k / 2) pour l'échelle k, et que les minutes nécessaires ont leur chemin de ticks",
+  "decisions": "pour chaque échelle k, les instants t multiples de pas(k) = max(15 s, k / 2) secondes UTC ; décision à t, à partir des prix à t − k et à t (le mouvement passé d = prix(t) − prix(t − k)) ; un mouvement passé nul n'est pas une décision ; il n'y a pas d'épisodes, la dépendance entre décisions voisines est prise en compte par le bootstrap par blocs paire × jour",
+  "execution": {
+    "entree": "prix à t + 2 s",
+    "sortie": "prix à t + 2 s + k",
+    "continuite": "toutes les minutes de t − k à la sortie ont leur chemin de ticks",
+    "issue": "hausse si la sortie dépasse strictement l'entrée, baisse si elle est strictement en dessous, égalité sinon ; une égalité est une perte",
+    "jouable": "dernier payout du flux relevé au plus tard à l'entrée ≥ 84"
+  },
+  "regles": {
+    "dernier_mouvement": "toutes les décisions : continuation = parier dans le sens de d, retournement = parier contre",
+    "grand_mouvement": "les décisions dont le mouvement relatif |d| / prix(t − k) atteint le décile supérieur à cette échelle (borne = quantile 9/10 de |d| / prix(t − k) sur les décisions jouables de l'exploration) ; une variation relative, pour que les paires en yen, cent fois plus chères, ne remplissent pas le décile à elles seules",
+    "deux_mouvements": "les décisions dont le mouvement précédent, prix(t − k) − prix(t − 2k), est non nul et de même signe que d (prix à t − 2k valable aux mêmes conditions)"
+  },
+  "cases": "3 règles × 11 échelles = 33 cases ; chaque case choisit en exploration entre continuation et retournement (retournement s'il gagne strictement plus souvent), et garde ce choix en validation",
+  "descriptif": "pour chaque échelle, la corrélation de Pearson entre le mouvement passé relatif, d / prix(t − k), et le mouvement suivant relatif, (sortie − entrée) / entrée, sur les décisions jouables de chaque période : une mesure de l'aléatoire, positive en continuation, négative en retournement, sans verdict (des variations relatives, pour que les paires en yen ne pèsent pas cent fois plus)",
+  "bornes": "le quantile q d'une liste de n valeurs est la valeur de rang ⌊q × n⌋ (rangs comptés à partir de 0) de la liste triée, plafonné au rang n − 1",
+  "selection": {
+    "exploration": "jours du 06/10 au 02/11 : une case est retenue si son sens choisi atteint 52,0833 % sur au moins 300 décisions jouables ; les bornes du grand mouvement sont fixées ici",
+    "validation": "jours du 03/11 à la veille du lancement : chaque case retenue est jugée dans son sens contre 52,0833 %, avec au moins 100 décisions ; p unilatérale du bootstrap par blocs paire × jour (1 000 tirages, graine 7) ; Benjamini-Hochberg à 10 % sur les cases jugées",
+    "verdict": "validée si BH la retient et que son taux dépasse 52,0833 % ; sinon non reproduite",
+    "confirmation": "une case validée n'est pas une stratégie : elle est gelée, puis confirmée sur des jours postérieurs au lancement, avant tout essai en démo"
+  },
+  "rapport": "aucune ventilation par heure ni par paire × heure (la confirmation EURJPY 22 h reste aveugle) ; pour chaque échelle, les taux de continuation des trois règles et la corrélation ; le détail par paire et par sens des cases retenues",
+  "interdits": [
+    "lecture seule : aucune écriture en base, sortie en CSV seulement",
+    "aucun appel à l'exécution des ordres, aucun changement de la course, de la collecte, de ZoneH1, des échéances ni des configurations",
+    "aucune échelle, aucune règle ni aucun réglage ne s'ajoute ou ne se rechoisit après le gel",
+    "aucun argent réel sur une case validée avant sa confirmation, et pas même après sans un essai en démo"
+  ],
+  "remplacement": "cette version remplace le gel 54c2a6ff / b11bb9e3 (commit 637d98a), avant tout code et tout résultat : le grand mouvement y était mesuré en prix brut, ce qui aurait mêlé les échelles des paires"
+}
