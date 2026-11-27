@@ -408,6 +408,10 @@ async def _servir(args) -> int:
                 _cassure, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._cassure_avancement = _cassure_avancement
+            bot._motifs = lambda argument: asyncio.to_thread(
+                _motifs, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
+            bot._motifs_avancement = _motifs_avancement
             bot._verifier = lambda argument: asyncio.to_thread(
                 _verifier, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
@@ -1129,6 +1133,29 @@ def _cassure_avancement() -> str | None:
     """Où en est l'étude /cassure en cours (lu en mémoire)."""
     from maxprofit.live import cassure as cs
     return cs.avancement()
+
+
+def _motifs(chemin, course, argument: str = "", environ=None,
+            ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/motifs [essai] [active]` : la recherche automatique de motifs sur
+    chaque minute des paires OTC (protocole 028f6370), 22 familles et deux
+    scores, en lecture seule sur la relève ; `essai` : le contrôle
+    technique, sans aucun taux."""
+    from maxprofit.live import motifs as mf
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "🔬", "motifs",
+        "Essai /motifs" if "essai" in mots else "Recherche de motifs",
+        lambda lue, active, nom: mf.etude(
+            lue, active, course, nom_lecture=nom, essai="essai" in mots,
+            version=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _motifs_avancement() -> str | None:
+    """Où en est la recherche /motifs en cours (lu en mémoire)."""
+    from maxprofit.live import motifs as mf
+    return mf.avancement()
 
 
 def _verifier(chemin, course, argument: str = "", environ=None,
