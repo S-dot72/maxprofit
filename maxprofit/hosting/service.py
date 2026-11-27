@@ -412,6 +412,10 @@ async def _servir(args) -> int:
                 _motifs, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
             bot._motifs_avancement = _motifs_avancement
+            bot._echelles = lambda argument: asyncio.to_thread(
+                _echelles, cfg.db,
+                getattr(_course.get("sup"), "_course", None), argument)
+            bot._echelles_avancement = _echelles_avancement
             bot._verifier = lambda argument: asyncio.to_thread(
                 _verifier, cfg.db,
                 getattr(_course.get("sup"), "_course", None), argument)
@@ -1156,6 +1160,28 @@ def _motifs_avancement() -> str | None:
     """Où en est la recherche /motifs en cours (lu en mémoire)."""
     from maxprofit.live import motifs as mf
     return mf.avancement()
+
+
+def _echelles(chemin, course, argument: str = "", environ=None,
+              ouvrir_url=None) -> tuple[str, list[tuple[bytes, str, str]]]:
+    """`/echelles [essai] [active]` : les échelles de l'imprévisibilité
+    OTC, de 5 secondes à 1 heure (protocole b25ad6eb), en lecture seule sur
+    la relève ; `essai` : le contrôle technique, sans aucun taux."""
+    from maxprofit.live import echelles as ec
+    mots = argument.lower().split()
+    return _sur_la_releve(
+        chemin, "active" in mots, "⏱", "echelles",
+        "Essai /echelles" if "essai" in mots else "Étude des échelles",
+        lambda lue, active, nom: ec.etude(
+            lue, active, course, nom_lecture=nom, essai="essai" in mots,
+            version=version_deployee.commit()),
+        environ, ouvrir_url)
+
+
+def _echelles_avancement() -> str | None:
+    """Où en est l'étude /echelles en cours (lu en mémoire)."""
+    from maxprofit.live import echelles as ec
+    return ec.avancement()
 
 
 def _verifier(chemin, course, argument: str = "", environ=None,
