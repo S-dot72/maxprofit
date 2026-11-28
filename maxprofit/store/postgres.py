@@ -75,8 +75,17 @@ DELAI_CONNEXION_SEC = 30
 QUAND_QUOTA_EPUISE = None
 
 
+#: Refus définitifs de Neon : calcul épuisé, ou stockage plein (1 Go par
+#: projet en gratuit — winter-dawn, le 27/11 : `DiskFull`, plus une écriture).
+REFUS_DEFINITIFS = ("exceeded the quota", "project size limit")
+
+
+def est_refus_definitif(texte: str) -> bool:
+    return any(motif in (texte or "") for motif in REFUS_DEFINITIFS)
+
+
 def _signaler_quota(erreur: Exception, url: str) -> None:
-    if "exceeded the quota" not in str(erreur):
+    if not est_refus_definitif(str(erreur)):
         return
     rappel = QUAND_QUOTA_EPUISE
     if rappel is None:
@@ -193,6 +202,8 @@ class Connexion:
             curseur = self._executer(traduit, params)
         except Exception as erreur:
             if not self._coupee(erreur):
+                # Une base PLEINE refuse à l'écriture, pas à la connexion.
+                _signaler_quota(erreur, self._url)
                 raise
             dans_un_bloc = self._bloc and mot != "BEGIN"
             self._reprendre()

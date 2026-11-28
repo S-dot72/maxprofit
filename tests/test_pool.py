@@ -291,3 +291,31 @@ def test_une_base_qui_flanche_pendant_la_sonde_est_injoignable():
         def close(self): pass
     from maxprofit.store.pool import sonder
     assert sonder("X", "u", ouvrir=lambda url: _Coupee()).joignable is False
+
+
+def test_une_base_PLEINE_est_ecartee_comme_une_base_epuisee(monkeypatch):
+    """winter-dawn, 27/11 : joignable, mais 1 Go atteint — chaque écriture
+    échouait en `DiskFull`, et le pool la gardait parce qu'elle était la plus
+    à jour."""
+    import maxprofit.store.pool as pool_mod
+    monkeypatch.setattr(pool_mod.postgres, "est_postgres", lambda c: True)
+    monkeypatch.setattr(pool_mod, "_tables", lambda c: {"candles"})
+
+    class _Pleine:
+        def execute(self, sql, *a):
+            valeur = 1700 if "MAX" in sql else 1000 * 1024 ** 2
+            return type("R", (), {"fetchone": lambda s: (valeur,)})()
+        def close(self): pass
+    e = pool_mod.sonder("W", "u", ouvrir=lambda url: _Pleine())
+    assert not e.joignable and e.quota_epuise and e.raison.startswith("pleine")
+
+
+def test_un_refus_DISK_FULL_a_l_ecriture_declenche_la_bascule(monkeypatch):
+    from maxprofit.store import postgres
+    vus = []
+    monkeypatch.setattr(postgres, "QUAND_QUOTA_EPUISE",
+                        lambda url, texte: vus.append(url))
+    postgres._signaler_quota(Exception(
+        "could not extend file because project size limit (1024 MB) has "
+        "been exceeded"), "u1")
+    assert vus == ["u1"]

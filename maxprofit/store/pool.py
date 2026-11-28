@@ -150,6 +150,13 @@ def sonder(nom: str, url: str, ouvrir=None) -> EtatBase:
         if "candles" in _tables(conn):
             ligne = conn.execute("SELECT MAX(ts_sec) FROM candles").fetchone()
             derniere = int(ligne[0]) if ligne and ligne[0] is not None else None
+        if postgres.est_postgres(conn):
+            taille = conn.execute(
+                "SELECT pg_database_size(current_database())").fetchone()[0]
+            if taille and int(taille) >= PLEINE_OCTETS:
+                return EtatBase(nom, url, False, quota_epuise=True,
+                                derniere_ts=derniere,
+                                raison=f"pleine ({int(taille) // 1024 ** 2} Mo)")
         return EtatBase(nom, url, True, derniere_ts=derniere)
     except Exception as erreur:                  # noqa: BLE001
         # Ouverte puis coupée : on ne choisit pas une base qui flanche.
@@ -164,7 +171,12 @@ def sonder(nom: str, url: str, ouvrir=None) -> EtatBase:
 
 
 def est_quota(texte: str) -> bool:
-    return "exceeded the quota" in (texte or "")
+    return postgres.est_refus_definitif(texte)
+
+
+#: Au-delà, la base est traitée comme pleine : la limite gratuite est de
+#: 1 Go par projet, et ~22 Mo s'écrivent par jour — on bascule ~3 jours avant.
+PLEINE_OCTETS = 950 * 1024 ** 2
 
 
 def choisir(etats: list[EtatBase], actuelle: str = ""):
@@ -207,7 +219,8 @@ def choisir_au_demarrage(env=None, sonde=None) -> tuple[EtatBase | None,
     etats = [sonde(nom, url) for nom, url in pool]
     active, releve = choisir(etats, actuelle=env.get("DATABASE_URL", ""))
     for e in etats:
-        etat = ("BLOQUÉE (quota)" if e.quota_epuise else
+        etat = (f"BLOQUÉE ({e.raison})" if e.raison.startswith("pleine") else
+                "BLOQUÉE (quota)" if e.quota_epuise else
                 "injoignable" if not e.joignable else
                 f"dernière bougie {_date(e.derniere_ts)}")
         log.info("Pool : %-28s %-34s %s", e.nom, e.hote, etat)
